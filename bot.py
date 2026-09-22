@@ -96,7 +96,8 @@ try:
 except Exception:
     durum = {}
 for _k, _v in (("son", 0), ("liste", []), ("sahip", None), ("sabit", {}), ("ayar", {}),
-               ("warn", {}), ("kara", {}), ("filtre", {}), ("not", {}), ("talimat", []), ("arsiv", {})):
+               ("warn", {}), ("kara", {}), ("filtre", {}), ("not", {}), ("talimat", []), ("arsiv", {}),
+               ("duyuru_saat", 0)):
     durum.setdefault(_k, _v)
 if not durum["son"]:
     durum["son"] = time.time()
@@ -636,8 +637,48 @@ async def ipucu_dongusu(app):
         except Exception as e:
             log.warning(f"İpucu döngüsü hatası: {e}")
 
+async def duyuru_saatlik(app):
+    """Her saat başı bugünkü duyuruları gruplara atar."""
+    while True:
+        await asyncio.sleep(60)  # her dakika kontrol
+        try:
+            now = datetime.now(TR)
+            # sadece saat başında (dakika 0-1 arası) çalışsın
+            if now.minute > 1:
+                continue
+            # aynı saatte tekrar atmasın
+            son = durum.get("duyuru_saat", 0)
+            if time.time() - son < 3500:
+                continue
+            durum["duyuru_saat"] = time.time()
+            durum_kaydet()
+            for cid in list(uyeler.keys()):
+                if int(cid) < 0:
+                    try:
+                        kayitlar = arsiv_liste(int(cid), 1)
+                        if not kayitlar:
+                            continue
+                        satirlar = ["📢 Bugünkü Duyurular"]
+                        dugmeler = []
+                        for i, k in enumerate(kayitlar[:10], 1):
+                            ad = arsiv_baslik(k)
+                            if k.get("link"):
+                                dugmeler.append([InlineKeyboardButton(f"{NUMARALAR[i-1]} {ad}", url=k["link"])])
+                            else:
+                                satirlar.append(f"{NUMARALAR[i-1]} {ad}")
+                        await app.bot.send_message(
+                            int(cid),
+                            "\n".join(satirlar),
+                            reply_markup=InlineKeyboardMarkup(dugmeler) if dugmeler else None
+                        )
+                    except Exception as e:
+                        log.warning(f"Saatlik duyuru hatası ({cid}): {e}")
+        except Exception as e:
+            log.warning(f"Duyuru döngüsü hatası: {e}")
+
 async def baslat(app):
     app.bot_data["ipucu"] = asyncio.create_task(ipucu_dongusu(app))
+    app.bot_data["duyuru"] = asyncio.create_task(duyuru_saatlik(app))
     try:
         await app.bot.set_my_commands([
             BotCommand("yardim", "Komut listesi"), BotCommand("kurallar", "Grup kuralları"),
@@ -1431,8 +1472,62 @@ async def mesaj(update, ctx):
     kt = kisa_token(metin)
     kelimeler = re.findall(r"\w+", kucult(metin))
 
+    # Sahip (Jimin) link attığında otomatik duyuruya kaydet + sabitle
+    if not ozel and sahip_mi(user) and link_var(msg, metin):
+        try:
+            kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
+            if kayit_ozet:
+                kayit_ozet["tarih"] = time.time()
+                arsiv_ekle(cid, kayit_ozet)
+                await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
+                log.info(f"Sahip linki otomatik kaydedildi + pinlendi: {cid}")
+        except Exception as e:
+            log.warning(f"Otomatik duyuru/pin hatası: {e}")
+
     if await komut(update, ctx, metin):
         return
+
+    # "yapay ceza" oylaması
+    if not ozel and "yapay" in kucult(metin) and "ceza" in kucult(metin):
+        hedef_user = None
+        if msg.reply_to_message and msg.reply_to_message.from_user:
+            hedef_user = msg.reply_to_message.from_user
+        else:
+            # @kullanici yazılmış olabilir
+            m = re.search(r"@(\w{4,})", metin)
+            if m:
+                for uid, u in uyeler.get(str(cid), {}).items():
+                    if u["kullanici"].lower() == m.group(1).lower():
+                        class FakeUser:
+                            def __init__(self, uid, ad):
+                                self.id = int(uid)
+                                self.full_name = ad
+                                self.mention_html = lambda: f'<a href="tg://user?id={self.id}">{html.escape(ad)}</a>'
+                        hedef_user = FakeUser(uid, u["ad"])
+                        break
+        if hedef_user and hedef_user.id != ctx.bot.id and hedef_user.id != durum.get("sahip"):
+            try:
+                poll = await ctx.bot.send_poll(
+                    chat_id=cid,
+                    question=f"⚠️ Ceza: {hedef_user.full_name}\n5 dakika susturulsun mu?",
+                    options=["✅ Evet", "❌ Hayır"],
+                    is_anonymous=False,
+                    allows_multiple_answers=False,
+                )
+                # 5 dakika sonra sonucu kontrol et (basit versiyon)
+                async def ceza_sonuc():
+                    await asyncio.sleep(300)
+                    try:
+                        # Poll sonucunu almak için get_poll veya sadece log
+                        log.info(f"Ceza oylaması bitti: {hedef_user.full_name}")
+                    except Exception:
+                        pass
+                t = asyncio.create_task(ceza_sonuc())
+                gorevler.add(t)
+                t.add_done_callback(gorevler.discard)
+            except Exception as e:
+                log.warning(f"Ceza oylaması hatası: {e}")
+            return
 
     if not ozel:
         n = cget(cid, "flood")
