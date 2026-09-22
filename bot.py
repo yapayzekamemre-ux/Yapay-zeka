@@ -34,7 +34,6 @@ NUMARALAR = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "
 LISTE_KISA = {"günlük", "gunluk", "haftalık", "haftalik", "aylık", "aylik", "bugünkü", "bugunku",
               "duyuru", "duyurular", "duyuruları", "duyurulari"}
 
-# ====================== GÜÇLÜ SİSTEM PROMPT ======================
 SISTEM = (
     "Sen bir Telegram grubunun zeki, esprili, samimi ve makaracı asistanısın. "
     "İnsanlarla sıcak ve doğal konuş. Gerekirse hafif küfür de edebilirsin (amk, aq, lan gibi) ama abartma. "
@@ -166,7 +165,6 @@ def ad_bul(cid, uid):
 def mention(cid, uid, ad=None):
     return f'<a href="tg://user?id={uid}">{html.escape(ad or ad_bul(cid, uid))}</a>'
 
-# ---------- YAPAY ZEKA ----------
 def groq_sor(m, sistem):
     r = groq.chat.completions.create(
         model="openai/gpt-oss-120b",
@@ -221,7 +219,6 @@ def sor(mesajlar, ek="", arama=False):
         try:
             cevap = fonk(mesajlar, sistem)
             if cevap:
-                # Sadece aşırı robotik cümleleri temizle, samimiyeti bozma
                 cevap = re.sub(
                     r"(?i)(tabii ki|anladım\.|başka bir konuda yardımcı olabilir miyim|size yardımcı olmaya hazırım\.?)\s*",
                     "", cevap
@@ -251,7 +248,6 @@ def gemini_resim(veri):
     )
     return (r.text or "").strip()
 
-# ---------- FIYAT ----------
 def sayi(x):
     if x is None:
         return "?"
@@ -352,7 +348,6 @@ async def fiyat_gonder(update, ctx, sorgu, miktar=1.0, siki=False):
     await msg.reply_text("\n".join(satirlar) + ("\n😄 " + espri.strip() if espri else ""))
     return True
 
-# ---------- YETKI ----------
 def sahip_mi(user):
     return bool(user) and durum.get("sahip") == user.id
 
@@ -395,7 +390,6 @@ def komut_silici(fonk):
                 pass
     return sar
 
-# ---------- SABIT MESAJ / DUYURU ARSIVI ----------
 def mesaj_linki(chat, mid):
     if chat.username:
         return f"https://t.me/{chat.username}/{mid}"
@@ -542,7 +536,6 @@ async def sabitlendi(update, ctx):
     sabit_onbellek.pop(chat.id, None)
     durum_kaydet()
 
-# ---------- SAHIP ----------
 async def sahip_komut(update, ctx):
     chat = update.effective_chat
     msg = update.effective_message
@@ -604,7 +597,6 @@ async def duyuru_komut(update, ctx):
                 log.warning(f"Duyuru gönderilemedi ({cid}): {e}")
     await msg.reply_text(f"{sayac} gruba gönderildi.")
 
-# ---------- IPUCU ----------
 def ipucu_uret():
     eskiler = " | ".join(durum["liste"][-8:])
     return sor([{"role": "user", "content":
@@ -660,7 +652,6 @@ async def ipucu_komut(update, ctx):
         durum_kaydet()
         await update.effective_message.reply_text(s)
 
-# ---------- MODERASYON ----------
 KUFUR_TAM = {"amk", "aq", "amq", "orospu", "piç", "sik", "sikik", "yarak", "yarrak", "göt", "götveren",
              "gavat", "pezevenk", "ibne", "puşt", "salak", "aptal", "gerizekalı", "şerefsiz", "serefsiz"}
 KUFUR_KOK = ("siktir", "sikeyim", "sikerim", "orospu", "yarrak", "amına", "amina", "ananı", "anani",
@@ -763,7 +754,6 @@ async def ihlal(update, ctx, ad, sil):
             await ctx.bot.send_message(cid, "Susturamadım, yetkim yok. Beni yönetici yapıp üyeleri kısıtlama yetkisi ver.")
     zamanlar.pop(anahtar, None)
 
-# ---------- DOGAL DIL KOMUTLARI ----------
 def kw_var(kw, *kokler):
     return any(k.startswith(kokler) for k in kw)
 
@@ -956,7 +946,6 @@ async def komut(update, ctx, metin):
         await de("Yapamadım (botun yönetici yetkisi eksik olabilir).")
     return True
 
-# ---------- ROSE TARZI KOMUTLAR ----------
 ALIAS = {"ban": "ban", "yasakla": "ban", "unban": "unban", "banac": "unban", "kick": "kick", "at": "kick",
          "mute": "mute", "sustur": "mute", "tmute": "tmute", "unmute": "unmute", "sesac": "unmute",
          "warn": "warn", "uyar": "warn", "unwarn": "unwarn", "uyarisil": "unwarn",
@@ -1325,7 +1314,6 @@ async def genel_komut(update, ctx):
     elif ad == "rapor":
         await rapor_gonder(update, ctx)
 
-# ---------- CAPTCHA / HOSGELDIN ----------
 async def hosgeldin_gonder(ctx, cid, u, baslik):
     if not cget(cid, "hosgeldin"):
         return
@@ -1403,7 +1391,6 @@ async def captcha_buton(update, ctx):
         pass
     await hosgeldin_gonder(ctx, cid, q.from_user, q.message.chat.title)
 
-# ---------- ANA AKIS ----------
 FIYAT_KOK = ("fiyat", "kaç", "kac", "price", "dolar", "değer")
 GRUP_SORU = re.compile(r"(grubun\s+amac|grup\s+ne\s+i[cç]in|ne\s+payla[sş][iı]l|neler\s+payla[sş][iı]l|grupta\s+ne|burada\s+ne\s+(var|yap|konu[sş]))")
 
@@ -1498,7 +1485,6 @@ async def mesaj(update, ctx):
     if not ozel and not cget(cid, "ai"):
         return
 
-    # ========== HAFIZA VE KİŞİLİK GÜÇLENDİRİLDİ ==========
     ek = f"\nŞu an sana yazan kişi: {user.full_name}. Bu kişi {kayit['ilk']} tarihinden beri grupta, {kayit['mesaj']} mesaj yazdı. Ona ismiyle hitap et."
     if sahip_mi(user):
         ek += "\nBu kişi grubun SAHİBİ ve senin patronun (Jimin). Ona karşı çok samimi, sıcak ve itaatkâr ol."
@@ -1517,13 +1503,12 @@ async def mesaj(update, ctx):
     h = gecmis.setdefault(cid, [])
     h.append({"role": "user", "content": f"{user.full_name}: {metin}"})
 
-    # Daha güçlü hafıza (son 12 tur)
     yanit = await asyncio.to_thread(sor, h[-12:], ek, arama_gerek(metin))
     if not yanit:
         yanit = "Şu an biraz yoğunum, birazdan yazarım."
     else:
         h.append({"role": "assistant", "content": yanit})
-    gecmis[cid] = h[-20:]   # Hafızayı biraz daha uzun tutuyoruz
+    gecmis[cid] = h[-20:]
     await msg.reply_text(yanit)
 
 async def fiyat_komut(update, ctx):
