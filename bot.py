@@ -312,18 +312,21 @@ def token_cikar(metin):
         return None
     return s
 
-KISA_FIYAT = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*\$?\s+)?([a-zA-Z][a-zA-Z0-9]{1,9})\s*$")
-ANA_TOKENLER = {"btc", "eth", "sol", "bnb", "xrp", "ton", "doge"}
-SAYI_KELIME = {"tl", "try", "usd", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn", "lira", "dolar"}
+KISA_FIYAT = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*\$?\s+)?([a-zA-Z][a-zA-Z0-9]{1,12})\s*$")
+SAYI_KELIME = {"tl", "try", "usd", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn", "lira", "dolar", "euro", "eur"}
 
 def kisa_token(metin):
-    m = KISA_FIYAT.match(metin)
+    """Herhangi bir token/coin kısa yazımını yakalar. Listeye bağlı değil, canlı arama yapar."""
+    m = KISA_FIYAT.match(metin.strip())
     if m:
         miktar_text = m.group(1)
         token = m.group(2)
         if not token:
             return None
         if token.lower() in SAYI_KELIME:
+            return None
+        # çok kısa veya anlamsız olanları ele
+        if len(token) < 2:
             return None
         try:
             mk = float(miktar_text.replace(",", ".")) if miktar_text else 1.0
@@ -332,8 +335,11 @@ def kisa_token(metin):
         if mk <= 0 or mk > 1e12:
             return None
         return mk, token
+    # sadece token adı yazılmışsa (btc, pepe, sui vs.)
     t = kucult(metin).strip()
-    if t in ANA_TOKENLER:
+    if 2 <= len(t) <= 12 and t.isalpha():
+        if t in SAYI_KELIME:
+            return None
         return 1.0, t
     return None
 
@@ -1557,7 +1563,7 @@ async def mesaj(update, ctx):
             if kw_ in kelimeler:
                 await msg.reply_text(cev)
                 return
-        if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], True):
+        if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
         botun_mesaji = (msg.reply_to_message and msg.reply_to_message.from_user
                         and msg.reply_to_message.from_user.id == ctx.bot.id)
@@ -1569,7 +1575,7 @@ async def mesaj(update, ctx):
         if not cagrildi:
             return
     else:
-        if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], True):
+        if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
 
     await ctx.bot.send_chat_action(cid, "typing")
