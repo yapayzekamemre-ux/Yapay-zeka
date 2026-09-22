@@ -313,16 +313,22 @@ def fiyat_ara(q, siki):
     if ysymbol:
         y = yahoo_fiyat(ysymbol)
         if y:
+            # İsim düzenlemesi
+            ad_map = {"dolar": "Dolar (USD)", "usd": "Dolar (USD)", "euro": "Euro", "eur": "Euro",
+                      "usdt": "USDT", "tether": "USDT"}
+            guzel_ad = ad_map.get(q, q.upper())
+            guzel_sembol = ad_map.get(q, q.upper())
+
             # TRY çifti mi?
             if "TRY" in ysymbol or ysymbol.endswith("=X"):
-                return {"ad": q.upper(), "sembol": q.upper(), "usd": None,
+                return {"ad": guzel_ad, "sembol": guzel_sembol, "usd": None,
                         "try": y["fiyat"], "deg": y["deg"]}
             # USD fiyatı + TRY'ye çevirmek için yaklaşık kur
             try_fiyat = None
             kur = yahoo_fiyat("USDTRY=X")
             if kur:
                 try_fiyat = y["fiyat"] * kur["fiyat"]
-            return {"ad": q.upper(), "sembol": q.upper(), "usd": y["fiyat"],
+            return {"ad": guzel_ad, "sembol": guzel_sembol, "usd": y["fiyat"],
                     "try": try_fiyat, "deg": y["deg"]}
 
     # 2) CoinGecko
@@ -372,7 +378,7 @@ def token_cikar(metin):
     return s
 
 KISA_FIYAT = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*\$?\s+)?([a-zA-Z][a-zA-Z0-9]{1,12})\s*$")
-SAYI_KELIME = {"tl", "try", "usd", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn", "lira", "dolar", "euro", "eur"}
+SAYI_KELIME = {"tl", "try", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn", "lira"}
 
 def kisa_token(metin):
     """Herhangi bir token/coin kısa yazımını yakalar. Listeye bağlı değil, canlı arama yapar."""
