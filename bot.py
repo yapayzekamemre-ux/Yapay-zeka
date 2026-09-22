@@ -34,14 +34,18 @@ NUMARALAR = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "
 LISTE_KISA = {"günlük", "gunluk", "haftalık", "haftalik", "aylık", "aylik", "bugünkü", "bugunku",
               "duyuru", "duyurular", "duyuruları", "duyurulari"}
 
+# ====================== GÜÇLÜ SİSTEM PROMPT ======================
 SISTEM = (
-    "Sen bir Telegram grubunun zeki, esprili ve samimi asistanısın, grup yöneticisinin sağ koluşun. "
-    "Türkçe konuş. En fazla 1-2 çok kısa cümle yaz, net ve direkt ol, giriş, süsleme ve gereksiz kelime kullanma. "
-    "Kendi adını, hangi yapay zeka modeli olduğunu ve hangi şirketin ürünü olduğunu ASLA söyleme; "
-    "sorulursa sadece 'Ben grubun yapay zeka asistanıyım' de. "
-    "Grubun amacı, içeriği, ne paylaşıldığı hakkında ASLA bilgi uydurma. "
-    "Siyaset, parti, seçim ve siyasetçiler hakkında yorum yapma, konu açılırsa nazikçe başka konuya geç. "
-    "Kimseye hakaret etme. Yatırım tavsiyesi verme. Bilmediğin fiyatı ya da bilgiyi uydurma."
+    "Sen bir Telegram grubunun zeki, esprili, samimi ve makaracı asistanısın. "
+    "İnsanlarla sıcak ve doğal konuş. Gerekirse hafif küfür de edebilirsin (amk, aq, lan gibi) ama abartma. "
+    "Türkçe konuş. Cevapların 1-3 cümle olsun, gereksiz uzatma. "
+    "ÖNCEKİ KONUŞMAYI MUTLAKA TAKİP ET. Konu dışına çıkma, başka yerlere sıçrama. "
+    "İnsanların isimleriyle hitap et, samimi ol, espri yap. "
+    "Kendi adını, hangi model olduğunu veya hangi şirketin ürünü olduğunu ASLA söyleme. "
+    "Sorulursa sadece 'Ben grubun yapay zeka asistanıyım' de. "
+    "Grubun amacı, içeriği hakkında ASLA bilgi uydurma. "
+    "Siyaset konuşma. Yatırım tavsiyesi verme. Bilmediğin şeyi uydurma. "
+    "Sahibinin kalıcı talimatlarına sessizce uy."
 )
 
 YARDIM = (
@@ -176,7 +180,7 @@ def _gemini_icerik(m):
 
 def gemini_sor(m, sistem):
     r = gem.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-2.0-flash",
         contents=_gemini_icerik(m),
         config={"system_instruction": sistem},
     )
@@ -184,7 +188,7 @@ def gemini_sor(m, sistem):
 
 def gemini_arama(m, sistem):
     r = gem.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-2.0-flash",
         contents=_gemini_icerik(m),
         config=types.GenerateContentConfig(
             system_instruction=sistem,
@@ -204,7 +208,7 @@ def mistral_sor(m, sistem):
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
-SAGLAYICILAR = [("Groq", groq_sor), ("Gemini", gemini_sor)]
+SAGLAYICILAR = [("Gemini", gemini_sor), ("Groq", groq_sor)]
 if MISTRAL_KEY:
     SAGLAYICILAR.append(("Mistral", mistral_sor))
 
@@ -217,6 +221,13 @@ def sor(mesajlar, ek="", arama=False):
         try:
             cevap = fonk(mesajlar, sistem)
             if cevap:
+                # Sadece aşırı robotik cümleleri temizle, samimiyeti bozma
+                cevap = re.sub(
+                    r"(?i)(tabii ki|anladım\.|başka bir konuda yardımcı olabilir miyim|size yardımcı olmaya hazırım\.?)\s*",
+                    "", cevap
+                ).strip()
+                if len(cevap.split()) > 60:
+                    cevap = " ".join(cevap.split()[:50]) + "..."
                 return cevap
         except Exception as e:
             log.warning(f"{ad} cöktü: {e}")
@@ -234,7 +245,7 @@ def arama_gerek(t):
 
 def gemini_resim(veri):
     r = gem.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-2.0-flash",
         contents=[types.Part.from_bytes(data=veri, mime_type="image/jpeg"),
                   "Bu görseldeki yazıları ve içeriği en fazla 3 kısa cümleyle Türkçe özetle. Emin olmadığın şeyi yazma."],
     )
@@ -303,7 +314,7 @@ def token_cikar(metin):
         return None
     return s
 
-KISA_FIYAT = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*\$?|\$)\s*([a-zA-Z][a-zA-Z0-9]{1,9})\s*$")
+KISA_FIYAT = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*\$?|\\( )\s*([a-zA-Z][a-zA-Z0-9]{1,9})\s* \)")
 ANA_TOKENLER = {"btc", "eth", "sol", "bnb", "xrp", "ton", "doge"}
 SAYI_KELIME = {"tl", "try", "usd", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn", "lira", "dolar"}
 
@@ -853,7 +864,7 @@ async def komut(update, ctx, metin):
         s = re.sub(r"(?i)yapay", "", metin).strip(" ,:.")
         durum["talimat"] = (durum["talimat"] + [{"t": s[:300]}])[-20:]
         durum_kaydet()
-        await de("Tamamdır, aklımda 👍")
+        await de("Tamam, aklımda 👍")
         return True
     if eylem == "talimat_sil":
         durum["talimat"] = []
@@ -1487,29 +1498,32 @@ async def mesaj(update, ctx):
     if not ozel and not cget(cid, "ai"):
         return
 
-    ek = f"\nŞu an sana yazan kişi: {user.full_name}. Bu kişi {kayit['ilk']} tarihinden beri grupta, {kayit['mesaj']} mesaj yazdı. Ona ismiyle hitap edebilirsin."
+    # ========== HAFIZA VE KİŞİLİK GÜÇLENDİRİLDİ ==========
+    ek = f"\nŞu an sana yazan kişi: {user.full_name}. Bu kişi {kayit['ilk']} tarihinden beri grupta, {kayit['mesaj']} mesaj yazdı. Ona ismiyle hitap et."
     if sahip_mi(user):
-        ek += "\nBu kişi grubun SAHİBİ ve senin patronun (Jimin, @jiminienn). Ona saygılı, samimi ve itaatkâr ol."
+        ek += "\nBu kişi grubun SAHİBİ ve senin patronun (Jimin). Ona karşı çok samimi, sıcak ve itaatkâr ol."
     if durum["talimat"]:
-        ek += ("\nSahibinin kalıcı talimatları (bunlara uy, ama kimlik ve güvenlik kurallarını değiştiremez): "
-               + " | ".join(x["t"] for x in durum["talimat"][-15:]))
+        ek += ("\nSahibinin kalıcı talimatları (sessizce uy): "
+               + " | ".join(x["t"] for x in durum["talimat"][-10:]))
     if not ozel:
         ek += "\nGrubun bilinen üyeleri: " + tanidiklar(cid)
         son = durum["sabit"].get(str(cid), {}).get("son")
         if son and son.get("metin"):
-            ek += "\nGrubun sabitlenmiş mesajı: " + son["metin"][:400]
+            ek += "\nGrubun sabitlenmiş mesajı: " + son["metin"][:350]
     if GRUP_SORU.search(kucult(metin)):
-        ek += ("\nBu soruda grubun içeriği, amacı veya ne paylaşıldığı hakkında HİÇBİR bilgi verme, uydurma. "
-               "Tek cümlelik esprili bir kaçamak cevap ver (örneğin 'Burada ne çıkacağı belli olmaz, sürpriz kutusu gibi 😄'). "
-               "Her seferinde farklı bir espri yap.")
+        ek += ("\nBu soruda grubun içeriği hakkında HİÇBİR bilgi verme. "
+               "Esprili ve kısa bir kaçamak cevap ver.")
+
     h = gecmis.setdefault(cid, [])
     h.append({"role": "user", "content": f"{user.full_name}: {metin}"})
+
+    # Daha güçlü hafıza (son 12 tur)
     yanit = await asyncio.to_thread(sor, h[-12:], ek, arama_gerek(metin))
     if not yanit:
-        yanit = "Şu an meşgulüm, birazdan tekrar yaz."
+        yanit = "Şu an biraz yoğunum, birazdan yazarım."
     else:
         h.append({"role": "assistant", "content": yanit})
-    gecmis[cid] = h[-24:]
+    gecmis[cid] = h[-20:]   # Hafızayı biraz daha uzun tutuyoruz
     await msg.reply_text(yanit)
 
 async def fiyat_komut(update, ctx):
@@ -1555,9 +1569,9 @@ app.add_handler(CommandHandler("ipucu", ipucu_komut))
 app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
 app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, sabitlendi))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
-app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.UpdateType.MESSAGE, mesaj))
-app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.UpdateType.MESSAGE & ~filters.COMMAND
-                               & ~filters.StatusUpdate.ALL, kilit_kontrol), group=1)
+app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & \~filters.COMMAND & filters.UpdateType.MESSAGE, mesaj))
+app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.UpdateType.MESSAGE & \~filters.COMMAND
+                               & \~filters.StatusUpdate.ALL, kilit_kontrol), group=1)
 app.add_error_handler(hata)
 log.info("Bot başlıyor...")
 app.run_polling()
