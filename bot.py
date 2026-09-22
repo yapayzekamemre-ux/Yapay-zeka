@@ -1,4 +1,3 @@
-cat > bot.py << 'EOF'
 import asyncio, html, json, logging, os, random, re, threading, time, requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from collections import deque
@@ -1562,5 +1561,3 @@ app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.UpdateType.MESS
 app.add_error_handler(hata)
 log.info("Bot başlıyor...")
 app.run_polling()
-EOF
-echo "Dosya hazir."
