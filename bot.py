@@ -269,7 +269,63 @@ def fiyat_bul(sorgu, siki=False):
     onbellek[(q, siki)] = (time.time(), veri)
     return veri
 
+def yahoo_fiyat(sembol):
+    """Yahoo Finance'ten fiyat çeker (BTC-USD, ETH-USD, USDT-TRY vs.)."""
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sembol}"
+        r = requests.get(url, params={"interval": "1d", "range": "2d"}, timeout=8,
+                         headers={"User-Agent": "Mozilla/5.0"}).json()
+        result = r.get("chart", {}).get("result")
+        if not result:
+            return None
+        meta = result[0].get("meta", {})
+        fiyat = meta.get("regularMarketPrice") or meta.get("previousClose")
+        onceki = meta.get("chartPreviousClose") or meta.get("previousClose")
+        if fiyat is None:
+            return None
+        deg = None
+        if onceki and onceki > 0:
+            deg = ((fiyat - onceki) / onceki) * 100
+        return {"fiyat": float(fiyat), "deg": deg}
+    except Exception as e:
+        log.warning(f"Yahoo hatası ({sembol}): {e}")
+        return None
+
 def fiyat_ara(q, siki):
+    q = q.lower().strip()
+
+    # 1) Yahoo Finance dene (hızlı ve stabil)
+    yahoo_map = {
+        "btc": "BTC-USD", "bitcoin": "BTC-USD",
+        "eth": "ETH-USD", "ethereum": "ETH-USD",
+        "sol": "SOL-USD", "bnb": "BNB-USD",
+        "xrp": "XRP-USD", "doge": "DOGE-USD",
+        "ton": "TON-USD", "ada": "ADA-USD",
+        "avax": "AVAX-USD", "dot": "DOT-USD",
+        "link": "LINK-USD", "matic": "MATIC-USD",
+        "near": "NEAR-USD", "sui": "SUI-USD",
+        "pepe": "PEPE-USD", "shib": "SHIB-USD",
+        "usdt": "USDT-TRY", "tether": "USDT-TRY",
+        "usdc": "USDC-USD", "dolar": "USDTRY=X",
+        "usd": "USDTRY=X", "euro": "EURTRY=X", "eur": "EURTRY=X",
+    }
+    ysymbol = yahoo_map.get(q)
+    if ysymbol:
+        y = yahoo_fiyat(ysymbol)
+        if y:
+            # TRY çifti mi?
+            if "TRY" in ysymbol or ysymbol.endswith("=X"):
+                return {"ad": q.upper(), "sembol": q.upper(), "usd": None,
+                        "try": y["fiyat"], "deg": y["deg"]}
+            # USD fiyatı + TRY'ye çevirmek için yaklaşık kur
+            try_fiyat = None
+            kur = yahoo_fiyat("USDTRY=X")
+            if kur:
+                try_fiyat = y["fiyat"] * kur["fiyat"]
+            return {"ad": q.upper(), "sembol": q.upper(), "usd": y["fiyat"],
+                    "try": try_fiyat, "deg": y["deg"]}
+
+    # 2) CoinGecko
     try:
         r = requests.get("https://api.coingecko.com/api/v3/search", params={"query": q}, timeout=10).json()
         coinler = r.get("coins", [])
@@ -286,8 +342,11 @@ def fiyat_ara(q, siki):
                         "try": d.get("try"), "deg": d.get("usd_24h_change")}
     except Exception as e:
         log.warning(f"CoinGecko hatası: {e}")
+
     if siki:
         return None
+
+    # 3) DexScreener
     try:
         r = requests.get("https://api.dexscreener.com/latest/dex/search", params={"q": q}, timeout=10).json()
         pairs = [p for p in (r.get("pairs") or []) if p.get("priceUsd")
@@ -348,16 +407,37 @@ async def fiyat_gonder(update, ctx, sorgu, miktar=1.0, siki=False):
     veri = await asyncio.to_thread(fiyat_bul, sorgu, siki)
     if not veri:
         return False
-    satirlar = [f"💰 {sade(miktar)} {veri['ad']} ({veri['sembol']}): ${sayi(veri['usd'] * miktar)}"]
-    if veri["try"]:
-        satirlar.append(f"🇹🇷 ₺{sayi(veri['try'] * miktar)}")
-    if veri["deg"] is not None:
-        simge = "📈" if veri["deg"] >= 0 else "📉"
-        satirlar.append(f"{simge} 24s: %{veri['deg']:+.2f}")
+
+    # Ekrandaki format gibi
+    baslik = f"⚠️ {sade(miktar)} {veri['sembol']}:"
+    if veri.get("try"):
+        fiyat_satir = f"✅ ₺{sayi(veri['try'] * miktar)}"
+    elif veri.get("usd"):
+        fiyat_satir = f"✅ ${sayi(veri['usd'] * miktar)}"
+    else:
+        return False
+
+    deg_text = ""
+    if veri.get("deg") is not None:
+        yon = "yükseldi" if veri["deg"] >= 0 else "düştü"
+        deg_text = f"%{abs(veri['deg']):.2f} {yon}"
+
     espri = await asyncio.to_thread(sor, [{"role": "user", "content":
-        f"{veri['ad']} fiyatı şu an ${sayi(veri['usd'])}, 24 saatte %{veri['deg'] or 0:+.2f} değişti. "
-        f"Buna tek cümlelik, kısa ve komik bir espri yap. Yatırım tavsiyesi verme."}])
-    await msg.reply_text("\n".join(satirlar) + ("\n😄 " + espri.strip() if espri else ""))
+        f"{veri['ad']} ({veri['sembol']}) fiyatı şu an "
+        f"{'₺' + sayi(veri['try']) if veri.get('try') else '$' + sayi(veri.get('usd'))}, "
+        f"24 saatte %{veri['deg'] or 0:+.2f} değişti. "
+        f"Buna çok kısa, esprili ve samimi bir cümle yaz. Yatırım tavsiyesi verme."}])
+
+    satirlar = [baslik, fiyat_satir]
+    if deg_text or espri:
+        ek = "➖ "
+        if deg_text:
+            ek += deg_text + " "
+        if espri:
+            ek += espri.strip()
+        satirlar.append(ek.strip())
+
+    await msg.reply_text("\n".join(satirlar))
     return True
 
 def sahip_mi(user):
