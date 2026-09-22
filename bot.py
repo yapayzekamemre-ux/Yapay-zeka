@@ -38,6 +38,7 @@ SISTEM = (
     "Sen bir Telegram grubunun zeki, esprili, samimi ve makaracı asistanısın. "
     "İnsanlarla sıcak ve doğal konuş. Gerekirse hafif küfür de edebilirsin (amk, aq, lan gibi) ama abartma. "
     "Türkçe konuş. Cevapların 1-3 cümle olsun, gereksiz uzatma. "
+    "Cümleleri asla yarım bırakma, her cümleyi düzgün bitir. "
     "ÖNCEKİ KONUŞMAYI MUTLAKA TAKİP ET. Konu dışına çıkma, başka yerlere sıçrama. "
     "İnsanların isimleriyle hitap et, samimi ol, espri yap. "
     "Kendi adını, hangi model olduğunu veya hangi şirketin ürünü olduğunu ASLA söyleme. "
@@ -604,9 +605,10 @@ async def duyuru_komut(update, ctx):
 def ipucu_uret():
     eskiler = " | ".join(durum["liste"][-8:])
     return sor([{"role": "user", "content":
-        "Kripto ve airdrop meraklısı bir Telegram grubu için 💡 ile başlayan, en fazla 2 kısa cümlelik, "
+        "Kripto ve airdrop meraklısı bir Telegram grubu için 💡 ile başlayan, en fazla 2 kısa ve TAM cümlelik, "
         "doğru ve yeni başlayanlara faydalı tek bir bilgi yaz (güvenlik, terimler, airdrop dolandırıcılıkları, "
-        "cüzdan kullanımı gibi). Emin olmadığın bilgiyi yazma. Yatırım tavsiyesi ve fiyat tahmini verme. "
+        "cüzdan kullanımı gibi). Cümleleri yarım bırakma, her cümleyi nokta ile bitir. "
+        "Emin olmadığın bilgiyi yazma. Yatırım tavsiyesi ve fiyat tahmini verme. "
         "Şunları tekrar etme: " + eskiler}])
 
 async def ipucu_gonder(app):
