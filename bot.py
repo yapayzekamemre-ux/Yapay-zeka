@@ -313,6 +313,7 @@ def token_cikar(metin):
 KISA_FIYAT = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*\$?|\\( )\s*([a-zA-Z][a-zA-Z0-9]{1,9})\s* \)")
 ANA_TOKENLER = {"btc", "eth", "sol", "bnb", "xrp", "ton", "doge"}
 SAYI_KELIME = {"tl", "try", "usd", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn", "lira", "dolar"}
+
 def kisa_token(metin):
     m = KISA_FIYAT.match(metin)
     if m:
