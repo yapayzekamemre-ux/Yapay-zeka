@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 from groq import Groq
 from google import genai
 from google.genai import types
-from telegram import ChatPermissions
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, PollHandler, filters
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_KEY = os.environ["GROQ_KEY"]
@@ -30,7 +30,7 @@ SAHIP_KULLANICI = "jiminienn"
 TR = timezone(timedelta(hours=3))
 CEZA_MIN_OY = 6
 CEZA_MUTE_DK = 5
-CEZA_SURE_SN = 120  # oylama max süresi
+CEZA_SURE_SN = 120
 
 SISTEM = (
     "Sen bir Telegram grubunun zeki, esprili, samimi ve makaracı asistanısın. "
@@ -53,8 +53,8 @@ groq = Groq(api_key=GROQ_KEY, timeout=30)
 gem = genai.Client(api_key=GEMINI_KEY)
 gecmis = []
 gorevler = set()
-# aktif cezalar: poll_id -> {cid, hedef_id, hedef_ad, baslatan, mid, ...}
 aktif_ceza = {}
+onbellek = {}
 
 DURUM = "durum.json"
 try:
@@ -110,6 +110,10 @@ async def sustur(ctx, chat_id, user_id, dakika):
         permissions=ChatPermissions(can_send_messages=False),
         until_date=until,
     )
+
+# ============================================================
+# AI
+# ============================================================
 
 def groq_sor(m, sistem):
     r = groq.chat.completions.create(
@@ -193,6 +197,199 @@ def saat_soruldu_mu(t):
         return False
     return True
 
+# ============================================================
+# FİYAT (Yahoo Finance + CoinGecko)
+# ============================================================
+
+def sayi(x):
+    if x is None:
+        return "?"
+    if x >= 1:
+        return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{x:.8f}".rstrip("0").rstrip(".").replace(".", ",")
+
+def sade(x):
+    s = f"{x:.8f}".rstrip("0").rstrip(".")
+    return s.replace(".", ",")
+
+def yahoo_fiyat(sembol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sembol}"
+        r = requests.get(url, params={"interval": "1d", "range": "2d"}, timeout=8,
+                         headers={"User-Agent": "Mozilla/5.0"}).json()
+        result = r.get("chart", {}).get("result")
+        if not result:
+            return None
+        meta = result[0].get("meta", {})
+        fiyat = meta.get("regularMarketPrice") or meta.get("previousClose")
+        onceki = meta.get("chartPreviousClose") or meta.get("previousClose")
+        if fiyat is None:
+            return None
+        deg = None
+        if onceki and onceki > 0:
+            deg = ((fiyat - onceki) / onceki) * 100
+        return {"fiyat": float(fiyat), "deg": deg}
+    except Exception as e:
+        log.warning(f"Yahoo hatası ({sembol}): {e}")
+        return None
+
+def fiyat_ara(q):
+    q = q.lower().strip()
+
+    yahoo_map = {
+        "btc": "BTC-USD", "bitcoin": "BTC-USD",
+        "eth": "ETH-USD", "ethereum": "ETH-USD",
+        "sol": "SOL-USD", "bnb": "BNB-USD",
+        "xrp": "XRP-USD", "doge": "DOGE-USD",
+        "ton": "TON-USD", "ada": "ADA-USD",
+        "avax": "AVAX-USD", "dot": "DOT-USD",
+        "link": "LINK-USD", "matic": "MATIC-USD",
+        "near": "NEAR-USD", "sui": "SUI-USD",
+        "pepe": "PEPE-USD", "shib": "SHIB-USD",
+        "usdt": "USDT-TRY", "tether": "USDT-TRY",
+        "usdc": "USDC-USD",
+        "dolar": "USDTRY=X", "usd": "USDTRY=X",
+        "euro": "EURTRY=X", "eur": "EURTRY=X",
+        # Türk hisseleri (BIST)
+        "thyao": "THYAO.IS", "thy": "THYAO.IS",
+        "garanti": "GARAN.IS", "garan": "GARAN.IS",
+        "akbank": "AKBNK.IS", "akbnk": "AKBNK.IS",
+        "bipas": "BIMAS.IS", "bimas": "BIMAS.IS",
+        "aselsan": "ASELS.IS", "asels": "ASELS.IS",
+        "eregl": "EREGL.IS", "eregli": "EREGL.IS",
+        "sahol": "SAHOL.IS", "kchol": "KCHOL.IS",
+        "tuprs": "TUPRS.IS", "sise": "SISE.IS",
+        "tcelt": "TCELL.IS", "tcell": "TCELL.IS",
+        "ykbnk": "YKBNK.IS", "isctr": "ISCTR.IS",
+        "froto": "FROTO.IS", "toaso": "TOASO.IS",
+    }
+    ysymbol = yahoo_map.get(q)
+    if ysymbol:
+        y = yahoo_fiyat(ysymbol)
+        if y:
+            ad_map = {
+                "dolar": "Dolar (USD)", "usd": "Dolar (USD)",
+                "euro": "Euro", "eur": "Euro",
+                "usdt": "USDT", "tether": "USDT",
+            }
+            guzel = ad_map.get(q, q.upper())
+            # TRY çifti veya BIST hissesi
+            if "TRY" in ysymbol or ysymbol.endswith("=X") or ysymbol.endswith(".IS"):
+                return {"ad": guzel, "sembol": guzel, "usd": None, "try": y["fiyat"], "deg": y["deg"]}
+            try_fiyat = None
+            kur = yahoo_fiyat("USDTRY=X")
+            if kur:
+                try_fiyat = y["fiyat"] * kur["fiyat"]
+            return {"ad": guzel, "sembol": guzel, "usd": y["fiyat"], "try": try_fiyat, "deg": y["deg"]}
+
+    # CoinGecko
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/search", params={"query": q}, timeout=10).json()
+        coinler = r.get("coins", [])
+        tam = [c for c in coinler if c["symbol"].lower() == q or c["name"].lower() == q]
+        aday = tam or coinler
+        if aday:
+            sec = min(aday, key=lambda c: c.get("market_cap_rank") or 10**9)
+            p = requests.get("https://api.coingecko.com/api/v3/simple/price",
+                             params={"ids": sec["id"], "vs_currencies": "usd,try",
+                                     "include_24hr_change": "true"}, timeout=10).json()
+            d = p.get(sec["id"], {})
+            if d.get("usd") is not None:
+                return {"ad": sec["name"], "sembol": sec["symbol"].upper(),
+                        "usd": d.get("usd"), "try": d.get("try"), "deg": d.get("usd_24h_change")}
+    except Exception as e:
+        log.warning(f"CoinGecko hatası: {e}")
+
+    # DexScreener
+    try:
+        r = requests.get("https://api.dexscreener.com/latest/dex/search", params={"q": q}, timeout=10).json()
+        pairs = [p for p in (r.get("pairs") or []) if p.get("priceUsd")
+                 and p["baseToken"]["symbol"].lower() == q]
+        if pairs:
+            p = max(pairs, key=lambda x: (x.get("liquidity") or {}).get("usd") or 0)
+            return {"ad": p["baseToken"]["name"], "sembol": p["baseToken"]["symbol"].upper(),
+                    "usd": float(p["priceUsd"]), "try": None,
+                    "deg": (p.get("priceChange") or {}).get("h24")}
+    except Exception as e:
+        log.warning(f"DexScreener hatası: {e}")
+    return None
+
+def fiyat_bul(sorgu):
+    q = sorgu.strip().lower()
+    an = onbellek.get(q)
+    if an and time.time() - an[0] < 30:
+        return an[1]
+    veri = fiyat_ara(q)
+    onbellek[q] = (time.time(), veri)
+    return veri
+
+KISA_FIYAT = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*\$?\s+)?([a-zA-Z][a-zA-Z0-9]{1,12})\s*$")
+SAYI_KELIME = {"tl", "try", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn", "lira"}
+
+def kisa_token(metin):
+    m = KISA_FIYAT.match(metin.strip())
+    if m:
+        miktar_text = m.group(1)
+        token = m.group(2)
+        if not token or token.lower() in SAYI_KELIME or len(token) < 2:
+            return None
+        try:
+            mk = float(miktar_text.replace(",", ".")) if miktar_text else 1.0
+        except Exception:
+            return None
+        if mk <= 0 or mk > 1e12:
+            return None
+        return mk, token
+    t = kucult(metin).strip()
+    if 2 <= len(t) <= 12 and t.isalpha() and t not in SAYI_KELIME:
+        return 1.0, t
+    return None
+
+async def fiyat_gonder(update, ctx, sorgu, miktar=1.0):
+    msg = update.effective_message
+    user = update.effective_user
+    veri = await asyncio.to_thread(fiyat_bul, sorgu)
+    if not veri:
+        return False
+
+    baslik = f"⚠️ {sade(miktar)} {veri['sembol']}:"
+    if veri.get("try"):
+        fiyat_satir = f"✅ ₺{sayi(veri['try'] * miktar)}"
+    elif veri.get("usd"):
+        fiyat_satir = f"✅ ${sayi(veri['usd'] * miktar)}"
+    else:
+        return False
+
+    deg_text = ""
+    if veri.get("deg") is not None:
+        yon = "yükseldi" if veri["deg"] >= 0 else "düştü"
+        deg_text = f"%{abs(veri['deg']):.2f} {yon}"
+
+    espri = await asyncio.to_thread(sor, [{"role": "user", "content":
+        f"{veri['ad']} ({veri['sembol']}) fiyatı şu an "
+        f"{'₺' + sayi(veri['try']) if veri.get('try') else '$' + sayi(veri.get('usd'))}, "
+        f"24 saatte %{veri['deg'] or 0:+.2f} değişti. "
+        f"Buna çok kısa, esprili, samimi bir cümle yaz. Yatırım tavsiyesi verme."}])
+
+    # Ekrandaki format
+    satirlar = []
+    if user:
+        satirlar.append(f"<b>{html.escape(user.full_name)}</b>")
+        satirlar.append(html.escape(msg.text or sorgu))
+        satirlar.append("")
+    satirlar.append(baslik)
+    satirlar.append(fiyat_satir)
+    if deg_text or espri:
+        ek = "➖ "
+        if deg_text:
+            ek += deg_text + " "
+        if espri:
+            ek += espri.strip()
+        satirlar.append(ek.strip())
+
+    await msg.reply_text("\n".join(satirlar), parse_mode="HTML")
+    return True
+
 async def gruba_gonder(ctx, metin):
     gruplar = durum.get("gruplar") or {}
     if not gruplar:
@@ -252,50 +449,87 @@ async def hosgeldin(update, ctx):
             log.warning(f"Hoşgeldin gönderilemedi: {e}")
 
 # ============================================================
-# CEZA OYLAMASI
+# CEZA OYLAMASI (BUTONLU)
 # ============================================================
 
-async def ceza_bitir(ctx, poll_id):
-    bil = aktif_ceza.pop(poll_id, None)
+def ceza_klavye(ceza_id, evet, hayir):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"✅ Evet ({evet})", callback_data=f"ceza:{ceza_id}:evet"),
+        InlineKeyboardButton(f"❌ Hayır ({hayir})", callback_data=f"ceza:{ceza_id}:hayir"),
+    ]])
+
+def ceza_metin(bil, evet, hayir, ekstra=""):
+    return (
+        f"⚠️ Ceza <b>{html.escape(bil['hedef_ad'])}</b>\n"
+        f"🚫 Başlatan <b>{html.escape(bil['baslatan_ad'])}</b>\n"
+        f"✅ Evet çoğunluk → {CEZA_MUTE_DK} Dk Mesaj Atmasını Kapat • Min {CEZA_MIN_OY} Oy\n"
+        f"📊 Evet: {evet} | Hayır: {hayir}"
+        + (f"\n{ekstra}" if ekstra else "")
+    )
+
+async def ceza_geri_sayim_sil(ctx, cid, mid, sonuc_metin, sn=5):
+    """Sonuç mesajında 5..1 geri sayıp sil."""
+    try:
+        for i in range(sn, 0, -1):
+            try:
+                await ctx.bot.edit_message_text(
+                    chat_id=cid, message_id=mid,
+                    text=f"{sonuc_metin}\n\n⏳ {i} saniye sonra kaybolacak...",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+        try:
+            await ctx.bot.delete_message(cid, mid)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+async def ceza_bitir(ctx, ceza_id):
+    bil = aktif_ceza.pop(ceza_id, None)
     if not bil:
         return
     cid = bil["cid"]
-    try:
-        # Poll'u durdur ve sonucu al
-        poll = await ctx.bot.stop_poll(cid, bil["mid"])
-        evet = poll.options[0].voter_count if poll.options else 0
-        hayir = poll.options[1].voter_count if len(poll.options) > 1 else 0
-        toplam = evet + hayir
+    mid = bil["mid"]
+    evet = len(bil["evet"])
+    hayir = len(bil["hayir"])
+    toplam = evet + hayir
 
-        if toplam >= CEZA_MIN_OY and evet > hayir:
-            try:
-                await sustur(ctx, cid, bil["hedef_id"], CEZA_MUTE_DK)
-                sonuc = (
-                    f"✅ Oylama bitti\n"
-                    f"⚠️ {html.escape(bil['hedef_ad'])} {CEZA_MUTE_DK} dk susturuldu\n"
-                    f"📊 Evet: {evet} | Hayır: {hayir}"
-                )
-            except Exception as e:
-                log.warning(f"Ceza susturma hatası: {e}")
-                sonuc = f"❌ Susturulamadı (yetki eksik olabilir)\n📊 Evet: {evet} | Hayır: {hayir}"
-        else:
-            sonuc = (
-                f"❌ Oylama bitti — ceza uygulanmadı\n"
-                f"📊 Evet: {evet} | Hayır: {hayir} (min {CEZA_MIN_OY} oy, çoğunluk Evet gerekli)"
-            )
-
-        m = await ctx.bot.send_message(cid, sonuc, parse_mode="HTML")
-        t = asyncio.create_task(mesaj_sil_gecikmeli(ctx, cid, m.message_id, 5))
-        gorevler.add(t)
-        t.add_done_callback(gorevler.discard)
-
-        # Oylama mesajını da sil
+    if toplam >= CEZA_MIN_OY and evet > hayir:
         try:
-            await ctx.bot.delete_message(cid, bil["mid"])
-        except Exception:
-            pass
-    except Exception as e:
-        log.warning(f"Ceza bitirme hatası: {e}")
+            await sustur(ctx, cid, bil["hedef_id"], CEZA_MUTE_DK)
+            sonuc = (
+                f"✅ Oylama bitti\n"
+                f"⚠️ {html.escape(bil['hedef_ad'])} {CEZA_MUTE_DK} dk susturuldu\n"
+                f"📊 Evet: {evet} | Hayır: {hayir}"
+            )
+        except Exception as e:
+            log.warning(f"Ceza susturma hatası: {e}")
+            sonuc = f"❌ Susturulamadı (yetki eksik olabilir)\n📊 Evet: {evet} | Hayır: {hayir}"
+    else:
+        sonuc = (
+            f"❌ Oylama bitti — ceza uygulanmadı\n"
+            f"📊 Evet: {evet} | Hayır: {hayir} (min {CEZA_MIN_OY} oy, çoğunluk Evet gerekli)"
+        )
+
+    try:
+        await ctx.bot.edit_message_text(
+            chat_id=cid, message_id=mid,
+            text=sonuc, parse_mode="HTML",
+        )
+    except Exception:
+        try:
+            m = await ctx.bot.send_message(cid, sonuc, parse_mode="HTML")
+            mid = m.message_id
+        except Exception as e:
+            log.warning(f"Ceza sonuç gönderilemedi: {e}")
+            return
+
+    t = asyncio.create_task(ceza_geri_sayim_sil(ctx, cid, mid, sonuc, 5))
+    gorevler.add(t)
+    t.add_done_callback(gorevler.discard)
 
 async def ceza_baslat(update, ctx, hedef):
     msg = update.effective_message
@@ -305,56 +539,83 @@ async def ceza_baslat(update, ctx, hedef):
     if hedef.id == ctx.bot.id or hedef.id == durum.get("sahip"):
         await msg.reply_text("Buna ceza veremem 😄")
         return
-
-    # Aynı kişiye zaten aktif oylama var mı
     for b in aktif_ceza.values():
         if b["cid"] == chat.id and b["hedef_id"] == hedef.id:
             await msg.reply_text("Bu kişi için zaten oylama var.")
             return
 
-    soru = (
-        f"⚠️ Ceza @{hedef.username or hedef.full_name}\n"
-        f"🚫 Başlatan @{baslatan.username or baslatan.full_name}\n"
-        f"✅ Evet çoğunluk → {CEZA_MUTE_DK} Dk Mesaj Atmasını Kapat • Min {CEZA_MIN_OY} Oy"
-    )
+    ceza_id = f"{chat.id}_{hedef.id}_{int(time.time())}"
+    bil = {
+        "cid": chat.id,
+        "mid": None,
+        "hedef_id": hedef.id,
+        "hedef_ad": hedef.full_name,
+        "baslatan": baslatan.id,
+        "baslatan_ad": baslatan.full_name,
+        "evet": set(),
+        "hayir": set(),
+        "baslangic": time.time(),
+    }
     try:
-        poll_msg = await ctx.bot.send_poll(
-            chat_id=chat.id,
-            question=soru[:300],
-            options=["✅ Evet", "❌ Hayır"],
-            is_anonymous=False,
-            allows_multiple_answers=False,
+        m = await ctx.bot.send_message(
+            chat.id,
+            ceza_metin(bil, 0, 0),
+            parse_mode="HTML",
+            reply_markup=ceza_klavye(ceza_id, 0, 0),
         )
-        aktif_ceza[poll_msg.poll.id] = {
-            "cid": chat.id,
-            "mid": poll_msg.message_id,
-            "hedef_id": hedef.id,
-            "hedef_ad": hedef.full_name,
-            "baslatan": baslatan.id,
-            "baslangic": time.time(),
-        }
-        # Süre dolunca bitir
-        async def zamanlayici(pid):
+        bil["mid"] = m.message_id
+        aktif_ceza[ceza_id] = bil
+
+        async def zamanlayici(cid_):
             await asyncio.sleep(CEZA_SURE_SN)
-            if pid in aktif_ceza:
-                await ceza_bitir(ctx, pid)
-        t = asyncio.create_task(zamanlayici(poll_msg.poll.id))
+            if cid_ in aktif_ceza:
+                await ceza_bitir(ctx, cid_)
+        t = asyncio.create_task(zamanlayici(ceza_id))
         gorevler.add(t)
         t.add_done_callback(gorevler.discard)
     except Exception as e:
         log.warning(f"Ceza oylaması başlatılamadı: {e}")
-        await msg.reply_text("Oylama başlatılamadı (yetki gerekebilir).")
+        await msg.reply_text("Oylama başlatılamadı.")
 
-async def poll_guncelle(update, ctx):
-    """Oy gelince min oy sayısına ulaştıysa erken bitir."""
-    poll = update.poll
-    if not poll or poll.id not in aktif_ceza:
+async def ceza_buton(update, ctx):
+    q = update.callback_query
+    if not q or not q.data or not q.data.startswith("ceza:"):
         return
-    if poll.is_closed:
+    try:
+        _, ceza_id, oy = q.data.split(":", 2)
+    except Exception:
+        await q.answer()
         return
-    toplam = sum(o.voter_count for o in poll.options)
-    if toplam >= CEZA_MIN_OY:
-        await ceza_bitir(ctx, poll.id)
+
+    bil = aktif_ceza.get(ceza_id)
+    if not bil:
+        await q.answer("Oylama bitti.", show_alert=True)
+        return
+
+    uid = q.from_user.id
+    # Aynı kişi tekrar oy veremesin; oyunu değiştirebilsin
+    bil["evet"].discard(uid)
+    bil["hayir"].discard(uid)
+    if oy == "evet":
+        bil["evet"].add(uid)
+        await q.answer("Evet oyu verildi ✅")
+    else:
+        bil["hayir"].add(uid)
+        await q.answer("Hayır oyu verildi ❌")
+
+    evet = len(bil["evet"])
+    hayir = len(bil["hayir"])
+    try:
+        await q.edit_message_text(
+            ceza_metin(bil, evet, hayir),
+            parse_mode="HTML",
+            reply_markup=ceza_klavye(ceza_id, evet, hayir),
+        )
+    except Exception:
+        pass
+
+    if evet + hayir >= CEZA_MIN_OY:
+        await ceza_bitir(ctx, ceza_id)
 
 # ============================================================
 # ANA MESAJ
@@ -385,24 +646,24 @@ async def mesaj(update, ctx):
         await msg.reply_text("Tamam, aklımda 👍")
         return
 
-    # CEZA OYLAMASI (grupta)
+    # FİYAT — kısa yazım (1 usdt, btc, 1 dolar, thyao ...)
+    kt = kisa_token(metin)
+    if kt:
+        if await fiyat_gonder(update, ctx, kt[1], kt[0]):
+            return
+
+    # CEZA
     if not ozel and "yapay" in t and "ceza" in t:
         hedef = None
         if msg.reply_to_message and msg.reply_to_message.from_user:
             hedef = msg.reply_to_message.from_user
-        else:
-            m = re.search(r"@(\w{4,})", metin)
-            if m:
-                # sadece username ile bulamayız kolayca, yanıt şart
-                await msg.reply_text("Cezalandırılacak kişiye yanıt vererek yaz: yapay ceza")
-                return
         if hedef:
             await ceza_baslat(update, ctx, hedef)
             return
         await msg.reply_text("Cezalandırılacak kişiye yanıt vererek yaz: yapay ceza")
         return
 
-    # Karşılama mesajı ayarla (özelde)
+    # Karşılama ayarla
     if ozel and sahip_mi(user):
         if any(x in t for x in ("karşılama", "karsilama", "hosgeldin", "hoşgeldin", "welcome")):
             kaynak = None
@@ -492,7 +753,7 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
 app.add_handler(CommandHandler("sifirla", sifirla))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
-app.add_handler(PollHandler(poll_guncelle))
+app.add_handler(CallbackQueryHandler(ceza_buton, pattern=r"^ceza:"))
 app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & filters.UpdateType.MESSAGE, mesaj))
 app.add_error_handler(hata)
 
