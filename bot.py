@@ -61,7 +61,7 @@ YARDIM = (
     "/kuralayarla metin /kuralsil /captcha_ac /captcha_kapat /flood 6 /uyarilimit 3 /uyarieylem ban|mute|kick "
     "/ai_ac /ai_kapat /ipucu_ac /ipucu_kapat /adminizin_ac /adminizin_kapat\n\n"
     "<b>İçerik:</b> /kaydet isim metin (sonra #isim) /notsil isim /filtre kelime cevap /filtresil kelime "
-    "/kara kelime /karasil kelime /karalar /kilit tür /kilitac tür /duyuruekle\n"
+    "/kara kelime /karasil kelime /karalar /kilit tür /kilitac tür /duyuruekle /duyurusil /duyurutemizle\n"
     "Kilit türleri: link sticker gif foto video ses dosya iletilen\n\n"
     "Yapay zeka için mesajında 'yapay' yaz."
 )
@@ -570,6 +570,24 @@ def arsiv_ekle(cid, kayit):
     durum["arsiv"][str(cid)] = [x for x in liste if x["tarih"] >= sinir][-200:]
     durum_kaydet()
 
+def arsiv_sil(cid, message_id=None, hepsi=False):
+    """Duyuru arşivinden siler. message_id verilirse o duyuruyu, hepsi=True ise tümünü siler."""
+    liste = durum["arsiv"].get(str(cid), [])
+    if not liste:
+        return 0
+    if hepsi:
+        silinen = len(liste)
+        durum["arsiv"][str(cid)] = []
+        durum_kaydet()
+        return silinen
+    if message_id is None:
+        return 0
+    yeni = [x for x in liste if x["id"] != message_id]
+    silinen = len(liste) - len(yeni)
+    durum["arsiv"][str(cid)] = yeni
+    durum_kaydet()
+    return silinen
+
 def arsiv_liste(cid, gun):
     liste = durum["arsiv"].get(str(cid), [])
     if gun == 1:
@@ -926,15 +944,49 @@ async def komut(update, ctx, metin):
             eylem = "pin"
         elif kw_var(kw, "duyuru") and any(k in ("yap", "yapsana", "et", "ekle", "kaydet", "olarak") for k in kw):
             eylem = "duy"
+        elif kw_var(kw, "duyuru") and any(k in ("sil", "silme", "kaldır", "kaldir", "temizle") for k in kw):
+            if any(k in ("hepsi", "tüm", "tum", "hepsini", "temizle") for k in kw):
+                eylem = "duy_temizle"
+            else:
+                eylem = "duy_sil"
+        # Bilgi / liste komutları
+        elif any(k in ("top", "sıralama", "siralam", "aktif", "enaktif") for k in kw):
+            eylem = "top"
+        elif any(k in ("bilgi", "profil", "kim") for k in kw):
+            eylem = "bilgi"
+        elif any(k in ("ayarlar", "ayar") for k in kw) and not fiil:
+            eylem = "ayarlar"
+        elif any(k in ("kural", "kurallar") for k in kw) and not fiil:
+            eylem = "kurallar"
+        elif any(k in ("günlük", "gunluk", "bugün", "bugun") for k in kw) and kw_var(kw, "duyuru"):
+            eylem = "gunluk"
+        elif any(k in ("haftalık", "haftalik") for k in kw) and kw_var(kw, "duyuru"):
+            eylem = "haftalik"
+        elif any(k in ("aylık", "aylik") for k in kw) and kw_var(kw, "duyuru"):
+            eylem = "aylik"
+        elif kw_var(kw, "istatistik", "stats"):
+            eylem = "istatistik"
+        elif kw_var(kw, "id") and adresli:
+            eylem = "id"
+        # Ayar komutları
+        elif kw_var(kw, "flood") and any(k.isdigit() for k in kw):
+            eylem = "flood_ayarla"
+        elif kw_var(kw, "kilit") and not kapat and not ac:
+            eylem = "kilit_ayarla"
+        elif kw_var(kw, "kilit") and (kapat or ac or "aç" in t or "ac" in t):
+            eylem = "kilit_ac"
+        elif any(k in ("ai", "yapayzeka") for k in kw) and (kapat or ac):
+            eylem = "ai_ayar"
     if not eylem:
         return False
     if ozel and not eylem.startswith("talimat"):
         return False
-    kisa = len(kw) <= 4
-    if eylem not in ("talimat", "talimat_sil", "talimat_liste", "hosgeldin_metin", "kural_metin", "ayar") \
+    kisa = len(kw) <= 5
+    herkese_acik = ("top", "bilgi", "kurallar", "gunluk", "haftalik", "aylik", "istatistik", "id")
+    if eylem not in ("talimat", "talimat_sil", "talimat_liste", "hosgeldin_metin", "kural_metin", "ayar") + herkese_acik \
             and not (adresli or kisa):
         return False
-    if not await yetkili_mi(ctx, cid, user.id):
+    if eylem not in herkese_acik and not await yetkili_mi(ctx, cid, user.id):
         if adresli:
             await msg.reply_text("Bunu sadece sahibim yapabilir 😄")
             return True
@@ -982,7 +1034,67 @@ async def komut(update, ctx, metin):
         await de(f"{ad.upper()} {'kapatıldı' if kapat else 'açıldı'}.")
         return True
 
-    if eylem in ("sil", "pin", "duy") and not r:
+    # Bilgi / liste
+    if eylem == "top":
+        scid = str(cid)
+        en = sorted(uyeler.get(scid, {}).values(), key=lambda u: u["mesaj"], reverse=True)[:10]
+        satir = ["🏆 En aktif üyeler"] + [f"{i}. {u['ad']} — {u['mesaj']}" for i, u in enumerate(en, 1)]
+        await de("\n".join(satir) if en else "Henüz veri yok.")
+        return True
+    if eylem == "bilgi":
+        h = r.from_user if r and r.from_user else user
+        scid = str(cid)
+        k = uyeler.get(scid, {}).get(str(h.id), {})
+        w = len(durum["warn"].get(scid, {}).get(str(h.id), []))
+        satir = [f"👤 {h.full_name}", f"🆔 {h.id}"]
+        if h.username:
+            satir.append(f"@{h.username}")
+        satir.append(f"💬 {k.get('mesaj', 0)} mesaj | 📅 İlk: {k.get('ilk', '?')}")
+        satir.append(f"⚠️ Uyarı: {w}/{cget(cid, 'warn_limit')}")
+        await de("\n".join(satir))
+        return True
+    if eylem == "ayarlar":
+        await de(ayar_ozet(cid))
+        return True
+    if eylem == "kurallar":
+        await de(cget(cid, "kurallar") or "Henüz kural yazılmamış.")
+        return True
+    if eylem == "gunluk":
+        await arsiv_gonder(update, ctx, 1, "Bugünkü")
+        return True
+    if eylem == "haftalik":
+        await arsiv_gonder(update, ctx, 7, "Haftalık")
+        return True
+    if eylem == "aylik":
+        await arsiv_gonder(update, ctx, 30, "Aylık")
+        return True
+    if eylem == "istatistik":
+        k = uyeler.get(str(cid), {})
+        await de(f"📊 Tanıdığım üye: {len(k)}\n💬 Toplam mesaj: {sum(u['mesaj'] for u in k.values())}")
+        return True
+    if eylem == "id":
+        h = r.from_user if r and r.from_user else user
+        await de(f"🆔 {h.id}\nGrup: {cid}")
+        return True
+    if eylem == "flood_ayarla":
+        sayi_ = next((k for k in kw if k.isdigit()), None)
+        if sayi_ and 0 <= int(sayi_) <= 30:
+            cset(cid, "flood", int(sayi_))
+            await de("Flood: " + ("kapalı" if int(sayi_) == 0 else f"10 sn'de {sayi_} mesaj"))
+        else:
+            await de("Örnek: yapay flood 6")
+        return True
+    if eylem == "ai_ayar":
+        cset(cid, "ai", not kapat)
+        await de(f"AI {'kapatıldı' if kapat else 'açıldı'}.")
+        return True
+
+    if eylem == "duy_temizle":
+        silinen = arsiv_sil(cid, hepsi=True)
+        await de(f"✅ {silinen} duyuru temizlendi." if silinen else "Arşiv zaten boş.")
+        return True
+
+    if eylem in ("sil", "pin", "duy", "duy_sil") and not r:
         if adresli:
             await de("Bir mesaja yanıt ver.")
         return adresli
@@ -1031,6 +1143,9 @@ async def komut(update, ctx, metin):
             else:
                 await ctx.bot.unpin_chat_message(cid)
             cevap = "📌 Sabit kaldırıldı."
+        elif eylem == "duy_sil":
+            silinen = arsiv_sil(cid, r.message_id)
+            cevap = "✅ Duyuru arşivden silindi." if silinen else "Bu mesaj arşivde bulunamadı."
         else:
             k = await mesaj_ozeti(ctx, r, chat)
             if not k:
@@ -1313,6 +1428,18 @@ async def yonet_komut(update, ctx):
             await de("✅ Duyurulara eklendi.")
         else:
             await de("Ekleyemedim.")
+    elif ad in ("duyurusil", "duyurusilme"):
+        if not yanit:
+            await de("Silinecek duyuru mesajına yanıt ver.")
+            return
+        silinen = arsiv_sil(cid, yanit.message_id)
+        if silinen:
+            await de("✅ Duyuru arşivden silindi.")
+        else:
+            await de("Bu mesaj arşivde bulunamadı.")
+    elif ad in ("duyurutemizle", "duyurularisil"):
+        silinen = arsiv_sil(cid, hepsi=True)
+        await de(f"✅ {silinen} duyuru temizlendi." if silinen else "Arşiv zaten boş.")
     elif ad in ("del", "sil"):
         if not yanit:
             await de("Silinecek mesaja yanıt ver.")
@@ -1686,7 +1813,8 @@ app.add_handler(CommandHandler(list(ALIAS.keys()), mod_komut))
 app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem", "kuralayarla", "kuralsil",
                                 "hosgeldinmetni", "hosgeldinsifirla", "kaydet", "notsil", "filtre", "filtresil",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "ayarlar", "del", "sil", "purge",
-                                "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle"], yonet_komut))
+                                "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle",
+                                "duyurusil", "duyurutemizle"], yonet_komut))
 app.add_handler(CommandHandler(["yardim", "help", "start", "kurallar", "not", "get", "notlar", "filtreler",
                                 "kilitler", "id", "bilgi", "top", "istatistik", "rapor"], genel_komut))
 app.add_handler(CommandHandler("sifirla", sifirla))
