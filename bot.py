@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 from groq import Groq
 from google import genai
 from google.genai import types
-from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, ChatMemberHandler, filters
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_KEY = os.environ["GROQ_KEY"]
@@ -414,39 +414,71 @@ async def mesaj_sil_gecikmeli(ctx, cid, mid, sn=5):
 # HOŞ GELDİN
 # ============================================================
 
-async def hosgeldin(update, ctx):
-    msg = update.effective_message
-    chat = update.effective_chat
-    if not msg or not chat:
+async def hosgeldin_uye(ctx, chat, u):
+    """Tek kullanıcıya hoş geldin + mute."""
+    if not u or u.is_bot:
         return
     grup_kaydet(chat)
     mute_dk = int(durum.get("hosgeldin_mute_dk") or 15)
     sablon = durum.get("hosgeldin_metin") or VARSAYILAN_HOSGELDIN
 
-    for u in msg.new_chat_members:
-        if u.is_bot:
-            continue
+    # Önce sustur (yetki yoksa sessizce geç)
+    if mute_dk > 0:
         try:
             await sustur(ctx, chat.id, u.id, mute_dk)
+            log.info(f"Yeni üye susturuldu: {u.id} ({mute_dk} dk)")
         except Exception as e:
             log.warning(f"Yeni üye susturulamadı: {e}")
 
-        metin = (
-            sablon
-            .replace("{ad}", u.mention_html())
-            .replace("{KullanıcıAdı}", u.mention_html())
-            .replace("{kullanici}", u.mention_html())
-            .replace("{isim}", html.escape(u.full_name))
-            .replace("{mute}", str(mute_dk))
-            .replace("{grup}", html.escape(chat.title or ""))
-        )
+    metin = (
+        sablon
+        .replace("{ad}", u.mention_html())
+        .replace("{KullanıcıAdı}", u.mention_html())
+        .replace("{kullanici}", u.mention_html())
+        .replace("{isim}", html.escape(u.full_name or "Üye"))
+        .replace("{mute}", str(mute_dk))
+        .replace("{grup}", html.escape(chat.title or ""))
+    )
+    try:
+        gonderilen = await ctx.bot.send_message(chat.id, metin, parse_mode="HTML")
+        log.info(f"Hoşgeldin gönderildi: {chat.id} -> {u.id}")
+        t = asyncio.create_task(mesaj_sil_gecikmeli(ctx, chat.id, gonderilen.message_id, 5))
+        gorevler.add(t)
+        t.add_done_callback(gorevler.discard)
+    except Exception as e:
+        log.warning(f"Hoşgeldin HTML hata, düz metin deneniyor: {e}")
         try:
-            gonderilen = await ctx.bot.send_message(chat.id, metin, parse_mode="HTML")
+            duz = re.sub(r"<[^>]+>", "", metin)
+            gonderilen = await ctx.bot.send_message(chat.id, duz)
             t = asyncio.create_task(mesaj_sil_gecikmeli(ctx, chat.id, gonderilen.message_id, 5))
             gorevler.add(t)
             t.add_done_callback(gorevler.discard)
-        except Exception as e:
-            log.warning(f"Hoşgeldin gönderilemedi: {e}")
+        except Exception as e2:
+            log.warning(f"Hoşgeldin gönderilemedi: {e2}")
+
+async def hosgeldin(update, ctx):
+    """Eski yöntem: new_chat_members service mesajı."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat or not msg.new_chat_members:
+        return
+    for u in msg.new_chat_members:
+        await hosgeldin_uye(ctx, chat, u)
+
+async def uye_guncelle(update, ctx):
+    """Yeni yöntem: chat_member güncellemesi (daha güvenilir)."""
+    cm = update.chat_member
+    if not cm:
+        return
+    eski = cm.old_chat_member.status if cm.old_chat_member else None
+    yeni = cm.new_chat_member.status if cm.new_chat_member else None
+    # gruba yeni katıldı
+    if yeni in (ChatMember.MEMBER, ChatMember.RESTRICTED) and eski in (
+        ChatMember.LEFT, ChatMember.BANNED, None, "left", "kicked"
+    ):
+        u = cm.new_chat_member.user
+        chat = cm.chat
+        await hosgeldin_uye(ctx, chat, u)
 
 # ============================================================
 # CEZA OYLAMASI (BUTONLU)
@@ -663,25 +695,46 @@ async def mesaj(update, ctx):
         await msg.reply_text("Cezalandırılacak kişiye yanıt vererek yaz: yapay ceza")
         return
 
-    # Karşılama ayarla
+    # Karşılama ayarla (özelde sahip)
     if ozel and sahip_mi(user):
-        if any(x in t for x in ("karşılama", "karsilama", "hosgeldin", "hoşgeldin", "welcome")):
+        karsilama_kelime = any(x in t for x in ("karşılama", "karsilama", "hosgeldin", "hoşgeldin", "welcome"))
+        if karsilama_kelime:
             kaynak = None
+            # 1) Yanıt verilen mesaj
             if msg.reply_to_message:
                 kaynak = msg.reply_to_message.text or msg.reply_to_message.caption
-            m = re.search(r"(?:karşılama|karsilama|hosgeldin|hoşgeldin)\s*mesaj[ıi]?\s*[:=]?\s*(.+)", metin, re.I | re.S)
-            if m and m.group(1).strip() and "yap" not in m.group(1).lower()[:10]:
+            # 2) "karşılama mesajı: METİN"
+            m = re.search(
+                r"(?:karşılama|karsilama|hosgeldin|hoşgeldin)\s*mesaj[ıi]?\s*[:=]\s*(.+)",
+                metin, re.I | re.S
+            )
+            if m and m.group(1).strip():
                 kaynak = m.group(1).strip()
-            if not kaynak and any(x in t for x in ("yap", "ayarla", "kaydet", "olsun")):
-                if "{ad}" in metin or "Hoşgeldiniz" in metin or "Hoş geldiniz" in metin:
-                    kaynak = re.sub(r"(?i).*(?:karşılama|karsilama|hosgeldin|hoşgeldin).*?(?:yap|ayarla|kaydet|olsun)\s*", "", metin).strip() or metin
+            # 3) Mesajın içinde şablon varsa (Hoşgeldiniz / {ad})
+            if not kaynak and ("hoşgeldiniz" in t or "hosgeldiniz" in t or "{ad}" in metin or "{KullanıcıAdı}" in metin):
+                kaynak = metin
+                # Sondaki "bunu karşılama mesajı yap" kısmını temizle
+                kaynak = re.sub(
+                    r"(?i)\s*(bunu\s+)?(karşılama|karsilama|hosgeldin|hoşgeldin).*?(yap|ayarla|kaydet|olsun)\s*$",
+                    "", kaynak
+                ).strip()
+            # 4) Sadece "karşılama mesajı yap" + yanıt yoksa varsayılanı kaydet
+            if not kaynak and any(x in t for x in ("yap", "ayarla", "kaydet", "olsun", "varsayılan", "varsayilan")):
+                kaynak = VARSAYILAN_HOSGELDIN
+                await msg.reply_text("✅ Varsayılan karşılama mesajı aktif.")
+                durum["hosgeldin_metin"] = kaynak
+                durum_kaydet()
+                return
             if kaynak:
                 durum["hosgeldin_metin"] = kaynak
                 durum_kaydet()
-                await msg.reply_text("✅ Karşılama mesajı kaydedildi.")
+                await msg.reply_text(
+                    "✅ Karşılama mesajı kaydedildi.\n"
+                    "Gruba yeni biri girince bu mesaj gidecek (bot admin olmalı)."
+                )
                 return
         m2 = re.search(r"(?:mute|susturma|sustur)\s*(\d+)", t)
-        if m2 and any(x in t for x in ("karşılama", "karsilama", "hosgeldin", "hoşgeldin", "mute")):
+        if m2 and any(x in t for x in ("karşılama", "karsilama", "hosgeldin", "hoşgeldin", "mute", "yeni")):
             durum["hosgeldin_mute_dk"] = max(0, min(int(m2.group(1)), 1440))
             durum_kaydet()
             await msg.reply_text(f"✅ Yeni üyeler {durum['hosgeldin_mute_dk']} dk susturulacak.")
@@ -753,9 +806,11 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
 app.add_handler(CommandHandler("sifirla", sifirla))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
+app.add_handler(ChatMemberHandler(uye_guncelle, ChatMemberHandler.CHAT_MEMBER))
 app.add_handler(CallbackQueryHandler(ceza_buton, pattern=r"^ceza:"))
 app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & filters.UpdateType.MESSAGE, mesaj))
 app.add_error_handler(hata)
 
 log.info("Bot başlıyor...")
-app.run_polling()
+# chat_member güncellemelerini de al (yeni üye için şart)
+app.run_polling(allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"])
