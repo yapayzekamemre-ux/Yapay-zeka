@@ -233,83 +233,123 @@ def yahoo_fiyat(sembol):
         log.warning(f"Yahoo hatası ({sembol}): {e}")
         return None
 
+# Yahoo: sadece döviz + Türk hisseleri (coin değil)
+YAHOO_MAP = {
+    "dolar": "USDTRY=X", "usd": "USDTRY=X", "dollar": "USDTRY=X",
+    "euro": "EURTRY=X", "eur": "EURTRY=X",
+    "sterlin": "GBPTRY=X", "gbp": "GBPTRY=X",
+    "usdt": "USDT-TRY", "tether": "USDT-TRY",
+    "usdc": "USDC-USD",
+    # BIST hisseleri
+    "thyao": "THYAO.IS", "thy": "THYAO.IS",
+    "garanti": "GARAN.IS", "garan": "GARAN.IS",
+    "akbank": "AKBNK.IS", "akbnk": "AKBNK.IS",
+    "bipas": "BIMAS.IS", "bimas": "BIMAS.IS",
+    "aselsan": "ASELS.IS", "asels": "ASELS.IS",
+    "eregl": "EREGL.IS", "eregli": "EREGL.IS",
+    "sahol": "SAHOL.IS", "kchol": "KCHOL.IS",
+    "tuprs": "TUPRS.IS", "sise": "SISE.IS",
+    "tcelt": "TCELL.IS", "tcell": "TCELL.IS",
+    "ykbnk": "YKBNK.IS", "isctr": "ISCTR.IS",
+    "froto": "FROTO.IS", "toaso": "TOASO.IS",
+    "kozaa": "KOZAA.IS", "kozal": "KOZAL.IS",
+    "petkm": "PETKM.IS", "sasa": "SASA.IS",
+    "astor": "ASTOR.IS", "enjsa": "ENJSA.IS",
+}
+
+YAHOO_AD = {
+    "dolar": "Dolar (USD)", "usd": "Dolar (USD)", "dollar": "Dolar (USD)",
+    "euro": "Euro", "eur": "Euro",
+    "sterlin": "Sterlin", "gbp": "Sterlin",
+    "usdt": "USDT", "tether": "USDT", "usdc": "USDC",
+}
+
 def fiyat_ara(q):
     q = q.lower().strip()
 
-    yahoo_map = {
-        "btc": "BTC-USD", "bitcoin": "BTC-USD",
-        "eth": "ETH-USD", "ethereum": "ETH-USD",
-        "sol": "SOL-USD", "bnb": "BNB-USD",
-        "xrp": "XRP-USD", "doge": "DOGE-USD",
-        "ton": "TON-USD", "ada": "ADA-USD",
-        "avax": "AVAX-USD", "dot": "DOT-USD",
-        "link": "LINK-USD", "matic": "MATIC-USD",
-        "near": "NEAR-USD", "sui": "SUI-USD",
-        "pepe": "PEPE-USD", "shib": "SHIB-USD",
-        "usdt": "USDT-TRY", "tether": "USDT-TRY",
-        "usdc": "USDC-USD",
-        "dolar": "USDTRY=X", "usd": "USDTRY=X",
-        "euro": "EURTRY=X", "eur": "EURTRY=X",
-        # Türk hisseleri (BIST)
-        "thyao": "THYAO.IS", "thy": "THYAO.IS",
-        "garanti": "GARAN.IS", "garan": "GARAN.IS",
-        "akbank": "AKBNK.IS", "akbnk": "AKBNK.IS",
-        "bipas": "BIMAS.IS", "bimas": "BIMAS.IS",
-        "aselsan": "ASELS.IS", "asels": "ASELS.IS",
-        "eregl": "EREGL.IS", "eregli": "EREGL.IS",
-        "sahol": "SAHOL.IS", "kchol": "KCHOL.IS",
-        "tuprs": "TUPRS.IS", "sise": "SISE.IS",
-        "tcelt": "TCELL.IS", "tcell": "TCELL.IS",
-        "ykbnk": "YKBNK.IS", "isctr": "ISCTR.IS",
-        "froto": "FROTO.IS", "toaso": "TOASO.IS",
-    }
-    ysymbol = yahoo_map.get(q)
+    # 1) Yahoo — döviz ve Türk hisseleri
+    ysymbol = YAHOO_MAP.get(q)
     if ysymbol:
         y = yahoo_fiyat(ysymbol)
         if y:
-            ad_map = {
-                "dolar": "Dolar (USD)", "usd": "Dolar (USD)",
-                "euro": "Euro", "eur": "Euro",
-                "usdt": "USDT", "tether": "USDT",
-            }
-            guzel = ad_map.get(q, q.upper())
-            # TRY çifti veya BIST hissesi
+            guzel = YAHOO_AD.get(q, q.upper())
             if "TRY" in ysymbol or ysymbol.endswith("=X") or ysymbol.endswith(".IS"):
-                return {"ad": guzel, "sembol": guzel, "usd": None, "try": y["fiyat"], "deg": y["deg"]}
+                return {
+                    "ad": guzel, "sembol": guzel, "usd": None, "try": y["fiyat"],
+                    "deg": y["deg"], "kaynak": "yahoo",
+                    "link": f"https://finance.yahoo.com/quote/{ysymbol}",
+                }
             try_fiyat = None
             kur = yahoo_fiyat("USDTRY=X")
             if kur:
                 try_fiyat = y["fiyat"] * kur["fiyat"]
-            return {"ad": guzel, "sembol": guzel, "usd": y["fiyat"], "try": try_fiyat, "deg": y["deg"]}
+            return {
+                "ad": guzel, "sembol": guzel, "usd": y["fiyat"], "try": try_fiyat,
+                "deg": y["deg"], "kaynak": "yahoo",
+                "link": f"https://finance.yahoo.com/quote/{ysymbol}",
+            }
 
-    # CoinGecko
+    # 2) CoinGecko — TÜM coinler
     try:
-        r = requests.get("https://api.coingecko.com/api/v3/search", params={"query": q}, timeout=10).json()
-        coinler = r.get("coins", [])
-        tam = [c for c in coinler if c["symbol"].lower() == q or c["name"].lower() == q]
-        aday = tam or coinler
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/search",
+            params={"query": q}, timeout=12,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ).json()
+        coinler = r.get("coins") or []
+        # Önce sembol tam eşleşme, sonra isim, sonra ilk sonuç
+        tam_sembol = [c for c in coinler if c.get("symbol", "").lower() == q]
+        tam_isim = [c for c in coinler if c.get("name", "").lower() == q]
+        aday = tam_sembol or tam_isim or coinler
         if aday:
             sec = min(aday, key=lambda c: c.get("market_cap_rank") or 10**9)
-            p = requests.get("https://api.coingecko.com/api/v3/simple/price",
-                             params={"ids": sec["id"], "vs_currencies": "usd,try",
-                                     "include_24hr_change": "true"}, timeout=10).json()
+            p = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={
+                    "ids": sec["id"],
+                    "vs_currencies": "usd,try",
+                    "include_24hr_change": "true",
+                },
+                timeout=12,
+                headers={"User-Agent": "Mozilla/5.0"},
+            ).json()
             d = p.get(sec["id"], {})
-            if d.get("usd") is not None:
-                return {"ad": sec["name"], "sembol": sec["symbol"].upper(),
-                        "usd": d.get("usd"), "try": d.get("try"), "deg": d.get("usd_24h_change")}
+            if d.get("usd") is not None or d.get("try") is not None:
+                return {
+                    "ad": sec["name"],
+                    "sembol": sec["symbol"].upper(),
+                    "usd": d.get("usd"),
+                    "try": d.get("try"),
+                    "deg": d.get("usd_24h_change") or d.get("try_24h_change"),
+                    "kaynak": "coingecko",
+                    "link": f"https://www.coingecko.com/en/coins/{sec['id']}",
+                }
     except Exception as e:
         log.warning(f"CoinGecko hatası: {e}")
 
-    # DexScreener
+    # 3) DexScreener yedek
     try:
-        r = requests.get("https://api.dexscreener.com/latest/dex/search", params={"q": q}, timeout=10).json()
-        pairs = [p for p in (r.get("pairs") or []) if p.get("priceUsd")
-                 and p["baseToken"]["symbol"].lower() == q]
+        r = requests.get(
+            "https://api.dexscreener.com/latest/dex/search",
+            params={"q": q}, timeout=10,
+        ).json()
+        pairs = [
+            p for p in (r.get("pairs") or [])
+            if p.get("priceUsd") and p.get("baseToken", {}).get("symbol", "").lower() == q
+        ]
+        if not pairs:
+            pairs = [p for p in (r.get("pairs") or []) if p.get("priceUsd")]
         if pairs:
             p = max(pairs, key=lambda x: (x.get("liquidity") or {}).get("usd") or 0)
-            return {"ad": p["baseToken"]["name"], "sembol": p["baseToken"]["symbol"].upper(),
-                    "usd": float(p["priceUsd"]), "try": None,
-                    "deg": (p.get("priceChange") or {}).get("h24")}
+            return {
+                "ad": p["baseToken"]["name"],
+                "sembol": p["baseToken"]["symbol"].upper(),
+                "usd": float(p["priceUsd"]),
+                "try": None,
+                "deg": (p.get("priceChange") or {}).get("h24"),
+                "kaynak": "dex",
+                "link": p.get("url") or "",
+            }
     except Exception as e:
         log.warning(f"DexScreener hatası: {e}")
     return None
@@ -348,30 +388,50 @@ def kisa_token(metin):
 async def fiyat_gonder(update, ctx, sorgu, miktar=1.0):
     msg = update.effective_message
     user = update.effective_user
-    veri = await asyncio.to_thread(fiyat_bul, sorgu)
+    try:
+        veri = await asyncio.to_thread(fiyat_bul, sorgu)
+    except Exception as e:
+        log.warning(f"fiyat_bul hata: {e}")
+        return False
     if not veri:
+        log.info(f"Fiyat bulunamadı: {sorgu}")
         return False
 
-    baslik = f"⚠️ {sade(miktar)} {veri['sembol']}:"
-    if veri.get("try"):
+    # Başlık: "10 Pudgy Penguins (PENGU):" veya "1 USDT:"
+    ad = veri.get("ad") or veri["sembol"]
+    sembol = veri["sembol"]
+    if ad.upper() != sembol.upper() and veri.get("kaynak") == "coingecko":
+        baslik = f"⚠️ {sade(miktar)} {ad} ({sembol}):"
+    else:
+        baslik = f"⚠️ {sade(miktar)} {sembol}:"
+
+    # Fiyat satırı
+    if veri.get("try") is not None:
         fiyat_satir = f"✅ ₺{sayi(veri['try'] * miktar)}"
-    elif veri.get("usd"):
-        fiyat_satir = f"✅ ${sayi(veri['usd'] * miktar)}"
+    elif veri.get("usd") is not None:
+        fiyat_satir = f"✅ ${sayi(veri['usd'] * miktar)} Usdt"
     else:
         return False
 
     deg_text = ""
     if veri.get("deg") is not None:
-        yon = "yükseldi" if veri["deg"] >= 0 else "düştü"
-        deg_text = f"%{abs(veri['deg']):.2f} {yon}"
+        try:
+            d = float(veri["deg"])
+            yon = "yükseldi" if d >= 0 else "düştü"
+            deg_text = f"%{abs(d):.2f} {yon}"
+        except Exception:
+            pass
 
-    espri = await asyncio.to_thread(sor, [{"role": "user", "content":
-        f"{veri['ad']} ({veri['sembol']}) fiyatı şu an "
-        f"{'₺' + sayi(veri['try']) if veri.get('try') else '$' + sayi(veri.get('usd'))}, "
-        f"24 saatte %{veri['deg'] or 0:+.2f} değişti. "
-        f"Buna çok kısa, esprili, samimi bir cümle yaz. Yatırım tavsiyesi verme."}])
+    espri = None
+    try:
+        espri = await asyncio.to_thread(sor, [{"role": "user", "content":
+            f"{ad} ({sembol}) fiyatı şu an "
+            f"{'₺' + sayi(veri['try']) if veri.get('try') is not None else '$' + sayi(veri.get('usd'))}, "
+            f"24 saatte %{veri.get('deg') or 0:+.2f} değişti. "
+            f"Buna çok kısa, esprili, samimi bir Türkçe cümle yaz. Yatırım tavsiyesi verme."}])
+    except Exception as e:
+        log.warning(f"Fiyat espri hata: {e}")
 
-    # Ekrandaki format
     satirlar = []
     if user:
         satirlar.append(f"<b>{html.escape(user.full_name)}</b>")
@@ -387,7 +447,15 @@ async def fiyat_gonder(update, ctx, sorgu, miktar=1.0):
             ek += espri.strip()
         satirlar.append(ek.strip())
 
-    await msg.reply_text("\n".join(satirlar), parse_mode="HTML")
+    # Kaynak linki
+    if veri.get("link"):
+        satirlar.append(f'\n🔗 <a href="{html.escape(veri["link"])}">Kaynak</a>')
+
+    try:
+        await msg.reply_text("\n".join(satirlar), parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        log.warning(f"Fiyat mesaj gönderilemedi: {e}")
+        await msg.reply_text("\n".join(re.sub(r"<[^>]+>", "", s) for s in satirlar))
     return True
 
 async def gruba_gonder(ctx, metin):
