@@ -97,7 +97,7 @@ except Exception:
     durum = {}
 for _k, _v in (("son", 0), ("liste", []), ("sahip", None), ("sabit", {}), ("ayar", {}),
                ("warn", {}), ("kara", {}), ("filtre", {}), ("not", {}), ("talimat", []), ("arsiv", {}),
-               ("duyuru_saat", 0)):
+               ("duyuru_saat", 0), ("global_ayar", {})):
     durum.setdefault(_k, _v)
 if not durum["son"]:
     durum["son"] = time.time()
@@ -107,10 +107,24 @@ VARS = {"ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminiz
         "hosgeldin_metin": None, "kurallar": None}
 
 def cget(cid, k):
-    return durum["ayar"].get(str(cid), {}).get(k, VARS[k])
+    # Önce gruba özel, yoksa global (özelde verilen), yoksa varsayılan
+    grup = durum["ayar"].get(str(cid), {})
+    if k in grup:
+        return grup[k]
+    if k in durum.get("global_ayar", {}):
+        return durum["global_ayar"][k]
+    return VARS[k]
 
-def cset(cid, k, v):
-    durum["ayar"].setdefault(str(cid), {})[k] = v
+def cset(cid, k, v, global_mi=False):
+    # Özel sohbette ayar yapılırsa tüm gruplara global olarak yaz
+    if global_mi or (cid and int(cid) > 0):
+        durum.setdefault("global_ayar", {})[k] = v
+        # Mevcut tüm gruplara da uygula
+        for gcid in list(uyeler.keys()):
+            if int(gcid) < 0:
+                durum["ayar"].setdefault(gcid, {})[k] = v
+    else:
+        durum["ayar"].setdefault(str(cid), {})[k] = v
     durum_kaydet()
 
 SAHIP_KOD = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
