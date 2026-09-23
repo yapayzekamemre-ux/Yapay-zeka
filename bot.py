@@ -47,7 +47,9 @@ log = logging.getLogger("bot")
 
 groq = Groq(api_key=GROQ_KEY, timeout=30)
 gem = genai.Client(api_key=GEMINI_KEY)
-gecmis = {}
+
+# TEK ORTAK HAFIZA — özel ve grup aynı
+gecmis = []
 
 DURUM = "durum.json"
 try:
@@ -55,11 +57,15 @@ try:
         durum = json.load(f)
 except Exception:
     durum = {}
-for _k, _v in (("sahip", None), ("talimat", [])):
+for _k, _v in (("sahip", None), ("talimat", []), ("gecmis", [])):
     durum.setdefault(_k, _v)
+
+# Kayıtlı hafızayı yükle
+gecmis = list(durum.get("gecmis") or [])
 
 def durum_kaydet():
     try:
+        durum["gecmis"] = gecmis[-40:]
         with open(DURUM, "w", encoding="utf-8") as f:
             json.dump(durum, f, ensure_ascii=False)
     except Exception as e:
@@ -154,6 +160,7 @@ def arama_gerek(t):
     return bool(set(re.findall(r"\w+", k)) & ARAMA_KELIME)
 
 async def mesaj(update, ctx):
+    global gecmis
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
@@ -164,7 +171,6 @@ async def mesaj(update, ctx):
         return
 
     ozel = chat.type == "private"
-    cid = chat.id
     t = kucult(metin)
 
     # Kalıcı talimat (sadece sahip)
@@ -183,7 +189,7 @@ async def mesaj(update, ctx):
         if not cagrildi:
             return
 
-    await ctx.bot.send_chat_action(cid, "typing")
+    await ctx.bot.send_chat_action(chat.id, "typing")
 
     ek = f"\nŞu an sana yazan kişi: {user.full_name}."
     if sahip_mi(user):
@@ -192,24 +198,29 @@ async def mesaj(update, ctx):
         ek += ("\nSahibinin kalıcı talimatları (sessizce uy): "
                + " | ".join(x["t"] for x in durum["talimat"][-10:]))
 
-    h = gecmis.setdefault(cid, [])
-    h.append({"role": "user", "content": f"{user.full_name}: {metin}"})
+    # TEK ORTAK HAFIZA
+    gecmis.append({"role": "user", "content": f"{user.full_name}: {metin}"})
 
-    yanit = await asyncio.to_thread(sor, h[-12:], ek, arama_gerek(metin))
+    yanit = await asyncio.to_thread(sor, gecmis[-12:], ek, arama_gerek(metin))
     if not yanit:
         yanit = "Şu an biraz yoğunum, birazdan yazarım."
     else:
-        h.append({"role": "assistant", "content": yanit})
-    gecmis[cid] = h[-20:]
+        gecmis.append({"role": "assistant", "content": yanit})
+
+    gecmis = gecmis[-40:]
+    durum_kaydet()
+
     await msg.reply_text(yanit)
 
 async def sifirla(update, ctx):
-    chat = update.effective_chat
+    global gecmis
     user = update.effective_user
-    if not sahip_mi(user) and chat.type != "private":
+    if not sahip_mi(user) and update.effective_chat.type != "private":
         return
-    gecmis.pop(chat.id, None)
-    await update.effective_message.reply_text("Hafıza sıfırlandı.")
+    gecmis = []
+    durum["gecmis"] = []
+    durum_kaydet()
+    await update.effective_message.reply_text("Hafıza sıfırlandı (özel + grup ortak).")
 
 async def hata(update, ctx):
     log.warning(f"Hata: {ctx.error}")
@@ -220,5 +231,5 @@ app.add_handler(CommandHandler("sifirla", sifirla))
 app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & filters.UpdateType.MESSAGE, mesaj))
 app.add_error_handler(hata)
 
-log.info("Bot başlıyor... (sadece sohbet)")
+log.info("Bot başlıyor... (tek ortak hafıza)")
 app.run_polling()
