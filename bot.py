@@ -327,31 +327,6 @@ def fiyat_ara(q):
     except Exception as e:
         log.warning(f"CoinGecko hatası: {e}")
 
-    # 3) DexScreener yedek
-    try:
-        r = requests.get(
-            "https://api.dexscreener.com/latest/dex/search",
-            params={"q": q}, timeout=10,
-        ).json()
-        pairs = [
-            p for p in (r.get("pairs") or [])
-            if p.get("priceUsd") and p.get("baseToken", {}).get("symbol", "").lower() == q
-        ]
-        if not pairs:
-            pairs = [p for p in (r.get("pairs") or []) if p.get("priceUsd")]
-        if pairs:
-            p = max(pairs, key=lambda x: (x.get("liquidity") or {}).get("usd") or 0)
-            return {
-                "ad": p["baseToken"]["name"],
-                "sembol": p["baseToken"]["symbol"].upper(),
-                "usd": float(p["priceUsd"]),
-                "try": None,
-                "deg": (p.get("priceChange") or {}).get("h24"),
-                "kaynak": "dex",
-                "link": p.get("url") or "",
-            }
-    except Exception as e:
-        log.warning(f"DexScreener hatası: {e}")
     return None
 
 def fiyat_bul(sorgu):
@@ -446,10 +421,6 @@ async def fiyat_gonder(update, ctx, sorgu, miktar=1.0):
         if espri:
             ek += espri.strip()
         satirlar.append(ek.strip())
-
-    # Kaynak linki
-    if veri.get("link"):
-        satirlar.append(f'\n🔗 <a href="{html.escape(veri["link"])}">Kaynak</a>')
 
     try:
         await msg.reply_text("\n".join(satirlar), parse_mode="HTML", disable_web_page_preview=True)
