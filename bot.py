@@ -15,6 +15,7 @@ MISTRAL_KEY = os.environ.get("MISTRAL_KEY", "")
 CEREBRAS_KEY = os.environ.get("CEREBRAS_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 NVIDIA_KEY = os.environ.get("NVIDIA_KEY", "")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
 
 class _Ping(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -234,24 +235,94 @@ def openrouter_sor(m, sistem):
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
-def nvidia_sor(m, sistem):
+# NVIDIA free endpoint modelleri (build.nvidia.com — sohbet için en iyiler)
+NVIDIA_MODELLER = [
+    "deepseek-ai/deepseek-v4.1-flash",   # hızlı, akıllı, multimodal
+    "z-ai/glm-5.3-flash",                # güçlü sohbet, çok dilli
+    "z-ai/glm-5.3",                      # daha derin akıl yürütme
+    "mistralai/mistral-nemotron",        # talimat takibi iyi
+    "openai/gpt-oss-20b",                # akıl yürütme
+    "google/gemma-4-31b-it",             # genel amaçlı güçlü
+    "nvidia/nemotron-3.5-lightning-30b-a3b",  # NVIDIA hızlı model
+    "meta/llama-3.3-70b-instruct",       # yedek
+]
+
+def nvidia_sor(m, sistem, model=None):
+    modeller = [model] if model else NVIDIA_MODELLER
+    son_hata = None
+    for model_id in modeller:
+        if not model_id:
+            continue
+        try:
+            r = requests.post(
+                "https://integrate.api.nvidia.com/v1/chat/completions",
+                headers={"Authorization": "Bearer " + NVIDIA_KEY},
+                json={
+                    "model": model_id,
+                    "messages": [{"role": "system", "content": sistem}] + m,
+                    "temperature": 0.7,
+                    "max_tokens": 512,
+                },
+                timeout=25,
+            )
+            if r.status_code >= 400:
+                log.warning(f"NVIDIA {model_id}: HTTP {r.status_code}")
+                son_hata = r.text[:200]
+                continue
+            data = r.json()
+            cevap = data["choices"][0]["message"]["content"]
+            if cevap:
+                log.info(f"NVIDIA cevap: {model_id}")
+                return cevap
+        except Exception as e:
+            log.warning(f"NVIDIA {model_id} hata: {e}")
+            son_hata = str(e)
+    if son_hata:
+        raise RuntimeError(f"NVIDIA modelleri başarısız: {son_hata}")
+    return None
+
+
+def claude_sor(m, sistem):
+    """Anthropic Claude — ANTHROPIC_KEY gerekir (console.anthropic.com)."""
+    # Anthropic Messages API format
+    mesajlar = []
+    for x in m:
+        role = x.get("role", "user")
+        if role == "assistant":
+            mesajlar.append({"role": "assistant", "content": x["content"]})
+        else:
+            mesajlar.append({"role": "user", "content": x["content"]})
     r = requests.post(
-        "https://integrate.api.nvidia.com/v1/chat/completions",
-        headers={"Authorization": "Bearer " + NVIDIA_KEY},
-        json={"model": "meta/llama-3.3-70b-instruct",
-              "messages": [{"role": "system", "content": sistem}] + m},
-        timeout=20,
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 512,
+            "system": sistem,
+            "messages": mesajlar,
+        },
+        timeout=30,
     )
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    data = r.json()
+    parts = data.get("content") or []
+    text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    return text.strip() or None
 
 SAGLAYICILAR = [("Gemini", gemini_sor), ("Groq", groq_sor)]
+if ANTHROPIC_KEY:
+    SAGLAYICILAR.append(("Claude", claude_sor))
+if NVIDIA_KEY:
+    # NVIDIA modellerini öncelikli yedek olarak ekle (Gemini/Groq çökerse)
+    SAGLAYICILAR.append(("NVIDIA", nvidia_sor))
 if CEREBRAS_KEY:
     SAGLAYICILAR.append(("Cerebras", cerebras_sor))
 if OPENROUTER_KEY:
     SAGLAYICILAR.append(("OpenRouter", openrouter_sor))
-if NVIDIA_KEY:
-    SAGLAYICILAR.append(("NVIDIA", nvidia_sor))
 if MISTRAL_KEY:
     SAGLAYICILAR.append(("Mistral", mistral_sor))
 
@@ -972,14 +1043,72 @@ def sure_bul(t):
     return max(1, min(int(m.group(1)) * carp, 525600))
 
 def hedef_coz(msg, cid, t):
+    """Hedef kullanıcı: yanıt > @username > isim eşleşmesi."""
     r = msg.reply_to_message
-    if r and r.from_user:
+    if r and r.from_user and not r.from_user.is_bot:
         return r.from_user.id, r.from_user.full_name
+
+    # @username
     m = re.search(r"@(\w{4,})", t)
     if m:
+        uname = m.group(1).lower()
         for uid, u in uyeler.get(str(cid), {}).items():
-            if u["kullanici"].lower() == m.group(1):
+            if (u.get("kullanici") or "").lower() == uname:
                 return int(uid), u["ad"]
+
+    # İsimle ara: "sustur 2 dk Emre 2", "banla Emre", "mute emre2"
+    # Komut kelimelerini at, kalanı isim adayı yap
+    atilacak = {
+        "yapay", "sustur", "susturulsun", "mute", "ban", "banla", "kick", "at", "uçur", "ucur",
+        "warn", "uyar", "uyarı", "uyari", "unmute", "aç", "ac", "kaldır", "kaldir",
+        "dk", "dakika", "saat", "sn", "saniye", "m", "h", "d", "min",
+        "et", "yapsana", "olarak", "şu", "su", "bu", "şunu", "sunu", "bunu", "kişiyi", "kisiyi",
+    }
+    kelimeler = re.findall(r"[\wçğıöşüÇĞİÖŞÜ]+", t)
+    aday_parcalar = []
+    for k in kelimeler:
+        kl = kucult(k)
+        if kl in atilacak:
+            continue
+        if kl.isdigit():
+            # Süre sayıları at (2 dk), ama ismin parçası olabilir ("Emre 2")
+            # isim adayına ekle; skorlamada kullanacağız
+            aday_parcalar.append(k)
+            continue
+        aday_parcalar.append(k)
+
+    if not aday_parcalar:
+        return None, None
+
+    aday = " ".join(aday_parcalar).strip()
+    aday_k = kucult(aday)
+    if len(aday_k) < 2:
+        return None, None
+
+    en_iyi = None  # (skor, uid, ad)
+    for uid, u in uyeler.get(str(cid), {}).items():
+        ad = u.get("ad") or ""
+        ad_k = kucult(ad)
+        kullanici = (u.get("kullanici") or "").lower()
+        skor = 0
+        if ad_k == aday_k:
+            skor = 100
+        elif aday_k in ad_k or ad_k in aday_k:
+            skor = 80
+        elif kullanici and (kullanici == aday_k.replace(" ", "") or aday_k.replace(" ", "") in kullanici):
+            skor = 70
+        else:
+            # kelime kelime örtüşme
+            ad_kel = set(re.findall(r"\w+", ad_k))
+            aday_kel = set(re.findall(r"\w+", aday_k))
+            ortak = ad_kel & aday_kel
+            if ortak and len(ortak) >= max(1, len(aday_kel) - 1):
+                skor = 50 + 10 * len(ortak)
+        if skor > 0 and (en_iyi is None or skor > en_iyi[0]):
+            en_iyi = (skor, int(uid), ad)
+
+    if en_iyi and en_iyi[0] >= 50:
+        return en_iyi[1], en_iyi[2]
     return None, None
 
 async def komut(update, ctx, metin):
@@ -1588,8 +1717,15 @@ async def hosgeldin(update, ctx):
     msg = update.effective_message
     chat = update.effective_chat
     cid = chat.id
-    for u in msg.new_chat_members:
+    # "X kişisini eklediniz / gruba katıldı" sistem mesajını sil
+    try:
+        await msg.delete()
+    except Exception as e:
+        log.warning(f"Katılım mesajı silinemedi: {e}")
+
+    for u in (msg.new_chat_members or []):
         if u.is_bot:
+            # Bot eklendiyse sadece sistem mesajı silindi, hoşgeldin atma
             continue
         uye_kaydi(cid, u, say=False)
         kaydet()
@@ -1608,6 +1744,16 @@ async def hosgeldin(update, ctx):
             except Exception as e:
                 log.warning(f"Captcha kurulamadı: {e}")
         await hosgeldin_gonder(ctx, cid, u, chat.title)
+
+async def ayrildi(update, ctx):
+    """'X gruptan ayrıldı / çıkarıldı' sistem mesajını sil."""
+    msg = update.effective_message
+    if not msg:
+        return
+    try:
+        await msg.delete()
+    except Exception as e:
+        log.warning(f"Ayrılma mesajı silinemedi: {e}")
 
 async def captcha_buton(update, ctx):
     q = update.callback_query
@@ -1876,6 +2022,7 @@ app.add_handler(CommandHandler("ipucu", ipucu_komut))
 app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
 app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, sabitlendi))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
+app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
 app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & filters.UpdateType.MESSAGE, mesaj))
 app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.UpdateType.MESSAGE, kilit_kontrol), group=1)
 app.add_error_handler(hata)
