@@ -537,17 +537,25 @@ async def muaf_mi(ctx, chat_id, user_id):
         return True
     return await yonetici_mi(ctx, chat_id, user_id)
 
+async def mesaj_sil_sn(ctx, chat_id, message_id, sn=10):
+    """Mesajı N saniye sonra sil (komut gizleme)."""
+    await asyncio.sleep(sn)
+    try:
+        await ctx.bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
 def komut_silici(fonk):
+    """Slash komut mesajını 10 sn sonra siler (sadece yetkili)."""
     async def sar(update, ctx):
         await fonk(update, ctx)
         msg = update.effective_message
         chat = update.effective_chat
         user = update.effective_user
         if msg and user and chat.type != "private" and await yetkili_mi(ctx, chat.id, user.id):
-            try:
-                await msg.delete()
-            except Exception:
-                pass
+            t = asyncio.create_task(mesaj_sil_sn(ctx, chat.id, msg.message_id, 10))
+            gorevler.add(t)
+            t.add_done_callback(gorevler.discard)
     return sar
 
 def mesaj_linki(chat, mid):
@@ -1052,10 +1060,11 @@ async def komut(update, ctx, metin):
 
     if not eylem:
         return False
-    if ozel and not eylem.startswith("talimat"):
+    # Özelden: talimat, ayar, gruba mesaj serbest; ban/mute gibi işlemler grupta yapılır
+    if ozel and not (eylem.startswith("talimat") or eylem in ("ayar", "hosgeldin_metin", "kural_metin", "gruba_gonder")):
         return False
     kisa = len(kw) <= 4
-    if eylem not in ("talimat", "talimat_sil", "talimat_liste", "hosgeldin_metin", "kural_metin", "ayar") \
+    if eylem not in ("talimat", "talimat_sil", "talimat_liste", "hosgeldin_metin", "kural_metin", "ayar", "gruba_gonder") \
             and not (adresli or kisa):
         return False
     if not await yetkili_mi(ctx, cid, user.id):
@@ -1065,11 +1074,19 @@ async def komut(update, ctx, metin):
         return False
 
     async def de(s):
-        await msg.reply_text(s)
+        m = await msg.reply_text(s)
+        try:
+            t = asyncio.create_task(mesaj_sil_sn(ctx, cid, m.message_id, 10))
+            gorevler.add(t)
+            t.add_done_callback(gorevler.discard)
+        except Exception:
+            pass
 
     async def bitir():
         try:
-            await msg.delete()
+            t = asyncio.create_task(mesaj_sil_sn(ctx, cid, msg.message_id, 10))
+            gorevler.add(t)
+            t.add_done_callback(gorevler.discard)
         except Exception:
             pass
 
@@ -1649,6 +1666,40 @@ async def mesaj(update, ctx):
     kayit = uye_kaydi(cid, user)
     kt = kisa_token(metin)
     kelimeler = re.findall(r"\w+", kucult(metin))
+
+    # ÖZELDEN GRUBA MESAJ (sahip)
+    if ozel and (sahip_mi(user) or (user.username and user.username.lower() == SAHIP_KULLANICI)):
+        if not sahip_mi(user) and user.username and user.username.lower() == SAHIP_KULLANICI:
+            durum["sahip"] = user.id
+            durum_kaydet()
+        t0 = kucult(metin)
+        temiz = re.sub(r"(?i)\byapay\b", "", metin).strip()
+        gonderilecek = None
+        m = re.search(
+            r"(?:gruba|grupta)\s+(?:şunu\s+|sunu\s+|bunu\s+)?(?:söyle|soyle|yaz|at|paylaş|paylas|gönder|gonder)?\s*[:=]?\s*(.+)",
+            temiz, re.IGNORECASE | re.DOTALL
+        )
+        if m and m.group(1).strip():
+            gonderilecek = re.sub(
+                r"^(?:şunu|sunu|bunu|yaz|at|söyle|soyle|paylaş|paylas|gönder|gonder)\s*[:=]?\s*",
+                "", m.group(1).strip(), flags=re.I
+            ).strip()
+        if not gonderilecek and re.search(r"(gruba|grupta).*(saat|saati)", t0):
+            gonderilecek = datetime.now(TR).strftime("Şu an saat %H:%M")
+        if gonderilecek:
+            sayac = 0
+            for gcid in list(uyeler.keys()):
+                if int(gcid) < 0:
+                    try:
+                        await ctx.bot.send_message(int(gcid), gonderilecek)
+                        sayac += 1
+                    except Exception as e:
+                        log.warning(f"Gruba gönderilemedi ({gcid}): {e}")
+            if sayac == 0:
+                await msg.reply_text("Henüz kayıtlı grup yok. Botu gruba ekle, grupta bir mesaj yaz.")
+            else:
+                await msg.reply_text(f"✅ {sayac} gruba gönderildi:\n{gonderilecek}")
+            return
 
     if not ozel and sahip_mi(user) and link_var(msg, metin):
         try:
