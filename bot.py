@@ -1549,29 +1549,51 @@ async def yonet_komut(update, ctx):
         cset(cid, "hosgeldin_metin", None)
         await de("Hoş geldin metni varsayılana döndü (yapay zeka yazar).")
     elif ad == "setlog":
-        # /setlog @kanal  veya  /setlog -100...  veya kanala iletilmiş mesaja yanıt
+        # /setlog @kanal | /setlog -100... | kanal mesajına yanıt | iletilmiş kanala yanıt
+        def kanal_id_bul(m):
+            if not m:
+                return None
+            if getattr(m, "forward_from_chat", None) is not None:
+                return m.forward_from_chat.id
+            if getattr(m, "sender_chat", None) is not None and getattr(m.sender_chat, "type", "") in ("channel", "supergroup"):
+                return m.sender_chat.id
+            fo = getattr(m, "forward_origin", None)
+            if fo is not None:
+                ch = getattr(fo, "chat", None)
+                if ch is not None:
+                    return ch.id
+            return None
+
         hedef = None
         arg = (a1 + " " + a2).strip()
         if arg.startswith("@"):
             try:
-                ch = await ctx.bot.get_chat(arg)
+                ch = await ctx.bot.get_chat(arg.split()[0])
                 hedef = ch.id
             except Exception as e:
                 await de(f"Kanal bulunamadı: {e}")
                 return
         elif arg.lstrip("-").isdigit():
-            hedef = int(arg)
-        elif yanit and yanit.forward_from_chat:
-            hedef = yanit.forward_from_chat.id
-        elif yanit and yanit.sender_chat:
-            hedef = yanit.sender_chat.id
+            hedef = int(arg.split()[0])
         else:
-            await de("Kullanım: /setlog @kanaladı\nveya kanal mesajını iletip /setlog yaz (yanıtla)")
+            hedef = kanal_id_bul(yanit) or kanal_id_bul(msg)
+
+        if not hedef:
+            await de(
+                "Rapor kanalı ayarlamak için:\n"
+                "1) Kanalından bir mesajı gruba ilet\n"
+                "2) O iletilmiş mesaja yanıt verip yaz: /setlog\n\n"
+                "veya kanalın @kullaniciadi varsa: /setlog @kanaladi"
+            )
             return
         cset(cid, "log_kanal", hedef)
-        await de(f"✅ Rapor kanalı ayarlandı: <code>{hedef}</code>\nBot o kanalda yönetici olmalı.")
+        await de(f"✅ Rapor kanalı ayarlandı: <code>{hedef}</code>\nBot o kanalda yönetici olmalı (mesaj gönderebilsin).")
         try:
-            await ctx.bot.send_message(hedef, f"📋 Bu kanal artık <b>{html.escape(chat.title or str(cid))}</b> grubunun rapor kanalı.", parse_mode="HTML")
+            await ctx.bot.send_message(
+                hedef,
+                f"📋 Bu kanal artık <b>{html.escape(chat.title or str(cid))}</b> grubunun rapor kanalı.",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await de(f"⚠️ Kanal ayarlandı ama test mesajı gidemedi (botu kanala yönetici ekle): {e}")
     elif ad == "unsetlog":
