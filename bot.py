@@ -109,7 +109,7 @@ if not durum["son"]:
 
 VARS = {"ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
         "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
-        "hosgeldin_metin": None, "kurallar": None, "log_kanal": None}
+        "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None, "duyuru_aralik_saat": 3}
 
 def cget(cid, k):
     return durum["ayar"].get(str(cid), {}).get(k, VARS[k])
@@ -880,14 +880,19 @@ async def ipucu_dongusu(app):
             log.warning(f"İpucu döngüsü hatası: {e}")
 
 async def duyuru_saatlik(app):
+    """Günün arşivindeki duyuruları belirli aralıkla (varsayılan 3 saat) gruba tekrar atar."""
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(120)
         try:
-            now = datetime.now(TR)
-            if now.minute > 1:
-                continue
             son = durum.get("duyuru_saat", 0)
-            if time.time() - son < 3500:
+            # En kısa aralık 3 saat (10800 sn); grup ayarı duyuru_aralik_saat ile değiştirilebilir
+            aralik = 3
+            try:
+                # Tüm gruplar için ortak döngü; aralık min 3 saat
+                aralik = max(3, int(aralik))
+            except Exception:
+                aralik = 3
+            if time.time() - son < aralik * 3600 - 60:
                 continue
             durum["duyuru_saat"] = time.time()
             durum_kaydet()
@@ -1958,16 +1963,60 @@ async def mesaj(update, ctx):
                 await msg.reply_text(f"✅ {sayac} gruba gönderildi:\n{gonderilecek}")
             return
 
-    if not ozel and sahip_mi(user) and link_var(msg, metin):
-        try:
-            kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
-            if kayit_ozet:
-                kayit_ozet["tarih"] = time.time()
-                arsiv_ekle(cid, kayit_ozet)
-                await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
-                log.info(f"Sahip linki otomatik kaydedildi + pinlendi: {cid}")
-        except Exception as e:
-            log.warning(f"Otomatik duyuru/pin hatası: {e}")
+    # Sadece bağlı kanaldan (Yeni Bir Airdrop vb.) gelen otomatik iletileri sabitle + arşive al
+    if not ozel:
+        kanal_mesaji = False
+        kanal_adi = ""
+        sc = getattr(msg, "sender_chat", None)
+        if sc is not None and getattr(sc, "type", "") == "channel":
+            kanal_mesaji = True
+            kanal_adi = (sc.title or sc.username or "")
+        if getattr(msg, "is_automatic_forward", False):
+            kanal_mesaji = True
+            fo = getattr(msg, "forward_origin", None)
+            if fo is not None and getattr(fo, "chat", None) is not None:
+                kanal_adi = (fo.chat.title or fo.chat.username or kanal_adi)
+            elif getattr(msg, "forward_from_chat", None) is not None:
+                kanal_adi = (msg.forward_from_chat.title or msg.forward_from_chat.username or kanal_adi)
+        if kanal_mesaji:
+            izinli = cget(cid, "duyuru_kanal")  # None = varsayılan: YeniBirAirdrops
+            ad_k = kucult(kanal_adi)
+            uname = ""
+            if sc is not None:
+                uname = (sc.username or "").lower()
+            fo_chat = getattr(msg, "forward_from_chat", None)
+            if fo_chat is not None and not uname:
+                uname = (fo_chat.username or "").lower()
+            fo = getattr(msg, "forward_origin", None)
+            if fo is not None and getattr(fo, "chat", None) is not None and not uname:
+                uname = (fo.chat.username or "").lower()
+            uygun = False
+            if izinli:
+                if str(izinli).lstrip("-").isdigit():
+                    kid = sc.id if sc else None
+                    if kid and int(izinli) == int(kid):
+                        uygun = True
+                    elif fo_chat and int(izinli) == int(fo_chat.id):
+                        uygun = True
+                elif kucult(str(izinli)) in ad_k or kucult(str(izinli)) == uname:
+                    uygun = True
+            else:
+                # Varsayılan kaynak: https://t.me/YeniBirAirdrops
+                uygun = (
+                    "yenibirairdrops" in ad_k.replace(" ", "")
+                    or "yeni bir airdrop" in ad_k
+                    or (sc and (sc.username or "").lower() == "yenibirairdrops")
+                )
+            if uygun:
+                try:
+                    kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
+                    if kayit_ozet:
+                        kayit_ozet["tarih"] = time.time()
+                        arsiv_ekle(cid, kayit_ozet)
+                        await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
+                        log.info(f"Kanal duyurusu pin+arsiv: {cid} | {kanal_adi}")
+                except Exception as e:
+                    log.warning(f"Otomatik duyuru/pin hatası: {e}")
 
     if await komut(update, ctx, metin):
         return
