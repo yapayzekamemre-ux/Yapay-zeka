@@ -63,7 +63,7 @@ YARDIM = (
     "'sabitle', 'duyuru yap' gibi yazabilirsin, bot anlamaya çalışır. 'yapay bundan sonra ...' ile kalıcı "
     "talimat verirsin.\n\n"
     "<b>Ayar:</b> /ayarlar /hosgeldin_ac /hosgeldin_kapat /hosgeldinmetni metin ({ad} {grup}) /hosgeldinsifirla "
-    "/kuralayarla metin /kuralsil /captcha_ac /captcha_kapat /flood 6 /uyarilimit 3 /uyarieylem ban|mute|kick "
+    "/setlog @kanal /unsetlog /kuralayarla metin /kuralsil /captcha_ac /captcha_kapat /flood 6 /uyarilimit 3 /uyarieylem ban|mute|kick "
     "/ai_ac /ai_kapat /ipucu_ac /ipucu_kapat /adminizin_ac /adminizin_kapat\n\n"
     "<b>İçerik:</b> /kaydet isim metin (sonra #isim) /notsil isim /filtre kelime cevap /filtresil kelime "
     "/kara kelime /karasil kelime /karalar /kilit tür /kilitac tür /duyuruekle\n"
@@ -109,7 +109,7 @@ if not durum["son"]:
 
 VARS = {"ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
         "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
-        "hosgeldin_metin": None, "kurallar": None}
+        "hosgeldin_metin": None, "kurallar": None, "log_kanal": None}
 
 def cget(cid, k):
     return durum["ayar"].get(str(cid), {}).get(k, VARS[k])
@@ -117,6 +117,16 @@ def cget(cid, k):
 def cset(cid, k, v):
     durum["ayar"].setdefault(str(cid), {})[k] = v
     durum_kaydet()
+
+async def log_gonder(ctx, kaynak_cid, metin):
+    """Grup işlemlerini rapor kanalına yaz. log_kanal ayarlı değilse sessizce çık."""
+    kid = cget(kaynak_cid, "log_kanal")
+    if not kid:
+        return
+    try:
+        await ctx.bot.send_message(int(kid), metin, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        log.warning(f"Log kanalına yazılamadı ({kid}): {e}")
 
 SAHIP_KOD = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
 if not durum["sahip"]:
@@ -566,7 +576,6 @@ async def fiyat_gonder(update, ctx, sorgu, miktar=1.0, siki=False):
         f"{'₺' + sayi(veri['try']) if veri.get('try') else '$' + sayi(veri.get('usd'))}, "
         f"24 saatte %{veri['deg'] or 0:+.2f} değişti. "
         f"Buna çok kısa, esprili ve samimi bir cümle yaz. Yatırım tavsiyesi verme."}])
-
     satirlar = [baslik, fiyat_satir]
     if deg_text or espri:
         ek = "➖ "
@@ -1056,58 +1065,76 @@ def hedef_coz(msg, cid, t):
             if (u.get("kullanici") or "").lower() == uname:
                 return int(uid), u["ad"]
 
-    # İsimle ara: "sustur 2 dk Emre 2", "banla Emre", "mute emre2"
-    # Komut kelimelerini at, kalanı isim adayı yap
+    # Süre kalıplarını metinden çıkar: "2 dk", "10 dakika", "1 saat" vb.
+    t_temiz = re.sub(
+        r"\b\d+\s*(?:dk|dakika|saat|sn|saniye|min|m|h|d)\b",
+        " ",
+        t,
+        flags=re.I,
+    )
+    # Başta/sonda tek başına kalan süre sayısı da atılsın (sadece isim kalır)
     atilacak = {
         "yapay", "sustur", "susturulsun", "mute", "ban", "banla", "kick", "at", "uçur", "ucur",
         "warn", "uyar", "uyarı", "uyari", "unmute", "aç", "ac", "kaldır", "kaldir",
         "dk", "dakika", "saat", "sn", "saniye", "m", "h", "d", "min",
         "et", "yapsana", "olarak", "şu", "su", "bu", "şunu", "sunu", "bunu", "kişiyi", "kisiyi",
+        "gruptan", "gruba", "kullanici", "kullanıcı",
     }
-    kelimeler = re.findall(r"[\wçğıöşüÇĞİÖŞÜ]+", t)
+    kelimeler = re.findall(r"[\wçğıöşüÇĞİÖŞÜ]+", t_temiz)
     aday_parcalar = []
     for k in kelimeler:
         kl = kucult(k)
         if kl in atilacak:
-            continue
-        if kl.isdigit():
-            # Süre sayıları at (2 dk), ama ismin parçası olabilir ("Emre 2")
-            # isim adayına ekle; skorlamada kullanacağız
-            aday_parcalar.append(k)
             continue
         aday_parcalar.append(k)
 
     if not aday_parcalar:
         return None, None
 
-    aday = " ".join(aday_parcalar).strip()
-    aday_k = kucult(aday)
-    if len(aday_k) < 2:
-        return None, None
+    # Birden fazla aday dene: tam metin + son 1-3 kelime (isim genelde sonda)
+    adaylar = []
+    adaylar.append(" ".join(aday_parcalar))
+    for n in (1, 2, 3):
+        if len(aday_parcalar) >= n:
+            adaylar.append(" ".join(aday_parcalar[-n:]))
+            adaylar.append(" ".join(aday_parcalar[:n]))
+    # Tekrarları temizle
+    gorulen = set()
+    aday_listesi = []
+    for a in adaylar:
+        ak = kucult(a).strip()
+        if len(ak) >= 2 and ak not in gorulen:
+            gorulen.add(ak)
+            aday_listesi.append(ak)
 
     en_iyi = None  # (skor, uid, ad)
-    for uid, u in uyeler.get(str(cid), {}).items():
-        ad = u.get("ad") or ""
-        ad_k = kucult(ad)
-        kullanici = (u.get("kullanici") or "").lower()
-        skor = 0
-        if ad_k == aday_k:
-            skor = 100
-        elif aday_k in ad_k or ad_k in aday_k:
-            skor = 80
-        elif kullanici and (kullanici == aday_k.replace(" ", "") or aday_k.replace(" ", "") in kullanici):
-            skor = 70
-        else:
-            # kelime kelime örtüşme
-            ad_kel = set(re.findall(r"\w+", ad_k))
-            aday_kel = set(re.findall(r"\w+", aday_k))
-            ortak = ad_kel & aday_kel
-            if ortak and len(ortak) >= max(1, len(aday_kel) - 1):
-                skor = 50 + 10 * len(ortak)
-        if skor > 0 and (en_iyi is None or skor > en_iyi[0]):
-            en_iyi = (skor, int(uid), ad)
+    grup_uyeleri = uyeler.get(str(cid), {})
+    for aday_k in aday_listesi:
+        for uid, u in grup_uyeleri.items():
+            ad = u.get("ad") or ""
+            ad_k = kucult(ad)
+            kullanici = (u.get("kullanici") or "").lower()
+            skor = 0
+            if ad_k == aday_k:
+                skor = 100
+            elif aday_k in ad_k or ad_k in aday_k:
+                skor = 80
+            elif kullanici and (
+                kullanici == aday_k.replace(" ", "")
+                or aday_k.replace(" ", "") == kullanici
+                or aday_k.replace(" ", "") in kullanici
+            ):
+                skor = 70
+            else:
+                ad_kel = set(re.findall(r"[\wçğıöşü]+", ad_k))
+                aday_kel = set(re.findall(r"[\wçğıöşü]+", aday_k))
+                ortak = ad_kel & aday_kel
+                if ortak:
+                    skor = 40 + 15 * len(ortak)
+            if skor > 0 and (en_iyi is None or skor > en_iyi[0]):
+                en_iyi = (skor, int(uid), ad)
 
-    if en_iyi and en_iyi[0] >= 50:
+    if en_iyi and en_iyi[0] >= 40:
         return en_iyi[1], en_iyi[2]
     return None, None
 
@@ -1311,6 +1338,13 @@ async def komut(update, ctx, metin):
             arsiv_ekle(cid, k)
             cevap = "✅ Duyurulara eklendi."
         await ctx.bot.send_message(cid, cevap, parse_mode="HTML")
+        hedef_txt = m if eylem not in ("pin", "unpin", "sil", "arsiv") else "—"
+        await log_gonder(ctx, cid,
+            f"⚙️ <b>İşlem</b>: {html.escape(str(eylem))}\n"
+            f"🎯 {hedef_txt}\n"
+            f"👮 {html.escape(user.full_name)}\n"
+            f"📍 {html.escape(chat.title or str(cid))}\n"
+            f"💬 {html.escape(cevap[:200])}")
         await bitir()
     except Exception as e:
         log.warning(f"Doğal komut hatası: {e}")
@@ -1514,6 +1548,35 @@ async def yonet_komut(update, ctx):
     elif ad == "hosgeldinsifirla":
         cset(cid, "hosgeldin_metin", None)
         await de("Hoş geldin metni varsayılana döndü (yapay zeka yazar).")
+    elif ad == "setlog":
+        # /setlog @kanal  veya  /setlog -100...  veya kanala iletilmiş mesaja yanıt
+        hedef = None
+        arg = (a1 + " " + a2).strip()
+        if arg.startswith("@"):
+            try:
+                ch = await ctx.bot.get_chat(arg)
+                hedef = ch.id
+            except Exception as e:
+                await de(f"Kanal bulunamadı: {e}")
+                return
+        elif arg.lstrip("-").isdigit():
+            hedef = int(arg)
+        elif yanit and yanit.forward_from_chat:
+            hedef = yanit.forward_from_chat.id
+        elif yanit and yanit.sender_chat:
+            hedef = yanit.sender_chat.id
+        else:
+            await de("Kullanım: /setlog @kanaladı\nveya kanal mesajını iletip /setlog yaz (yanıtla)")
+            return
+        cset(cid, "log_kanal", hedef)
+        await de(f"✅ Rapor kanalı ayarlandı: <code>{hedef}</code>\nBot o kanalda yönetici olmalı.")
+        try:
+            await ctx.bot.send_message(hedef, f"📋 Bu kanal artık <b>{html.escape(chat.title or str(cid))}</b> grubunun rapor kanalı.", parse_mode="HTML")
+        except Exception as e:
+            await de(f"⚠️ Kanal ayarlandı ama test mesajı gidemedi (botu kanala yönetici ekle): {e}")
+    elif ad == "unsetlog":
+        cset(cid, "log_kanal", None)
+        await de("Rapor kanalı kaldırıldı.")
     elif ad == "kaydet":
         isim = kucult(a1)
         t = a2.strip() or ((yanit.text or yanit.caption or "").strip() if yanit else "")
@@ -1729,6 +1792,12 @@ async def hosgeldin(update, ctx):
             continue
         uye_kaydi(cid, u, say=False)
         kaydet()
+        uname = f"@{u.username}" if u.username else "—"
+        await log_gonder(ctx, cid,
+            f"🟢 <b>Katıldı</b>"
+            f"👤 {html.escape(u.full_name)} ({uname})"
+            f"🆔 <code>{u.id}</code>"
+            f"📍 {html.escape(chat.title or str(cid))}")
         if cget(cid, "captcha"):
             try:
                 await sustur(ctx, cid, u.id)
@@ -1746,14 +1815,34 @@ async def hosgeldin(update, ctx):
         await hosgeldin_gonder(ctx, cid, u, chat.title)
 
 async def ayrildi(update, ctx):
-    """'X gruptan ayrıldı / çıkarıldı' sistem mesajını sil."""
+    """X gruptan ayrildi - sil + log + unut."""
     msg = update.effective_message
-    if not msg:
+    chat = update.effective_chat
+    if not msg or not chat:
         return
+    cid = chat.id
+    u = msg.left_chat_member
+    if u and not u.is_bot:
+        uname = f"@{u.username}" if u.username else "—"
+        metin = (
+            "🔴 <b>Ayrıldı / çıkarıldı</b>\n"
+            f"👤 {html.escape(u.full_name)} ({uname})\n"
+            f"🆔 <code>{u.id}</code>\n"
+            f"📍 {html.escape(chat.title or str(cid))}"
+        )
+        await log_gonder(ctx, cid, metin)
+        try:
+            k = uyeler.get(str(cid), {})
+            if str(u.id) in k:
+                del k[str(u.id)]
+                kaydet()
+        except Exception as e:
+            log.warning(f"Üye silme hatası: {e}")
     try:
         await msg.delete()
     except Exception as e:
         log.warning(f"Ayrılma mesajı silinemedi: {e}")
+
 
 async def captcha_buton(update, ctx):
     q = update.callback_query
@@ -2011,7 +2100,7 @@ app.add_handler(CommandHandler(["ai_ac", "ai_kapat", "ipucu_ac", "ipucu_kapat", 
 app.add_handler(CommandHandler(["gunluk", "haftalik", "aylik", "duyurular"], liste_komut))
 app.add_handler(CommandHandler(list(ALIAS.keys()), mod_komut))
 app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem", "kuralayarla", "kuralsil",
-                                "hosgeldinmetni", "hosgeldinsifirla", "kaydet", "notsil", "filtre", "filtresil",
+                                "hosgeldinmetni", "hosgeldinsifirla", "setlog", "unsetlog", "kaydet", "notsil", "filtre", "filtresil",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "ayarlar", "del", "sil", "purge",
                                 "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle"], yonet_komut))
 app.add_handler(CommandHandler(["yardim", "help", "start", "kurallar", "not", "get", "notlar", "filtreler",
