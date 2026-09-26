@@ -108,7 +108,7 @@ if not durum["son"]:
     durum["son"] = time.time()
 
 VARS = {"ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
-        "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
+        "kilit": [], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
         "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None, "duyuru_aralik_saat": 3}
 
 def cget(cid, k):
@@ -949,7 +949,10 @@ KUFUR_KOK = ("siktir", "sikeyim", "sikerim", "orospu", "yarrak", "amına", "amin
              "pezevenk", "şerefsiz", "gerizekalı")
 
 LINK_RE = re.compile(r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\b[a-z0-9-]+\.(?:com|io|xyz|net|org|me|app|co|link|fun|ai|gg|site|online|top|click)\b\S*)")
-IZINLI = ("coingecko.com", "coinmarketcap.com", "dexscreener.com", "tradingview.com")
+IZINLI = (
+    "coingecko.com", "coinmarketcap.com", "dexscreener.com", "tradingview.com",
+    "t.me/yenibirairdrops", "telegram.me/yenibirairdrops", "yenibirairdrops",
+)
 SCAM_IFADE = ("seed phrase", "private key", "gizli anahtar", "özel anahtar", "12 kelime", "24 kelime",
               "kurtarma ifadesi", "recovery phrase", "cüzdanını bağla", "connect your wallet")
 KILIT_TURLERI = ("link", "sticker", "gif", "foto", "video", "ses", "dosya", "iletilen")
@@ -979,8 +982,16 @@ def link_var(msg, metin):
                 adaylar.append(parca.lower())
         except Exception:
             pass
-    adaylar = [a for a in adaylar if not any(d in a for d in IZINLI)]
-    return len(adaylar) > 0
+    temiz = []
+    for a in adaylar:
+        a2 = a.lower().replace("https://", "").replace("http://", "")
+        if any(d in a2 for d in IZINLI):
+            continue
+        # t.me/YeniBirAirdrops veya t.me/c/... kanal postları serbest
+        if a2.startswith("t.me/yenibirairdrops") or "t.me/yenibirairdrops/" in a2:
+            continue
+        temiz.append(a)
+    return len(temiz) > 0
 
 def spam_mi(chat_id, user_id, n):
     dq = zamanlar.get((chat_id, user_id))
@@ -1904,6 +1915,18 @@ async def kilit_kontrol(update, ctx):
     user = update.effective_user
     if not msg or not user or user.is_bot or chat.type == "private":
         return
+    # Kanal otomatik iletileri / YeniBirAirdrops paylaşımları silinmesin
+    sc = getattr(msg, "sender_chat", None)
+    if sc is not None and getattr(sc, "type", "") == "channel":
+        return
+    if getattr(msg, "is_automatic_forward", False):
+        return
+    fo = getattr(msg, "forward_from_chat", None)
+    if fo is not None and getattr(fo, "type", "") == "channel":
+        uname = (fo.username or "").lower()
+        title = kucult(fo.title or "")
+        if uname == "yenibirairdrops" or "yeni bir airdrop" in title or "yenibirairdrops" in title.replace(" ", ""):
+            return
     kilit = cget(chat.id, "kilit")
     if not kilit or not any(t in kilit for t in mesaj_turleri(msg)):
         return
@@ -2051,10 +2074,18 @@ async def mesaj(update, ctx):
             return
 
     if not ozel:
+        # Kanal iletileri / YeniBirAirdrops paylaşımları link kilidine takılmasın
+        sc = getattr(msg, "sender_chat", None)
+        fo_chat = getattr(msg, "forward_from_chat", None)
+        kanal_oto = bool(
+            getattr(msg, "is_automatic_forward", False)
+            or (sc and getattr(sc, "type", "") == "channel")
+            or (fo_chat and getattr(fo_chat, "type", "") == "channel")
+        )
         n = cget(cid, "flood")
         spam = n > 0 and spam_mi(cid, user.id, n)
         ad = None
-        if scam_var(metin) or ("link" in cget(cid, "kilit") and link_var(msg, metin)):
+        if not kanal_oto and (scam_var(metin) or ("link" in cget(cid, "kilit") and link_var(msg, metin))):
             ad = "link/şifre paylaşımı"
         elif kufur_var(metin):
             ad = "küfür/hakaret"
