@@ -682,11 +682,22 @@ def komut_silici(fonk):
     return sar
 
 def mesaj_linki(chat, mid):
-    if chat.username:
-        return f"https://t.me/{chat.username}/{mid}"
-    s = str(chat.id)
+    """Gruptaki mesaja derin link — tıklanınca o duyuruya gider."""
+    if not mid:
+        return None
+    try:
+        mid = int(mid)
+    except Exception:
+        return None
+    uname = getattr(chat, "username", None)
+    if uname:
+        return f"https://t.me/{uname}/{mid}"
+    s = str(getattr(chat, "id", "") or "")
     if s.startswith("-100"):
         return f"https://t.me/c/{s[4:]}/{mid}"
+    if s.lstrip("-").isdigit():
+        # yedek: -100 eklenmemiş id
+        return f"https://t.me/c/{s.lstrip('-')}/{mid}"
     return None
 
 async def resim_oku(ctx, cid, m):
@@ -786,20 +797,32 @@ def liste_gun(kw):
     return 1, "Bugünkü"
 
 async def arsiv_gonder(update, ctx, gun, baslik):
+    """Butona tıkla → gruptaki orijinal airdrop/duyuru mesajına git."""
     msg = update.effective_message
-    kayitlar = arsiv_liste(update.effective_chat.id, gun)
+    chat = update.effective_chat
+    kayitlar = arsiv_liste(chat.id, gun)
     if not kayitlar:
         await msg.reply_text(f"{baslik} duyuru yok.")
         return
-    satirlar = [f"📢 {baslik} Duyurular"]
+    satirlar = [f"📢 {baslik} Duyurular", ""]
     dugmeler = []
     for i, k in enumerate(kayitlar[:10], 1):
         ad = arsiv_baslik(k)
-        if k.get("link"):
-            dugmeler.append([InlineKeyboardButton(f"{NUMARALAR[i - 1]} {ad}", url=k["link"])])
+        link = k.get("link") or mesaj_linki(chat, k.get("id"))
+        if link and k.get("id") and not k.get("link"):
+            k["link"] = link
+        if link:
+            dugmeler.append([InlineKeyboardButton(f"{NUMARALAR[i - 1]} {ad}", url=link)])
+            satirlar.append(f"{NUMARALAR[i - 1]} {ad}")
         else:
             satirlar.append(f"{NUMARALAR[i - 1]} {ad}")
-    await msg.reply_text("\n".join(satirlar), reply_markup=InlineKeyboardMarkup(dugmeler) if dugmeler else None)
+    satirlar.append("")
+    satirlar.append("Numaraya bas → gruptaki duyuruya gider.")
+    await msg.reply_text(
+        "\n".join(satirlar),
+        reply_markup=InlineKeyboardMarkup(dugmeler) if dugmeler else None,
+        disable_web_page_preview=True,
+    )
 
 async def liste_komut(update, ctx):
     chat = update.effective_chat
