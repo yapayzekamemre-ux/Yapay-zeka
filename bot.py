@@ -682,7 +682,7 @@ def komut_silici(fonk):
     return sar
 
 def mesaj_linki(chat, mid):
-    """Gruptaki mesaja derin link — tıklanınca o duyuruya gider."""
+    """Sohbet mesajına derin link."""
     if not mid:
         return None
     try:
@@ -696,8 +696,47 @@ def mesaj_linki(chat, mid):
     if s.startswith("-100"):
         return f"https://t.me/c/{s[4:]}/{mid}"
     if s.lstrip("-").isdigit():
-        # yedek: -100 eklenmemiş id
         return f"https://t.me/c/{s.lstrip('-')}/{mid}"
+    return None
+
+def kanal_post_linki(msg):
+    """Kanal / otomatik iletim mesajından orijinal kanal post linki.
+    Örn: https://t.me/YeniBirAirdrops/123
+    """
+    if not msg:
+        return None
+    # 1) forward_origin (yeni API)
+    fo = getattr(msg, "forward_origin", None)
+    if fo is not None:
+        ch = getattr(fo, "chat", None)
+        mid = getattr(fo, "message_id", None)
+        if ch is not None and mid:
+            un = getattr(ch, "username", None)
+            if un:
+                return f"https://t.me/{un}/{int(mid)}"
+            cid = str(getattr(ch, "id", "") or "")
+            if cid.startswith("-100"):
+                return f"https://t.me/c/{cid[4:]}/{int(mid)}"
+    # 2) klasik forward_from_chat + forward_from_message_id
+    fch = getattr(msg, "forward_from_chat", None)
+    fmid = getattr(msg, "forward_from_message_id", None)
+    if fch is not None and fmid:
+        un = getattr(fch, "username", None)
+        if un:
+            return f"https://t.me/{un}/{int(fmid)}"
+        cid = str(getattr(fch, "id", "") or "")
+        if cid.startswith("-100"):
+            return f"https://t.me/c/{cid[4:]}/{int(fmid)}"
+    # 3) sender_chat = kanal (tartışma grubunda kanal kimliğiyle post)
+    sc = getattr(msg, "sender_chat", None)
+    if sc is not None and getattr(sc, "type", "") == "channel":
+        mid = getattr(msg, "forward_from_message_id", None) or getattr(msg, "message_id", None)
+        un = getattr(sc, "username", None)
+        if un and mid:
+            return f"https://t.me/{un}/{int(mid)}"
+        cid = str(getattr(sc, "id", "") or "")
+        if cid.startswith("-100") and mid:
+            return f"https://t.me/c/{cid[4:]}/{int(mid)}"
     return None
 
 async def resim_oku(ctx, cid, m):
@@ -725,7 +764,9 @@ async def mesaj_ozeti(ctx, m, chat):
     d = getattr(m, "date", None)
     if d and d.year > 2000:
         tarih = d.timestamp()
-    return {"id": mid, "metin": metin[:1500], "link": mesaj_linki(chat, mid), "tarih": tarih}
+    # Önce kanal post linki (YeniBirAirdrops), yoksa grup mesajı
+    link = kanal_post_linki(m) or mesaj_linki(chat, mid)
+    return {"id": mid, "metin": metin[:1500], "link": link, "tarih": tarih}
 
 async def sabit_al(ctx, chat, taze=False):
     an = sabit_onbellek.get(chat.id)
@@ -808,9 +849,10 @@ async def arsiv_gonder(update, ctx, gun, baslik):
     dugmeler = []
     for i, k in enumerate(kayitlar[:10], 1):
         ad = arsiv_baslik(k)
-        link = k.get("link") or mesaj_linki(chat, k.get("id"))
-        if link and k.get("id") and not k.get("link"):
-            k["link"] = link
+        link = k.get("link")
+        # Eski kayıtlarda sadece grup linki olabilir; id ile grup yedegi
+        if not link:
+            link = mesaj_linki(chat, k.get("id"))
         if link:
             dugmeler.append([InlineKeyboardButton(f"{NUMARALAR[i - 1]} {ad}", url=link)])
             satirlar.append(f"{NUMARALAR[i - 1]} {ad}")
