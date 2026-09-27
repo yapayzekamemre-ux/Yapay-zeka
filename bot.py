@@ -800,17 +800,56 @@ async def sabit_cevap(update, ctx):
         parca.append(kayit["link"])
     await msg.reply_text("\n".join(parca))
 
+def arsiv_baslik_uret(metin, link=None):
+    """Metinden kısa başlık; zayıfsa AI ile üret."""
+    ham = (metin or "").strip()
+    # URL ve fazla boşluk temizle
+    temiz_satirlar = []
+    for s in ham.splitlines():
+        s = re.sub(r"https?://\S+", "", s).strip()
+        s = re.sub(r"[@#]\w+", "", s).strip()
+        if s and len(s) > 2:
+            temiz_satirlar.append(s)
+    if temiz_satirlar:
+        bas = temiz_satirlar[0]
+        return bas[:42] + ("…" if len(bas) > 42 else "")
+    # Linkten token/bot adı çıkar
+    if link:
+        m = re.search(r"t\.me/([A-Za-z0-9_]+)", link)
+        if m and m.group(1).lower() not in ("yenibirairdrops", "c"):
+            return m.group(1)[:40]
+    # AI kısa başlık
+    if ham or link:
+        try:
+            ai = sor([{"role": "user", "content":
+                "Bu airdrop/duyuru için en fazla 6 kelimelik Türkçe başlık yaz. "
+                "Sadece başlık, tırnak yok, emoji yok:\n" + (ham or link or "")[:500]}])
+            if ai:
+                b = " ".join(ai.strip().split())[:42]
+                if b and "yoğun" not in b.lower():
+                    return b
+        except Exception:
+            pass
+    return "Duyuru"
+
 def arsiv_ekle(cid, kayit):
     liste = durum["arsiv"].setdefault(str(cid), [])
+    baslik = kayit.get("baslik") or arsiv_baslik_uret(kayit.get("metin", ""), kayit.get("link"))
     for x in liste:
         if x["id"] == kayit["id"]:
             x["tarih"] = kayit["tarih"]
             x["metin"] = kayit.get("metin", "")
             x["link"] = kayit.get("link")
+            x["baslik"] = baslik
             durum_kaydet()
             return
-    liste.append({"id": kayit["id"], "metin": kayit.get("metin", ""),
-                  "link": kayit.get("link"), "tarih": kayit["tarih"]})
+    liste.append({
+        "id": kayit["id"],
+        "metin": kayit.get("metin", ""),
+        "link": kayit.get("link"),
+        "baslik": baslik,
+        "tarih": kayit["tarih"],
+    })
     sinir = time.time() - 45 * 86400
     durum["arsiv"][str(cid)] = [x for x in liste if x["tarih"] >= sinir][-200:]
     durum_kaydet()
@@ -824,11 +863,16 @@ def arsiv_liste(cid, gun):
     return [x for x in liste if x["tarih"] >= sinir]
 
 def arsiv_baslik(k):
+    if k.get("baslik") and k["baslik"] != "Duyuru":
+        return k["baslik"][:45]
     for s in (k.get("metin") or "").splitlines():
         s = re.sub(r"https?://\S+", "", s).strip()
-        if s:
+        if s and len(s) > 2:
             return s[:45] + ("…" if len(s) > 45 else "")
-    return "Duyuru"
+    # Eski kayit: bir kez baslik üret ve sakla
+    b = arsiv_baslik_uret(k.get("metin", ""), k.get("link"))
+    k["baslik"] = b
+    return b[:45]
 
 def liste_gun(kw):
     if any(k in ("aylık", "aylik") for k in kw):
@@ -859,7 +903,7 @@ async def arsiv_gonder(update, ctx, gun, baslik):
         else:
             satirlar.append(f"{NUMARALAR[i - 1]} {ad}")
     satirlar.append("")
-    satirlar.append("Numaraya bas → gruptaki duyuruya gider.")
+    satirlar.append("Numaraya bas → kanal duyurusuna gider.")
     await msg.reply_text(
         "\n".join(satirlar),
         reply_markup=InlineKeyboardMarkup(dugmeler) if dugmeler else None,
@@ -2419,9 +2463,21 @@ async def mesaj(update, ctx):
                     kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
                     if kayit_ozet:
                         kayit_ozet["tarih"] = time.time()
+                        # Başlık: metin yoksa AI ile üret
+                        met = kayit_ozet.get("metin") or ""
+                        if len(met.strip()) < 8:
+                            try:
+                                bas = await asyncio.to_thread(
+                                    arsiv_baslik_uret, met, kayit_ozet.get("link")
+                                )
+                                kayit_ozet["baslik"] = bas
+                            except Exception:
+                                pass
+                        else:
+                            kayit_ozet["baslik"] = arsiv_baslik_uret(met, kayit_ozet.get("link"))
                         arsiv_ekle(cid, kayit_ozet)
                         await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
-                        log.info(f"Kanal duyurusu pin+arsiv: {cid} | {kanal_adi}")
+                        log.info(f"Kanal duyurusu pin+arsiv: {cid} | {kanal_adi} | {kayit_ozet.get('baslik')}")
                 except Exception as e:
                     log.warning(f"Otomatik duyuru/pin hatası: {e}")
 
