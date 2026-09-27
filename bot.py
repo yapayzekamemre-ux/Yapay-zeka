@@ -14,7 +14,7 @@ GEMINI_KEY = os.environ["GEMINI_KEY"]
 MISTRAL_KEY = os.environ.get("MISTRAL_KEY", "")
 CEREBRAS_KEY = os.environ.get("CEREBRAS_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
-NVIDIA_KEY = os.environ.get("NVIDIA_KEY", "")
+DEEPSEEK_KEY = os.environ.get("DEEPSEEK_KEY", "")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
 
 class _Ping(BaseHTTPRequestHandler):
@@ -369,16 +369,34 @@ def claude_sor(m, sistem):
     text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
     return text.strip() or None
 
+def deepseek_sor(m, sistem):
+    """DeepSeek API — DEEPSEEK_KEY (platform.deepseek.com)."""
+    r = requests.post(
+        "https://api.deepseek.com/chat/completions",
+        headers={
+            "Authorization": "Bearer " + DEEPSEEK_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "deepseek-chat",
+            "messages": [{"role": "system", "content": sistem}] + m,
+            "temperature": 0.7,
+            "max_tokens": 512,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
 SAGLAYICILAR = [("Groq", groq_sor), ("Gemini", gemini_sor)]
+if DEEPSEEK_KEY:
+    SAGLAYICILAR.append(("DeepSeek", deepseek_sor))
 if CEREBRAS_KEY:
     SAGLAYICILAR.append(("Cerebras", cerebras_sor))
 if OPENROUTER_KEY:
     SAGLAYICILAR.append(("OpenRouter", openrouter_sor))
 if MISTRAL_KEY:
     SAGLAYICILAR.append(("Mistral", mistral_sor))
-if NVIDIA_KEY:
-    # NVIDIA en sonda (son çare)
-    SAGLAYICILAR.append(("NVIDIA", nvidia_sor))
 
 def sor(mesajlar, ek="", arama=False):
     sistem = SISTEM + ek
