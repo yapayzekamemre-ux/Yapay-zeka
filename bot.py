@@ -102,14 +102,16 @@ except Exception:
     durum = {}
 for _k, _v in (("son", 0), ("liste", []), ("sahip", None), ("sabit", {}), ("ayar", {}),
                ("warn", {}), ("kara", {}), ("filtre", {}), ("not", {}), ("talimat", []), ("arsiv", {}),
-               ("duyuru_saat", 0)):
+               ("duyuru_saat", 0), ("approved", {}), ("blacklist", {}), ("whitelist", {}),
+               ("schedule", []), ("giveaway", {})):
     durum.setdefault(_k, _v)
 if not durum["son"]:
     durum["son"] = time.time()
 
 VARS = {"ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
         "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
-        "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None, "duyuru_aralik_saat": 3}
+        "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None, "duyuru_aralik_saat": 3,
+        "slowmode": 0, "night_bas": None, "night_bit": None, "newbies_dk": 0, "ai_mod": False}
 
 GLOBAL_AYAR = "_global"
 
@@ -984,6 +986,7 @@ async def baslat(app):
         log.warning(f"Kilit ayarı: {e}")
     app.bot_data["ipucu"] = asyncio.create_task(ipucu_dongusu(app))
     app.bot_data["duyuru"] = asyncio.create_task(duyuru_saatlik(app))
+    app.bot_data["schedule"] = asyncio.create_task(schedule_dongusu(app))
     try:
         await app.bot.set_my_commands([
             BotCommand("yardim", "Komut listesi"), BotCommand("kurallar", "Grup kuralları"),
@@ -2107,6 +2110,13 @@ async def hosgeldin(update, ctx):
             except Exception as e:
                 log.warning(f"Captcha kurulamadı: {e}")
         await hosgeldin_gonder(ctx, cid, u, chat.title)
+        # Newbies: yeni üyeyi X dk sustur
+        ndk = int(cget(cid, "newbies_dk") or 0)
+        if ndk > 0:
+            try:
+                await sustur(ctx, cid, u.id, ndk)
+            except Exception as e:
+                log.warning(f"Newbies mute: {e}")
 
 async def ayrildi(update, ctx):
     """X gruptan ayrildi - sil + log + unut."""
@@ -2209,6 +2219,31 @@ async def mesaj(update, ctx):
     ozel = chat.type == "private"
     cid = chat.id
     kayit = uye_kaydi(cid, user)
+    if not ozel and str(user.id) in _liste_uid(cid, "blacklist"):
+        try:
+            await msg.delete()
+            await ctx.bot.ban_chat_member(cid, user.id)
+        except Exception:
+            pass
+        return
+    if not ozel and gece_modu_aktif(cid) and not await muaf_mi(ctx, cid, user.id):
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return
+    sm = int(cget(cid, "slowmode") or 0)
+    if not ozel and sm > 0 and not await muaf_mi(ctx, cid, user.id):
+        anahtar_sm = ("sm", cid, user.id)
+        son = zamanlar.get(anahtar_sm)
+        now = time.time()
+        if isinstance(son, (int, float)) and now - son < sm:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return
+        zamanlar[anahtar_sm] = now
     kt = kisa_token(metin)
     kelimeler = re.findall(r"\w+", kucult(metin))
 
@@ -2359,7 +2394,8 @@ async def mesaj(update, ctx):
         n = cget(cid, "flood")
         spam = n > 0 and spam_mi(cid, user.id, n)
         ad = None
-        if not kanal_izinli and (scam_var(metin) or ("link" in (cget(cid, "kilit") or []) and link_var(msg, metin))):
+        onayli = str(user.id) in _liste_uid(cid, "approved") or str(user.id) in _liste_uid(cid, "whitelist")
+        if not kanal_izinli and not onayli and (scam_var(metin) or ("link" in (cget(cid, "kilit") or []) and link_var(msg, metin))):
             ad = "link/şifre paylaşımı"
         elif kufur_var(metin):
             ad = "küfür/hakaret"
@@ -2415,6 +2451,8 @@ async def mesaj(update, ctx):
 
     if not ozel and not cget(cid, "ai"):
         return
+    if not ozel and cget(cid, "ai_mod") and not await yetkili_mi(ctx, cid, user.id):
+        return
 
     ek = f"\nŞu an sana yazan kişi: {user.full_name}. Bu kişi {kayit['ilk']} tarihinden beri grupta, {kayit['mesaj']} mesaj yazdı. Ona ismiyle hitap et."
     if sahip_mi(user):
@@ -2466,6 +2504,401 @@ async def sifirla(update, ctx):
 async def hata(update, ctx):
     log.warning(f"Hata: {ctx.error}")
 
+
+# ===================== EK KOMUTLAR (slowmode, stats, giveaway...) =====================
+
+def _liste_uid(cid, anahtar):
+    return set(str(x) for x in durum.setdefault(anahtar, {}).setdefault(str(cid), []))
+
+def _liste_ekle(cid, anahtar, uid):
+    L = durum.setdefault(anahtar, {}).setdefault(str(cid), [])
+    s = str(uid)
+    if s not in L:
+        L.append(s)
+        durum_kaydet()
+
+def _liste_sil(cid, anahtar, uid):
+    L = durum.setdefault(anahtar, {}).setdefault(str(cid), [])
+    s = str(uid)
+    if s in L:
+        L.remove(s)
+        durum_kaydet()
+        return True
+    return False
+
+def gece_modu_aktif(cid):
+    bas, bit = cget(cid, "night_bas"), cget(cid, "night_bit")
+    if bas is None or bit is None:
+        return False
+    try:
+        bas, bit = int(bas), int(bit)
+    except Exception:
+        return False
+    saat = datetime.now(TR).hour
+    if bas <= bit:
+        return bas <= saat < bit
+    return saat >= bas or saat < bit
+
+async def gas_bilgi():
+    try:
+        r = requests.get("https://api.etherscan.io/api?module=gastracker&action=gasoracle", timeout=8)
+        d = r.json().get("result") or {}
+        if d.get("ProposeGasPrice"):
+            return (f"⛽ Ethereum Gas\n"
+                    f"🐢 Yavaş: {d.get('SafeGasPrice')} gwei\n"
+                    f"🚗 Orta: {d.get('ProposeGasPrice')} gwei\n"
+                    f"🚀 Hızlı: {d.get('FastGasPrice')} gwei")
+    except Exception as e:
+        log.warning(f"Gas API: {e}")
+    return "⛽ Gas bilgisi alınamadı."
+
+def ca_kontrol(metin):
+    m = re.search(r"\b(0x[a-fA-F0-9]{40})\b", metin)
+    if not m:
+        return None
+    ad = m.group(1)
+    ok = len(ad) == 42
+    return f"{'✅' if ok else '❌'} Contract: <code>{ad}</code>\nUzunluk: {len(ad)} (42 olmalı)"
+
+def scam_link_skor(metin):
+    k = kucult(metin)
+    skor = 0
+    notlar = []
+    if re.search(r"t\.me/\+", k) or "joinchat" in k:
+        skor += 2; notlar.append("davet linki")
+    if any(x in k for x in ("airdrop", "claim", "connect wallet", "seed", "private key", "cüzdan bağla")):
+        skor += 3; notlar.append("şüpheli kelime")
+    if re.search(r"https?://\S+", k) and "yenibirairdrops" not in k:
+        skor += 1; notlar.append("harici link")
+    if skor >= 4:
+        seviye = "🔴 Yüksek risk"
+    elif skor >= 2:
+        seviye = "🟡 Orta risk"
+    else:
+        seviye = "🟢 Düşük risk"
+    return f"🔍 Scam kontrol\n{seviye} (skor {skor})\n" + (", ".join(notlar) if notlar else "Belirgin kırmızı bayrak yok")
+
+async def schedule_dongusu(app):
+    while True:
+        await asyncio.sleep(30)
+        try:
+            now = time.time()
+            kalan = []
+            for item in list(durum.get("schedule") or []):
+                if item.get("zaman", 0) <= now:
+                    try:
+                        await app.bot.send_message(int(item["cid"]), item["metin"])
+                    except Exception as e:
+                        log.warning(f"Schedule hata: {e}")
+                    if item.get("tekrar"):
+                        item["zaman"] = now + int(item["tekrar"])
+                        kalan.append(item)
+                else:
+                    kalan.append(item)
+            durum["schedule"] = kalan
+            durum_kaydet()
+        except Exception as e:
+            log.warning(f"Schedule döngü: {e}")
+
+async def ekstra_komut(update, ctx):
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not msg.text or not user:
+        return
+    cid = chat.id
+    p = msg.text.split(None, 1)
+    ad = p[0][1:].split("@")[0].lower()
+    arg = p[1].strip() if len(p) > 1 else ""
+    ozel = chat.type == "private"
+    yanit = msg.reply_to_message
+
+    # --- herkes ---
+    if ad in ("stats", "istatistik"):
+        if ozel:
+            await msg.reply_text("Grupta kullan.")
+            return
+        u = uyeler.get(str(cid), {})
+        top = sorted(u.values(), key=lambda x: x.get("mesaj", 0), reverse=True)[:5]
+        satir = [f"📊 İstatistik\nÜye kayıt: {len(u)}\nAktif kilit: {', '.join(cget(cid,'kilit') or []) or 'yok'}",
+                 f"Slowmode: {cget(cid,'slowmode')} sn | Newbies: {cget(cid,'newbies_dk')} dk",
+                 f"Flood: {cget(cid,'flood')} | AI mod: {'sadece admin' if cget(cid,'ai_mod') else 'herkes'}"]
+        if top:
+            satir.append("Top 5:")
+            for i, x in enumerate(top, 1):
+                satir.append(f"{i}. {x.get('ad','?')} — {x.get('mesaj',0)} mesaj")
+        await msg.reply_text("\n".join(satir))
+        return
+
+    if ad == "active":
+        if ozel:
+            return
+        gun = int(arg) if arg.isdigit() else 7
+        sinir = time.time() - gun * 86400
+        # uyeler has ilk date string - approximate by mesaj count
+        u = uyeler.get(str(cid), {})
+        aktif = [x for x in u.values() if x.get("mesaj", 0) > 0]
+        aktif.sort(key=lambda x: x.get("mesaj", 0), reverse=True)
+        satir = [f"🟢 Son aktivite (kayıtlı, top 15) — {gun}g referans:"]
+        for x in aktif[:15]:
+            satir.append(f"• {x.get('ad','?')} ({x.get('mesaj',0)} msg)")
+        await msg.reply_text("\n".join(satir) if len(satir) > 1 else "Veri yok.")
+        return
+
+    if ad == "inactive":
+        if ozel:
+            return
+        gun = int(arg) if arg.isdigit() else 30
+        u = uyeler.get(str(cid), {})
+        az = [x for x in u.values() if x.get("mesaj", 0) <= 2]
+        satir = [f"😴 Az aktif / pasif (≤2 mesaj), örnek {gun}g bakışı:"]
+        for x in az[:20]:
+            satir.append(f"• {x.get('ad','?')}")
+        await msg.reply_text("\n".join(satir) if len(satir) > 1 else "Yok.")
+        return
+
+    if ad == "gas":
+        await msg.reply_text(await asyncio.to_thread(gas_bilgi))
+        return
+
+    if ad == "ca":
+        met = arg or ((yanit.text or yanit.caption or "") if yanit else "")
+        r = ca_kontrol(met)
+        await msg.reply_text(r or "0x ile başlayan 40 hex karakterli adres yapıştır.", parse_mode="HTML")
+        return
+
+    if ad == "scam":
+        met = arg or ((yanit.text or yanit.caption or "") if yanit else "")
+        if not met:
+            await msg.reply_text("Link veya metin ver / yanıtlа.")
+            return
+        await msg.reply_text(scam_link_skor(met))
+        return
+
+    if ad in ("talimatlar", "talimat_liste"):
+        tl = durum.get("talimat") or []
+        await msg.reply_text(("📋 Talimatlar:\n" + "\n".join(f"{i}. {x['t']}" for i, x in enumerate(tl, 1))) if tl else "Talimat yok.")
+        return
+
+    if ad in ("ozet", "özet"):
+        if not yanit:
+            await msg.reply_text("Özetlenecek mesaja yanıt ver (veya /ozet ile uzun metin).")
+            return
+        met = (yanit.text or yanit.caption or "")[:3000]
+        s = await asyncio.to_thread(sor, [{"role": "user", "content": "Şu metni Türkçe 2-3 cümlede özetle:\n" + met}])
+        await msg.reply_text(s or "Özetleyemedim.")
+        return
+
+    if ad in ("cevir", "çevir", "translate"):
+        if not yanit and not arg:
+            await msg.reply_text("Yanıtla veya /cevir en metin")
+            return
+        dil = "English"
+        met = arg
+        if arg.split(None, 1)[0].lower() in ("en", "tr", "ru", "de", "fr"):
+            par = arg.split(None, 1)
+            dil = {"en": "English", "tr": "Turkish", "ru": "Russian", "de": "German", "fr": "French"}[par[0].lower()]
+            met = par[1] if len(par) > 1 else ""
+        if not met and yanit:
+            met = yanit.text or yanit.caption or ""
+        s = await asyncio.to_thread(sor, [{"role": "user", "content": f"Translate to {dil}. Only translation:\n{met[:2500]}"}])
+        await msg.reply_text(s or "Çeviremedim.")
+        return
+
+    if ad == "pinlast":
+        if ozel or not await yetkili_mi(ctx, cid, user.id):
+            return
+        try:
+            # pin most recent arsiv item link message if possible - else error
+            kayitlar = durum.get("arsiv", {}).get(str(cid), [])
+            if not kayitlar:
+                await msg.reply_text("Arşivde duyuru yok.")
+                return
+            son = kayitlar[-1]
+            mid = son.get("id")
+            if mid:
+                await ctx.bot.pin_chat_message(cid, mid, disable_notification=True)
+                await msg.reply_text("📌 Son duyuru sabitlendi.")
+            else:
+                await msg.reply_text("Mesaj ID yok.")
+        except Exception as e:
+            await msg.reply_text(f"Sabitleyemedim: {e}")
+        return
+
+    if ad == "poll":
+        if ozel or not await yetkili_mi(ctx, cid, user.id):
+            return
+        # /poll Soru | A | B | C
+        par = [x.strip() for x in arg.split("|") if x.strip()]
+        if len(par) < 3:
+            await msg.reply_text("Örnek: /poll Hangi zincir? | ETH | SOL | BSC")
+            return
+        try:
+            await ctx.bot.send_poll(cid, par[0][:300], par[1:11], is_anonymous=False)
+        except Exception as e:
+            await msg.reply_text(f"Anket hatası: {e}")
+        return
+
+    if ad == "giveaway":
+        if ozel or not await yetkili_mi(ctx, cid, user.id):
+            return
+        odul = arg or "Ödül"
+        kl = InlineKeyboardMarkup([[InlineKeyboardButton("🎉 Katıl", callback_data=f"gw:{cid}")]])
+        m = await msg.reply_text(f"🎁 Çekiliş: {odul}\nKatılmak için butona bas!", reply_markup=kl)
+        durum.setdefault("giveaway", {})[str(m.message_id)] = {"cid": cid, "odul": odul, "katilan": []}
+        durum_kaydet()
+        return
+
+    if ad == "çekilişbitir" or ad == "giveawayend":
+        if ozel or not await yetkili_mi(ctx, cid, user.id):
+            return
+        if not yanit:
+            await msg.reply_text("Çekiliş mesajına yanıt ver.")
+            return
+        g = durum.get("giveaway", {}).get(str(yanit.message_id))
+        if not g or not g.get("katilan"):
+            await msg.reply_text("Katılan yok veya çekiliş bulunamadı.")
+            return
+        kazanan = random.choice(g["katilan"])
+        await msg.reply_text(f"🏆 Kazanan: <a href=\"tg://user?id={kazanan}\">{kazanan}</a>\nÖdül: {html.escape(g.get('odul',''))}", parse_mode="HTML")
+        return
+
+    # --- admin only below ---
+    if not ozel and not await yetkili_mi(ctx, cid, user.id):
+        if ad in ("slowmode", "nightmode", "newbies", "approved", "unapproved", "blacklist", "whitelist",
+                  "schedule", "repeat", "ai_mod"):
+            return
+        return
+
+    if ozel and not sahip_mi(user):
+        return
+
+    if ad == "slowmode":
+        sn = int(arg) if arg.isdigit() else 0
+        sn = max(0, min(sn, 600))
+        grup_ayari_uygula(cid, "slowmode", sn, ozel)
+        await msg.reply_text(f"⏱ Slowmode: {sn} sn" + (" (kapalı)" if sn == 0 else ""))
+        return
+
+    if ad == "nightmode":
+        # /nightmode 0-8  veya /nightmode off
+        if kucult(arg) in ("off", "kapat", "0"):
+            grup_ayari_uygula(cid, "night_bas", None, ozel)
+            grup_ayari_uygula(cid, "night_bit", None, ozel)
+            await msg.reply_text("🌙 Gece modu kapatıldı.")
+            return
+        m = re.match(r"(\d{1,2})\s*[-–]\s*(\d{1,2})", arg)
+        if not m:
+            await msg.reply_text("Örnek: /nightmode 0-8  (00:00-08:00 sadece admin)")
+            return
+        grup_ayari_uygula(cid, "night_bas", int(m.group(1)) % 24, ozel)
+        grup_ayari_uygula(cid, "night_bit", int(m.group(2)) % 24, ozel)
+        await msg.reply_text(f"🌙 Gece modu: {m.group(1)}:00 – {m.group(2)}:00 (sadece admin)")
+        return
+
+    if ad == "newbies":
+        dk = int(arg) if arg.isdigit() else 0
+        dk = max(0, min(dk, 1440))
+        grup_ayari_uygula(cid, "newbies_dk", dk, ozel)
+        await msg.reply_text(f"🆕 Yeni üyeler {dk} dk susturulacak." if dk else "🆕 Newbies susturma kapalı.")
+        return
+
+    if ad == "ai_mod":
+        ac = kucult(arg) in ("on", "1", "ac", "aç", "admin")
+        grup_ayari_uygula(cid, "ai_mod", ac, ozel)
+        await msg.reply_text("🤖 AI sadece admin/sahibe cevap verir." if ac else "🤖 AI herkese açık.")
+        return
+
+    if ad in ("approved", "unapproved", "blacklist", "whitelist"):
+        hid = None
+        if yanit and yanit.from_user:
+            hid = yanit.from_user.id
+        elif arg.startswith("@"):
+            for uid, u in uyeler.get(str(cid if not ozel else cid), {}).items():
+                if (u.get("kullanici") or "").lower() == arg[1:].lower():
+                    hid = int(uid)
+                    break
+        elif arg.lstrip("-").isdigit():
+            hid = int(arg)
+        if not hid and ad not in ("approved", "blacklist", "whitelist"):
+            pass
+        if ad == "approved" and hid:
+            _liste_ekle(cid, "approved", hid)
+            await msg.reply_text(f"✅ Onaylandı: {hid} (link atabilir)")
+        elif ad == "unapproved" and hid:
+            _liste_sil(cid, "approved", hid)
+            await msg.reply_text(f"Onay kaldırıldı: {hid}")
+        elif ad == "blacklist" and hid:
+            _liste_ekle(cid, "blacklist", hid)
+            try:
+                if not ozel:
+                    await ctx.bot.ban_chat_member(cid, hid)
+            except Exception:
+                pass
+            await msg.reply_text(f"⛔ Blacklist + ban: {hid}")
+        elif ad == "whitelist" and hid:
+            _liste_ekle(cid, "whitelist", hid)
+            await msg.reply_text(f"✅ Whitelist: {hid}")
+        else:
+            await msg.reply_text("Yanıt ver veya @user / id yaz.")
+        return
+
+    if ad == "schedule":
+        # /schedule 18:30 metin
+        m = re.match(r"(\d{1,2}):(\d{2})\s+(.+)", arg, re.S)
+        if not m:
+            await msg.reply_text("Örnek: /schedule 18:30 Duyuru metni")
+            return
+        hh, mm, met = int(m.group(1)), int(m.group(2)), m.group(3).strip()
+        now = datetime.now(TR)
+        hedef = now.replace(hour=hh % 24, minute=mm % 60, second=0, microsecond=0)
+        if hedef <= now:
+            hedef += timedelta(days=1)
+        hedef_cid = cid if not ozel else next((int(x) for x in uyeler if int(x) < 0), None)
+        if not hedef_cid:
+            await msg.reply_text("Grup bulunamadı.")
+            return
+        durum.setdefault("schedule", []).append({"cid": hedef_cid, "zaman": hedef.timestamp(), "metin": met, "tekrar": None})
+        durum_kaydet()
+        await msg.reply_text(f"🗓️ Planlandı: {hedef.strftime('%d.%m %H:%M')}")
+        return
+
+    if ad == "repeat":
+        # /repeat 3h metin
+        m = re.match(r"(\d+)\s*(h|sa|saat|m|dk)?\s+(.+)", arg, re.S | re.I)
+        if not m:
+            await msg.reply_text("Örnek: /repeat 3h Her 3 saatte bir duyuru")
+            return
+        n, birim, met = int(m.group(1)), (m.group(2) or "h").lower(), m.group(3).strip()
+        sn = n * (3600 if birim in ("h", "sa", "saat") else 60)
+        sn = max(600, min(sn, 86400 * 7))
+        hedef_cid = cid if not ozel else next((int(x) for x in uyeler if int(x) < 0), None)
+        if not hedef_cid:
+            await msg.reply_text("Grup yok.")
+            return
+        durum.setdefault("schedule", []).append({"cid": hedef_cid, "zaman": time.time() + sn, "metin": met, "tekrar": sn})
+        durum_kaydet()
+        await msg.reply_text(f"🔁 Her {sn // 60} dk tekrarlanacak.")
+        return
+
+async def giveaway_buton(update, ctx):
+    q = update.callback_query
+    if not q or not q.data or not q.data.startswith("gw:"):
+        return
+    try:
+        await q.answer("Katıldın! 🎉")
+    except Exception:
+        pass
+    mid = str(q.message.message_id) if q.message else ""
+    g = durum.get("giveaway", {}).get(mid)
+    if not g:
+        return
+    uid = str(q.from_user.id)
+    if uid not in g.get("katilan", []):
+        g.setdefault("katilan", []).append(uid)
+        durum_kaydet()
+
+
 mod_komut = komut_silici(mod_komut)
 yonet_komut = komut_silici(yonet_komut)
 ayar_komut = komut_silici(ayar_komut)
@@ -2488,6 +2921,16 @@ app.add_handler(CommandHandler(["yardim", "help", "start", "kurallar", "rules", 
 app.add_handler(CommandHandler("sifirla", sifirla))
 app.add_handler(CommandHandler("fiyat", fiyat_komut))
 app.add_handler(CommandHandler("ipucu", ipucu_komut))
+app.add_handler(CommandHandler([
+    "stats", "istatistik", "active", "inactive", "gas", "ca", "scam",
+    "talimatlar", "ozet", "özet", "cevir", "çevir", "translate", "pinlast",
+    "poll", "giveaway", "giveawayend", "çekilişbitir",
+    "slowmode", "nightmode", "newbies", "ai_mod",
+    "approved", "unapproved", "blacklist", "whitelist",
+    "schedule", "repeat",
+], ekstra_komut))
+app.add_handler(CallbackQueryHandler(giveaway_buton, pattern=r"^gw:"))
+
 app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
 app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, sabitlendi))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
