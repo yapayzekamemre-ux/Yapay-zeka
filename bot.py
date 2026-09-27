@@ -230,7 +230,7 @@ def _gemini_icerik(m):
 
 def gemini_sor(m, sistem):
     r = gem.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.8-flash",
         contents=_gemini_icerik(m),
         config={"system_instruction": sistem},
     )
@@ -238,7 +238,7 @@ def gemini_sor(m, sistem):
 
 def gemini_arama(m, sistem):
     r = gem.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.8-flash",
         contents=_gemini_icerik(m),
         config=types.GenerateContentConfig(
             system_instruction=sistem,
@@ -441,7 +441,7 @@ def arama_gerek(t):
 
 def gemini_resim(veri):
     r = gem.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.8-flash",
         contents=[types.Part.from_bytes(data=veri, mime_type="image/jpeg"),
                   "Bu görseldeki yazıları ve içeriği en fazla 3 kısa cümleyle Türkçe özetle. Emin olmadığın şeyi yazma."],
     )
