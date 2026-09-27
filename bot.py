@@ -218,11 +218,22 @@ def mention(cid, uid, ad=None):
     return f'<a href="tg://user?id={uid}">{html.escape(ad or ad_bul(cid, uid))}</a>'
 
 def groq_sor(m, sistem):
-    r = groq.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[{"role": "system", "content": sistem}] + m,
-    )
-    return r.choices[0].message.content
+    son = None
+    for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b"):
+        try:
+            r = groq.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": sistem}] + m,
+            )
+            c = r.choices[0].message.content
+            if c:
+                return c
+        except Exception as e:
+            son = e
+            log.warning(f"Groq {model}: {e}")
+    if son:
+        raise son
+    return None
 
 def _gemini_icerik(m):
     return [{"role": "model" if x["role"] == "assistant" else "user",
@@ -358,18 +369,16 @@ def claude_sor(m, sistem):
     text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
     return text.strip() or None
 
-SAGLAYICILAR = [("Gemini", gemini_sor), ("Groq", groq_sor)]
-if ANTHROPIC_KEY:
-    SAGLAYICILAR.append(("Claude", claude_sor))
-if NVIDIA_KEY:
-    # NVIDIA modellerini öncelikli yedek olarak ekle (Gemini/Groq çökerse)
-    SAGLAYICILAR.append(("NVIDIA", nvidia_sor))
+SAGLAYICILAR = [("Groq", groq_sor), ("Gemini", gemini_sor)]
 if CEREBRAS_KEY:
     SAGLAYICILAR.append(("Cerebras", cerebras_sor))
 if OPENROUTER_KEY:
     SAGLAYICILAR.append(("OpenRouter", openrouter_sor))
 if MISTRAL_KEY:
     SAGLAYICILAR.append(("Mistral", mistral_sor))
+if NVIDIA_KEY:
+    # NVIDIA en sonda (son çare)
+    SAGLAYICILAR.append(("NVIDIA", nvidia_sor))
 
 def sor(mesajlar, ek="", arama=False):
     sistem = SISTEM + ek
@@ -2494,7 +2503,7 @@ async def mesaj(update, ctx):
 
     yanit = await asyncio.to_thread(sor, h[-20:], ek, arama_gerek(metin))
     if not yanit:
-        yanit = "Şu an biraz yoğunum, birazdan yazarım."
+        yanit = "Bir saniye, servisler yoğun — tekrar dene 🙏"
     else:
         h.append({"role": "assistant", "content": yanit})
     gecmis[anahtar] = h[-40:]
