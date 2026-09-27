@@ -661,16 +661,15 @@ async def mesaj_sil_sn(ctx, chat_id, message_id, sn=10):
         pass
 
 def komut_silici(fonk):
-    """Slash komut mesajını 10 sn sonra siler (sadece yetkili)."""
+    """Slash komut mesajını 5 sn sonra siler."""
     async def sar(update, ctx):
         await fonk(update, ctx)
         msg = update.effective_message
         chat = update.effective_chat
-        user = update.effective_user
-        if msg and user and chat.type != "private" and await yetkili_mi(ctx, chat.id, user.id):
-            t = asyncio.create_task(mesaj_sil_sn(ctx, chat.id, msg.message_id, 10))
-            gorevler.add(t)
-            t.add_done_callback(gorevler.discard)
+        if msg and chat and chat.type != "private":
+            task = asyncio.create_task(mesaj_sil_sn(ctx, chat.id, msg.message_id, 5))
+            gorevler.add(task)
+            task.add_done_callback(gorevler.discard)
     return sar
 
 def mesaj_linki(chat, mid):
@@ -806,7 +805,13 @@ async def liste_komut(update, ctx):
 async def sabitlendi(update, ctx):
     msg = update.effective_message
     chat = update.effective_chat
-    pm = msg.pinned_message
+    # "X bir mesajı sabitledi" servis mesajını sil
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+    pm = getattr(msg, "pinned_message", None) if msg else None
     if not pm:
         return
     kayit = await mesaj_ozeti(ctx, pm, chat)
@@ -2058,7 +2063,13 @@ async def hosgeldin_gonder(ctx, cid, u, baslik):
             "Gruba yeni katılan birine tek cümlelik, samimi ve kısa bir hoş geldin mesajı yaz. "
             "İsim yazma, link verme."}])
         s = f"{u.mention_html()} {html.escape((ai or 'Hoş geldin!').strip())}\nKural: link, küfür ve spam yasak. /kurallar"
-    await ctx.bot.send_message(cid, s, parse_mode="HTML")
+    m = await ctx.bot.send_message(cid, s, parse_mode="HTML")
+    try:
+        task = asyncio.create_task(mesaj_sil_sn(ctx, cid, m.message_id, 5))
+        gorevler.add(task)
+        task.add_done_callback(gorevler.discard)
+    except Exception:
+        pass
 
 async def captcha_sure(ctx, cid, uid, mid):
     await asyncio.sleep(180)
@@ -2125,6 +2136,10 @@ async def ayrildi(update, ctx):
     if not msg or not chat:
         return
     cid = chat.id
+    try:
+        await msg.delete()
+    except Exception:
+        pass
     u = msg.left_chat_member
     if u and not u.is_bot:
         uname = f"@{u.username}" if u.username else "—"
@@ -2718,7 +2733,13 @@ async def ekstra_komut(update, ctx):
             mid = son.get("id")
             if mid:
                 await ctx.bot.pin_chat_message(cid, mid, disable_notification=True)
-                await msg.reply_text("📌 Son duyuru sabitlendi.")
+                r = await msg.reply_text("📌 Son duyuru sabitlendi.")
+                try:
+                    task = asyncio.create_task(mesaj_sil_sn(ctx, cid, r.message_id, 5))
+                    gorevler.add(task)
+                    task.add_done_callback(gorevler.discard)
+                except Exception:
+                    pass
             else:
                 await msg.reply_text("Mesaj ID yok.")
         except Exception as e:
@@ -3100,8 +3121,8 @@ app.add_handler(CommandHandler("fiyat", fiyat_komut))
 app.add_handler(CommandHandler("ipucu", ipucu_komut))
 app.add_handler(CommandHandler([
     "stats", "istatistik", "active", "inactive", "gas", "ca", "scam",
-    "talimatlar", "ozet", "özet", "cevir", "çevir", "translate", "pinlast",
-    "poll", "giveaway", "giveawayend", "çekilişbitir",
+    "talimatlar", "ozet", "cevir", "translate", "pinlast",
+    "poll", "giveaway", "giveawayend",
     "slowmode", "nightmode", "newbies", "ai_mod",
     "approved", "unapproved", "blacklist", "whitelist",
     "schedule", "repeat",
@@ -3113,6 +3134,19 @@ app.add_handler(CallbackQueryHandler(giveaway_buton, pattern=r"^gw:"))
 
 app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
 app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, sabitlendi))
+async def servis_temizle(update, ctx):
+    msg = update.effective_message
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+app.add_handler(MessageHandler(
+    filters.StatusUpdate.NEW_CHAT_TITLE | filters.StatusUpdate.NEW_CHAT_PHOTO |
+    filters.StatusUpdate.DELETE_CHAT_PHOTO,
+    servis_temizle
+))
+
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
 app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
 app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & filters.UpdateType.MESSAGE, mesaj))
