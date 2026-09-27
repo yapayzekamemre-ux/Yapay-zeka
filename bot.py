@@ -3053,50 +3053,160 @@ async def giveaway_buton(update, ctx):
 
 # ===================== BUTONLU PANEL (/panel) =====================
 
-def panel_klavye(cid):
+
+# ===================== BUTONLU PANEL (tüm komutlar) =====================
+
+def panel_klavye(cid, sayfa="ana"):
     def on(k):
         return "✅" if cget(cid, k) else "❌"
     kilit = cget(cid, "kilit") or []
-    link_kilit = "🔒" if "link" in kilit else "🔓"
+    link_k = "🔒" if "link" in kilit else "🔓"
     sm = cget(cid, "slowmode") or 0
-    rows = [
-        [InlineKeyboardButton(f"{on('ai')} AI", callback_data=f"pn:{cid}:tog:ai"),
-         InlineKeyboardButton(f"{on('ipucu')} İpucu", callback_data=f"pn:{cid}:tog:ipucu")],
-        [InlineKeyboardButton(f"{on('hosgeldin')} Karşılama", callback_data=f"pn:{cid}:tog:hosgeldin"),
-         InlineKeyboardButton(f"{on('captcha')} Captcha", callback_data=f"pn:{cid}:tog:captcha")],
-        [InlineKeyboardButton(f"{link_kilit} Link kilidi", callback_data=f"pn:{cid}:link"),
-         InlineKeyboardButton(f"{on('ai_mod')} AI sadece admin", callback_data=f"pn:{cid}:tog:ai_mod")],
-        [InlineKeyboardButton(f"⏱ Slowmode: {sm}s", callback_data=f"pn:{cid}:slow"),
-         InlineKeyboardButton(f"Flood: {cget(cid,'flood')}", callback_data=f"pn:{cid}:flood")],
-        [InlineKeyboardButton(f"Warn limit: {cget(cid,'warn_limit')}", callback_data=f"pn:{cid}:wlim"),
-         InlineKeyboardButton(f"Newbies: {cget(cid,'newbies_dk')}dk", callback_data=f"pn:{cid}:newb")],
-        [InlineKeyboardButton("📊 Stats", callback_data=f"pn:{cid}:stats"),
-         InlineKeyboardButton("📋 Kilitler", callback_data=f"pn:{cid}:locks")],
-        [InlineKeyboardButton("📢 Bugünkü duyurular", callback_data=f"pn:{cid}:duy"),
-         InlineKeyboardButton("🔄 Yenile", callback_data=f"pn:{cid}:ref")],
-        [InlineKeyboardButton("❌ Kapat", callback_data=f"pn:{cid}:close")],
-    ]
+    nb = cget(cid, "night_bas")
+    nm = f"🌙 {nb}-{cget(cid,'night_bit')}" if nb is not None else "🌙 Gece kapalı"
+
+    if sayfa == "ana":
+        rows = [
+            [InlineKeyboardButton("⚙️ Ayarlar", callback_data=f"pn:{cid}:pg:ayar"),
+             InlineKeyboardButton("🔒 Kilitler", callback_data=f"pn:{cid}:pg:kilit")],
+            [InlineKeyboardButton("🛡 Moderasyon", callback_data=f"pn:{cid}:pg:mod"),
+             InlineKeyboardButton("📢 Duyuru", callback_data=f"pn:{cid}:pg:duy")],
+            [InlineKeyboardButton("📊 Araçlar", callback_data=f"pn:{cid}:pg:arac"),
+             InlineKeyboardButton("📋 Komut listesi", callback_data=f"pn:{cid}:pg:cmd")],
+            [InlineKeyboardButton("🔄 Yenile", callback_data=f"pn:{cid}:ref"),
+             InlineKeyboardButton("❌ Kapat", callback_data=f"pn:{cid}:close")],
+        ]
+    elif sayfa == "ayar":
+        rows = [
+            [InlineKeyboardButton(f"{on('ai')} AI sohbet", callback_data=f"pn:{cid}:tog:ai"),
+             InlineKeyboardButton(f"{on('ai_mod')} AI sadece admin", callback_data=f"pn:{cid}:tog:ai_mod")],
+            [InlineKeyboardButton(f"{on('ipucu')} İpucu", callback_data=f"pn:{cid}:tog:ipucu"),
+             InlineKeyboardButton(f"{on('hosgeldin')} Karşılama", callback_data=f"pn:{cid}:tog:hosgeldin")],
+            [InlineKeyboardButton(f"{on('captcha')} Captcha", callback_data=f"pn:{cid}:tog:captcha"),
+             InlineKeyboardButton(f"{on('adminizin')} Admin komut izni", callback_data=f"pn:{cid}:tog:adminizin")],
+            [InlineKeyboardButton(f"⏱ Slowmode {sm}s", callback_data=f"pn:{cid}:slow"),
+             InlineKeyboardButton(f"Flood {cget(cid,'flood')}", callback_data=f"pn:{cid}:flood")],
+            [InlineKeyboardButton(f"Warn limit {cget(cid,'warn_limit')}", callback_data=f"pn:{cid}:wlim"),
+             InlineKeyboardButton(f"Warn→{cget(cid,'warn_eylem')}", callback_data=f"pn:{cid}:wey")],
+            [InlineKeyboardButton(f"Newbies {cget(cid,'newbies_dk')}dk", callback_data=f"pn:{cid}:newb"),
+             InlineKeyboardButton(nm, callback_data=f"pn:{cid}:night")],
+            [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana")],
+        ]
+    elif sayfa == "kilit":
+        def lk(tur):
+            return ("🔒 " if tur in kilit else "🔓 ") + tur
+        rows = [
+            [InlineKeyboardButton(f"{link_k} link", callback_data=f"pn:{cid}:lk:link"),
+             InlineKeyboardButton(lk("sticker"), callback_data=f"pn:{cid}:lk:sticker")],
+            [InlineKeyboardButton(lk("gif"), callback_data=f"pn:{cid}:lk:gif"),
+             InlineKeyboardButton(lk("foto"), callback_data=f"pn:{cid}:lk:foto")],
+            [InlineKeyboardButton(lk("video"), callback_data=f"pn:{cid}:lk:video"),
+             InlineKeyboardButton(lk("ses"), callback_data=f"pn:{cid}:lk:ses")],
+            [InlineKeyboardButton(lk("dosya"), callback_data=f"pn:{cid}:lk:dosya"),
+             InlineKeyboardButton(lk("iletilen"), callback_data=f"pn:{cid}:lk:iletilen")],
+            [InlineKeyboardButton("🔓 Tüm kilitleri aç", callback_data=f"pn:{cid}:unlocks")],
+            [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana")],
+        ]
+    elif sayfa == "mod":
+        rows = [
+            [InlineKeyboardButton("ℹ️ Ban/Mute/Kick için mesaja yanıt + komut", callback_data=f"pn:{cid}:info:mod")],
+            [InlineKeyboardButton("/ban /sban /tban", callback_data=f"pn:{cid}:info:ban"),
+             InlineKeyboardButton("/mute /tmute", callback_data=f"pn:{cid}:info:mute")],
+            [InlineKeyboardButton("/kick /warn", callback_data=f"pn:{cid}:info:kick"),
+             InlineKeyboardButton("/del /purge /pin", callback_data=f"pn:{cid}:info:del")],
+            [InlineKeyboardButton("📊 Stats", callback_data=f"pn:{cid}:stats"),
+             InlineKeyboardButton("👮 Admin list", callback_data=f"pn:{cid}:admins")],
+            [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana")],
+        ]
+    elif sayfa == "duy":
+        rows = [
+            [InlineKeyboardButton("📢 Bugünkü duyurular", callback_data=f"pn:{cid}:duy"),
+             InlineKeyboardButton("📅 Haftalık", callback_data=f"pn:{cid}:duy7")],
+            [InlineKeyboardButton("🗓 Aylık", callback_data=f"pn:{cid}:duy30"),
+             InlineKeyboardButton("📌 Pin son duyuru", callback_data=f"pn:{cid}:pinlast")],
+            [InlineKeyboardButton("ℹ️ /setlog @kanal — rapor kanalı", callback_data=f"pn:{cid}:info:setlog")],
+            [InlineKeyboardButton("ℹ️ Kanal bağla: YeniBirAirdrops", callback_data=f"pn:{cid}:info:kanal")],
+            [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana")],
+        ]
+    elif sayfa == "arac":
+        rows = [
+            [InlineKeyboardButton("⛽ Gas", callback_data=f"pn:{cid}:gas"),
+             InlineKeyboardButton("🔍 /scam (yanıtla)", callback_data=f"pn:{cid}:info:scam")],
+            [InlineKeyboardButton("📜 /ca 0x...", callback_data=f"pn:{cid}:info:ca"),
+             InlineKeyboardButton("💰 /fiyat btc", callback_data=f"pn:{cid}:info:fiyat")],
+            [InlineKeyboardButton("📝 /ozet (yanıtla)", callback_data=f"pn:{cid}:info:ozet"),
+             InlineKeyboardButton("🌐 /cevir en", callback_data=f"pn:{cid}:info:cevir")],
+            [InlineKeyboardButton("📋 Talimatlar", callback_data=f"pn:{cid}:talimat"),
+             InlineKeyboardButton("🎁 /giveaway", callback_data=f"pn:{cid}:info:gw")],
+            [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana")],
+        ]
+    else:  # cmd list
+        rows = [
+            [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana"),
+             InlineKeyboardButton("❌ Kapat", callback_data=f"pn:{cid}:close")],
+        ]
     return InlineKeyboardMarkup(rows)
 
-def panel_metin(cid, baslik=""):
-    try:
-        # baslik optional
-        pass
-    except Exception:
-        pass
+def panel_metin(cid, sayfa="ana"):
     kilit = ", ".join(cget(cid, "kilit") or []) or "yok"
+    if sayfa == "ana":
+        return (
+            "⚙️ <b>Kontrol Paneli</b>\n"
+            "Aşağıdan kategori seç. AI sohbet ayrı çalışır (yapay ...).\n\n"
+            f"AI: {'açık' if cget(cid,'ai') else 'kapalı'} | "
+            f"Link: {'kilitli' if 'link' in (cget(cid,'kilit') or []) else 'serbest'}\n"
+            f"Slowmode: {cget(cid,'slowmode')}s | Flood: {cget(cid,'flood')} | "
+            f"Newbies: {cget(cid,'newbies_dk')}dk"
+        )
+    if sayfa == "ayar":
+        return (
+            "⚙️ <b>Ayarlar</b> — butona bas, aç/kapa veya değer değişir\n\n"
+            f"AI: {'açık' if cget(cid,'ai') else 'kapalı'} | AI-admin: {'açık' if cget(cid,'ai_mod') else 'kapalı'}\n"
+            f"İpucu: {'açık' if cget(cid,'ipucu') else 'kapalı'} | "
+            f"Karşılama: {'açık' if cget(cid,'hosgeldin') else 'kapalı'}\n"
+            f"Captcha: {'açık' if cget(cid,'captcha') else 'kapalı'}\n"
+            f"Slowmode: {cget(cid,'slowmode')}s | Flood: {cget(cid,'flood')}\n"
+            f"Warn: {cget(cid,'warn_limit')} → {cget(cid,'warn_eylem')} | Newbies: {cget(cid,'newbies_dk')}dk"
+        )
+    if sayfa == "kilit":
+        return f"🔒 <b>Kilitler</b>\nAktif: {kilit}\n\nTıkla: kilit aç/kapa. Link kilitliyken sadece YeniBirAirdrops + onaylı üyeler serbest."
+    if sayfa == "mod":
+        return (
+            "🛡 <b>Moderasyon</b>\n"
+            "Grupta bir mesaja <b>yanıt ver</b> sonra komut yaz:\n"
+            "<code>/ban</code> <code>/sban</code> <code>/tban 2h</code>\n"
+            "<code>/mute</code> <code>/tmute 10m</code> <code>/unmute</code>\n"
+            "<code>/kick</code> <code>/warn</code> <code>/del</code> <code>/purge</code>\n"
+            "<code>/pin</code> <code>/unpin</code>\n\n"
+            "Doğal dil: <code>yapay sustur 10dk</code> (yanıtla)"
+        )
+    if sayfa == "duy":
+        n = len(durum.get("arsiv", {}).get(str(cid), []))
+        return (
+            "📢 <b>Duyuru</b>\n"
+            f"Arşiv kayıt: {n}\n"
+            "Kanal: YeniBirAirdrops bağlı olmalı.\n"
+            "<code>/gunluk</code> <code>/haftalik</code> <code>/setlog @kanal</code>\n"
+            "Mesaja yanıt: <code>/duyuruekle</code>"
+        )
+    if sayfa == "arac":
+        return (
+            "📊 <b>Araçlar</b>\n"
+            "<code>/stats</code> <code>/gas</code> <code>/fiyat btc</code>\n"
+            "<code>/ca 0x...</code> <code>/scam</code> (yanıtla)\n"
+            "<code>/ozet</code> <code>/cevir en</code>\n"
+            "<code>/giveaway Ödül</code> <code>/poll Soru | A | B</code>\n"
+            "<code>/schedule 18:30 metin</code> <code>/repeat 3h metin</code>"
+        )
+    # cmd
     return (
-        f"⚙️ <b>Kontrol Paneli</b>\n"
-        f"AI: {'açık' if cget(cid,'ai') else 'kapalı'} | "
-        f"İpucu: {'açık' if cget(cid,'ipucu') else 'kapalı'}\n"
-        f"Karşılama: {'açık' if cget(cid,'hosgeldin') else 'kapalı'} | "
-        f"Captcha: {'açık' if cget(cid,'captcha') else 'kapalı'}\n"
-        f"Link kilidi: {'açık' if 'link' in (cget(cid,'kilit') or []) else 'kapalı'}\n"
-        f"Slowmode: {cget(cid,'slowmode')} sn | Flood: {cget(cid,'flood')}\n"
-        f"Warn: {cget(cid,'warn_limit')} → {cget(cid,'warn_eylem')} | "
-        f"Newbies: {cget(cid,'newbies_dk')} dk\n"
-        f"Kilitler: {kilit}\n\n"
-        f"Butonlarla aç/kapa. AI sohbeti aynı şekilde çalışır."
+        "📋 <b>Komut özeti</b>\n\n"
+        "<b>Herkes:</b> /yardim /rules /id /info /top /rapor /fiyat /gunluk /gas\n"
+        "<b>Admin:</b> /ban /mute /kick /warn /del /pin /lock /unlock /panel\n"
+        "<b>Ayar:</b> /setwelcome /setrules /setflood /slowmode /newbies /nightmode\n"
+        "<b>Liste:</b> /approved /blacklist /whitelist /setlog\n"
+        "<b>AI:</b> mesajda <code>yapay</code> yaz veya bota özelden yaz\n\n"
+        "Detay: /yardim"
     )
 
 async def panel_komut(update, ctx):
@@ -3107,7 +3217,6 @@ async def panel_komut(update, ctx):
         return
     cid = chat.id
     if chat.type == "private":
-        # özelde: bilinen ilk grubu veya tüm gruplar için global
         gruplar = [int(x) for x in uyeler.keys() if int(x) < 0]
         if not gruplar:
             await msg.reply_text("Önce botu gruba ekle.")
@@ -3119,7 +3228,7 @@ async def panel_komut(update, ctx):
     elif not await yetkili_mi(ctx, cid, user.id):
         await msg.reply_text("Sadece yönetici / sahip.")
         return
-    await msg.reply_text(panel_metin(cid), parse_mode="HTML", reply_markup=panel_klavye(cid))
+    await msg.reply_text(panel_metin(cid, "ana"), parse_mode="HTML", reply_markup=panel_klavye(cid, "ana"))
 
 async def panel_buton(update, ctx):
     q = update.callback_query
@@ -3127,12 +3236,14 @@ async def panel_buton(update, ctx):
         return
     user = q.from_user
     try:
-        _, scid, islem, *rest = q.data.split(":")
-        cid = int(scid)
+        parts = q.data.split(":")
+        # pn:cid:islem:extra...
+        cid = int(parts[1])
+        islem = parts[2] if len(parts) > 2 else ""
+        rest = parts[3:] if len(parts) > 3 else []
     except Exception:
         await q.answer("Hatalı veri", show_alert=True)
         return
-    # yetki
     if not sahip_mi(user):
         try:
             if not await yetkili_mi(ctx, cid, user.id):
@@ -3142,12 +3253,23 @@ async def panel_buton(update, ctx):
             await q.answer("Yetkin yok", show_alert=True)
             return
 
+    sayfa = "ana"
+
     if islem == "close":
         try:
             await q.message.delete()
         except Exception:
             pass
         await q.answer()
+        return
+
+    if islem == "pg" and rest:
+        sayfa = rest[0]
+        await q.answer()
+        try:
+            await q.message.edit_text(panel_metin(cid, sayfa), parse_mode="HTML", reply_markup=panel_klavye(cid, sayfa))
+        except Exception:
+            pass
         return
 
     if islem == "tog" and rest:
@@ -3158,71 +3280,169 @@ async def panel_buton(update, ctx):
         yeni = not bool(cget(cid, key))
         cset(cid, key, yeni)
         await q.answer(f"{key}: {'açık' if yeni else 'kapalı'}")
-    elif islem == "link":
+        sayfa = "ayar"
+    elif islem == "link" or (islem == "lk" and rest):
+        tur = rest[0] if islem == "lk" and rest else "link"
         k = list(cget(cid, "kilit") or [])
-        if "link" in k:
-            k.remove("link")
-            await q.answer("Link serbest")
+        if tur in k:
+            k.remove(tur)
+            await q.answer(f"{tur} serbest")
         else:
-            k.append("link")
-            await q.answer("Link kilitli")
+            k.append(tur)
+            await q.answer(f"{tur} kilitli")
         cset(cid, "kilit", k)
+        sayfa = "kilit"
+    elif islem == "unlocks":
+        cset(cid, "kilit", [])
+        await q.answer("Tüm kilitler açıldı")
+        sayfa = "kilit"
     elif islem == "slow":
         sm = int(cget(cid, "slowmode") or 0)
-        # cycle 0 -> 5 -> 10 -> 30 -> 60 -> 0
         dongu = [0, 5, 10, 30, 60]
-        try:
-            i = dongu.index(sm)
-            sm = dongu[(i + 1) % len(dongu)]
-        except ValueError:
-            sm = 5
+        sm = dongu[(dongu.index(sm) + 1) % len(dongu)] if sm in dongu else 5
         cset(cid, "slowmode", sm)
         await q.answer(f"Slowmode: {sm}s")
+        sayfa = "ayar"
     elif islem == "flood":
         f = int(cget(cid, "flood") or 0)
         dongu = [0, 3, 6, 10, 15]
-        try:
-            i = dongu.index(f)
-            f = dongu[(i + 1) % len(dongu)]
-        except ValueError:
-            f = 6
+        f = dongu[(dongu.index(f) + 1) % len(dongu)] if f in dongu else 6
         cset(cid, "flood", f)
         await q.answer(f"Flood: {f}")
+        sayfa = "ayar"
     elif islem == "wlim":
         w = int(cget(cid, "warn_limit") or 3)
         w = 3 if w >= 7 else w + 1
         cset(cid, "warn_limit", w)
         await q.answer(f"Warn limit: {w}")
+        sayfa = "ayar"
+    elif islem == "wey":
+        e = cget(cid, "warn_eylem") or "mute"
+        dongu = ["mute", "kick", "ban"]
+        e = dongu[(dongu.index(e) + 1) % len(dongu)] if e in dongu else "mute"
+        cset(cid, "warn_eylem", e)
+        await q.answer(f"Warn eylem: {e}")
+        sayfa = "ayar"
     elif islem == "newb":
         n = int(cget(cid, "newbies_dk") or 0)
         dongu = [0, 5, 15, 30, 60]
-        try:
-            i = dongu.index(n)
-            n = dongu[(i + 1) % len(dongu)]
-        except ValueError:
-            n = 15
+        n = dongu[(dongu.index(n) + 1) % len(dongu)] if n in dongu else 15
         cset(cid, "newbies_dk", n)
         await q.answer(f"Newbies: {n} dk")
+        sayfa = "ayar"
+    elif islem == "night":
+        if cget(cid, "night_bas") is None:
+            cset(cid, "night_bas", 0)
+            cset(cid, "night_bit", 8)
+            await q.answer("Gece 00-08")
+        else:
+            cset(cid, "night_bas", None)
+            cset(cid, "night_bit", None)
+            await q.answer("Gece kapalı")
+        sayfa = "ayar"
     elif islem == "stats":
         u = uyeler.get(str(cid), {})
-        await q.answer(f"Kayıtlı üye: {len(u)}", show_alert=True)
+        await q.answer(f"Kayıtlı üye: {len(u)} | Arşiv: {len(durum.get('arsiv',{}).get(str(cid),[]))}", show_alert=True)
         return
-    elif islem == "locks":
-        k = cget(cid, "kilit") or []
-        await q.answer(", ".join(k) if k else "Kilit yok", show_alert=True)
+    elif islem == "admins":
+        try:
+            ads = await ctx.bot.get_chat_administrators(cid)
+            isimler = [a.user.full_name for a in ads if not a.user.is_bot][:12]
+            await q.answer(", ".join(isimler) or "yok", show_alert=True)
+        except Exception as e:
+            await q.answer(str(e)[:100], show_alert=True)
         return
     elif islem == "duy":
+        try:
+            class Fake:
+                pass
+            # doğrudan arsiv gonder benzeri
+            kayitlar = arsiv_liste(cid, 1)
+            if not kayitlar:
+                await q.answer("Bugün duyuru yok", show_alert=True)
+                return
+            dugmeler = []
+            for i, k in enumerate(kayitlar[:10], 1):
+                ad = arsiv_baslik(k)
+                link = k.get("link")
+                if link:
+                    dugmeler.append([InlineKeyboardButton(f"{NUMARALAR[i-1]} {ad}", url=link)])
+            await ctx.bot.send_message(
+                q.message.chat_id,
+                f"📢 Bugünkü Duyurular ({len(kayitlar)})",
+                reply_markup=InlineKeyboardMarkup(dugmeler) if dugmeler else None,
+            )
+            await q.answer("Gönderildi")
+        except Exception as e:
+            await q.answer(str(e)[:80], show_alert=True)
+        return
+    elif islem == "duy7":
+        kayitlar = arsiv_liste(cid, 7)
+        await q.answer(f"Haftalık arşiv: {len(kayitlar)}", show_alert=True)
+        return
+    elif islem == "duy30":
+        kayitlar = arsiv_liste(cid, 30)
+        await q.answer(f"Aylık arşiv: {len(kayitlar)}", show_alert=True)
+        return
+    elif islem == "pinlast":
         kayitlar = durum.get("arsiv", {}).get(str(cid), [])
-        await q.answer(f"Bugün/arsiv: {len(kayitlar)} kayıt", show_alert=True)
+        if not kayitlar:
+            await q.answer("Arşiv boş", show_alert=True)
+            return
+        mid = kayitlar[-1].get("id")
+        try:
+            await ctx.bot.pin_chat_message(cid, mid, disable_notification=True)
+            await q.answer("Sabitlendi")
+        except Exception as e:
+            await q.answer(str(e)[:80], show_alert=True)
+        return
+    elif islem == "gas":
+        try:
+            s = await asyncio.to_thread(gas_bilgi)
+            if asyncio.iscoroutine(s):
+                s = await s
+            # gas_bilgi is async!
+        except Exception:
+            s = None
+        try:
+            s = await gas_bilgi()
+            await ctx.bot.send_message(q.message.chat_id, s)
+            await q.answer()
+        except Exception as e:
+            await q.answer(str(e)[:80], show_alert=True)
+        return
+    elif islem == "talimat":
+        tl = durum.get("talimat") or []
+        txt = ("📋 Talimatlar:\n" + "\n".join(f"{i}. {x['t']}" for i, x in enumerate(tl, 1))) if tl else "Talimat yok."
+        await q.answer(txt[:200], show_alert=True)
+        return
+    elif islem == "info":
+        yardim = {
+            "mod": "Mesaja yanıt ver → /ban /mute /kick yaz",
+            "ban": "/ban yanıtla | /tban 2h | /sban sessiz",
+            "mute": "/mute yanıtla | /tmute 10m | /unmute",
+            "kick": "/kick | /warn | /warns",
+            "del": "/del yanıtla | /purge | /pin /unpin",
+            "setlog": "Kanaldan mesaj ilet, yanıtla: /setlog",
+            "kanal": "Grup bilgisi → Kanalı bağla → YeniBirAirdrops",
+            "scam": "Şüpheli mesaja yanıt: /scam",
+            "ca": "/ca 0x... contract adresi",
+            "fiyat": "/fiyat btc",
+            "ozet": "Mesaja yanıt: /ozet",
+            "cevir": "Yanıtla: /cevir en",
+            "gw": "/giveaway Ödül — bitir: yanıtla /giveawayend",
+        }
+        await q.answer(yardim.get(rest[0] if rest else "", "—")[:200], show_alert=True)
         return
     elif islem == "ref":
         await q.answer("Yenilendi")
+        sayfa = "ana"
     else:
         await q.answer()
         return
 
     try:
-        await q.message.edit_text(panel_metin(cid), parse_mode="HTML", reply_markup=panel_klavye(cid))
+        await q.message.edit_text(panel_metin(cid, sayfa), parse_mode="HTML", reply_markup=panel_klavye(cid, sayfa))
     except Exception:
         pass
 
