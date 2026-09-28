@@ -112,7 +112,12 @@ if not durum["son"]:
 VARS = {
     "ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
     "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
-    "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None,
+    "hosgeldin_metin": (
+        "⛔ {ad} Hoşgeldiniz\n"
+        "⚠️ Katıldığı andan itibaren 15 dakika boyunca mesaj gönderemez\n"
+        "✅ 15 dakika sonra sohbeti başlatabilirsiniz"
+    ),
+    "kurallar": None, "log_kanal": None, "duyuru_kanal": None,
     "duyuru_aralik_saat": 3, "slowmode": 0, "night_bas": None, "night_bit": None,
     "newbies_dk": 15, "ai_mod": False,
     # Rose / Combot / ChatHelp tarzı
@@ -2280,9 +2285,22 @@ async def genel_komut(update, ctx):
     elif ad in ("rapor", "report"):
         await rapor_gonder(update, ctx)
 
+_hosgeldin_son = {}
+
+def _hosgeldin_debounce(cid, uid, sn=15):
+    k = (cid, uid)
+    now = time.time()
+    if now - _hosgeldin_son.get(k, 0) < sn:
+        return False
+    _hosgeldin_son[k] = now
+    return True
+
 async def hosgeldin_gonder(ctx, cid, u, baslik):
     if not cget(cid, "hosgeldin"):
         log.info(f"Karşılama kapalı, atlandı: {cid}")
+        return
+    if not _hosgeldin_debounce(cid, u.id):
+        log.info(f"Karşılama debounce: {cid} {u.id}")
         return
     sablon = cget(cid, "hosgeldin_metin")
     try:
@@ -2315,13 +2333,8 @@ async def hosgeldin_gonder(ctx, cid, u, baslik):
                 f"\nKural: link, küfür ve spam yasak. /kurallar"
             )
         m = await ctx.bot.send_message(cid, s, parse_mode="HTML")
-        log.info(f"Karşılama gönderildi: {cid} -> {u.id}")
-        try:
-            task = asyncio.create_task(mesaj_sil_sn(ctx, cid, m.message_id, 30))
-            gorevler.add(task)
-            task.add_done_callback(gorevler.discard)
-        except Exception:
-            pass
+        log.info(f"Karşılama gönderildi: {cid} -> {u.id} | {s[:80]}")
+        # Karşılama kalıcı kalsın (silme yok — kullanıcı görebilsin)
     except Exception as e:
         log.warning(f"Karşılama gönderilemedi ({cid}): {e}")
 
@@ -2342,6 +2355,7 @@ async def hosgeldin(update, ctx):
     msg = update.effective_message
     chat = update.effective_chat
     cid = chat.id
+    log.info(f"NEW_CHAT_MEMBERS event: {cid} members={len(msg.new_chat_members or [])}")
     # sistem mesajı sil (cleanservice)
     if cget(cid, "cleanservice"):
         try:
@@ -3650,21 +3664,15 @@ app.add_handler(MessageHandler(
 
 
 async def uye_durum(update, ctx):
-    """ChatMember güncellemesi: gruba yeni katılan (join request / gizli join)."""
+    """ChatMember: gruba yeni katılan."""
     cm = update.chat_member
     if not cm:
         return
-    eski = cm.old_chat_member.status if cm.old_chat_member else ""
-    yeni = cm.new_chat_member.status if cm.new_chat_member else ""
-    # left/kicked -> member/restricted = katıldı
-    if eski not in ("left", "kicked", "banned") and yeni not in ("member", "restricted", "administrator"):
-        # also handle: never in chat
-        pass
-    katildi = eski in ("left", "kicked") and yeni in ("member", "restricted", "administrator")
-    if not katildi:
-        # ilk kez üye
-        if eski in ("left", "kicked", "") and yeni in ("member", "restricted"):
-            katildi = True
+    eski = (cm.old_chat_member.status if cm.old_chat_member else "") or ""
+    yeni = (cm.new_chat_member.status if cm.new_chat_member else "") or ""
+    log.info(f"uye_durum: {eski} -> {yeni}")
+    # Katılma: left/kicked/banned -> member/restricted/administrator
+    katildi = eski in ("left", "kicked", "banned") and yeni in ("member", "restricted", "administrator")
     if not katildi:
         return
     u = cm.new_chat_member.user
@@ -3674,7 +3682,7 @@ async def uye_durum(update, ctx):
     if not chat or chat.type == "private":
         return
     cid = chat.id
-    log.info(f"uye_durum katıldı: {cid} {u.id}")
+    log.info(f"uye_durum katıldı: {cid} {u.id} {u.full_name}")
     uye_kaydi(cid, u, say=False)
     kaydet()
     if cget(cid, "captcha"):
@@ -3699,7 +3707,6 @@ async def uye_durum(update, ctx):
             log.info(f"Newbies mute {ndk}dk (uye_durum): {cid} {u.id}")
         except Exception as e:
             log.warning(f"Newbies mute hatası (uye_durum): {e}")
-
 
 app.add_handler(ChatMemberHandler(uye_durum, ChatMemberHandler.CHAT_MEMBER))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
