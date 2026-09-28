@@ -111,7 +111,7 @@ if not durum["son"]:
 VARS = {"ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
         "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
         "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None, "duyuru_aralik_saat": 3,
-        "slowmode": 0, "night_bas": None, "night_bit": None, "newbies_dk": 0, "ai_mod": False}
+        "slowmode": 0, "night_bas": None, "night_bit": None, "newbies_dk": 15, "ai_mod": False}
 
 GLOBAL_AYAR = "_global"
 
@@ -687,16 +687,52 @@ async def mesaj_sil_sn(ctx, chat_id, message_id, sn=10):
     except Exception:
         pass
 
-def komut_silici(fonk):
-    """Slash komut mesajını 5 sn sonra siler."""
+def komut_silici(fonk, sn=8):
+    """Grupta: kullanıcı komutunu + bot cevabını N sn sonra siler."""
     async def sar(update, ctx):
-        await fonk(update, ctx)
         msg = update.effective_message
         chat = update.effective_chat
-        if msg and chat and chat.type != "private":
-            task = asyncio.create_task(mesaj_sil_sn(ctx, chat.id, msg.message_id, 5))
-            gorevler.add(task)
-            task.add_done_callback(gorevler.discard)
+        if not msg or not chat or chat.type == "private":
+            await fonk(update, ctx)
+            return
+
+        silinecek = [msg.message_id]
+        _orig_reply = msg.reply_text
+        _orig_reply_html = getattr(msg, "reply_html", None)
+
+        async def _reply_text(*args, **kwargs):
+            # komut alıntısını gösterme
+            kwargs.setdefault("reply_to_message_id", None)
+            # bazı sürümlerde quote
+            kwargs.pop("quote", None)
+            r = await _orig_reply(*args, **kwargs)
+            if r:
+                silinecek.append(r.message_id)
+            return r
+
+        async def _reply_html(*args, **kwargs):
+            kwargs.setdefault("reply_to_message_id", None)
+            kwargs.pop("quote", None)
+            if _orig_reply_html:
+                r = await _orig_reply_html(*args, **kwargs)
+            else:
+                kwargs.setdefault("parse_mode", "HTML")
+                r = await _orig_reply(*args, **kwargs)
+            if r:
+                silinecek.append(r.message_id)
+            return r
+
+        msg.reply_text = _reply_text
+        if _orig_reply_html:
+            msg.reply_html = _reply_html
+
+        try:
+            await fonk(update, ctx)
+        finally:
+            for mid in silinecek:
+                task = asyncio.create_task(mesaj_sil_sn(ctx, chat.id, mid, sn))
+                gorevler.add(task)
+                task.add_done_callback(gorevler.discard)
     return sar
 
 def mesaj_linki(chat, mid):
@@ -1225,11 +1261,26 @@ def mesaj_turleri(msg):
     return t
 
 async def sustur(ctx, chat_id, user_id, dakika=None):
+    """Yeni üyeyi / cezalıyı sustur — tüm mesaj türleri kapalı."""
     kw = {}
     if dakika:
-        kw["until_date"] = datetime.now(timezone.utc) + timedelta(minutes=dakika)
-    await ctx.bot.restrict_chat_member(chat_id, user_id,
-                                       permissions=ChatPermissions(can_send_messages=False), **kw)
+        kw["until_date"] = datetime.now(timezone.utc) + timedelta(minutes=int(dakika))
+    perms = ChatPermissions(
+        can_send_messages=False,
+        can_send_audios=False,
+        can_send_documents=False,
+        can_send_photos=False,
+        can_send_videos=False,
+        can_send_video_notes=False,
+        can_send_voice_notes=False,
+        can_send_polls=False,
+        can_send_other_messages=False,
+        can_add_web_page_previews=False,
+        can_change_info=False,
+        can_invite_users=False,
+        can_pin_messages=False,
+    )
+    await ctx.bot.restrict_chat_member(chat_id, user_id, permissions=perms, **kw)
 
 async def sesi_ac(ctx, chat_id, user_id):
     varsayilan = (await ctx.bot.get_chat(chat_id)).permissions
@@ -2281,13 +2332,14 @@ async def hosgeldin(update, ctx):
             except Exception as e:
                 log.warning(f"Captcha kurulamadı: {e}")
         await hosgeldin_gonder(ctx, cid, u, chat.title)
-        # Newbies: yeni üyeyi X dk sustur
-        ndk = int(cget(cid, "newbies_dk") or 0)
+        # Newbies: yeni üyeyi sustur (varsayılan 15 dk)
+        ndk = int(cget(cid, "newbies_dk") or 15)
         if ndk > 0:
             try:
                 await sustur(ctx, cid, u.id, ndk)
+                log.info(f"Newbies mute {ndk}dk: {cid} {u.id}")
             except Exception as e:
-                log.warning(f"Newbies mute: {e}")
+                log.warning(f"Newbies mute hatası (bot 'kullanıcıları engelle' yetkisi lazım): {e}")
 
 async def ayrildi(update, ctx):
     """X gruptan ayrildi - sil + log + unut."""
@@ -3492,6 +3544,10 @@ async def panel_buton(update, ctx):
 mod_komut = komut_silici(mod_komut)
 yonet_komut = komut_silici(yonet_komut)
 ayar_komut = komut_silici(ayar_komut)
+ekstra_komut = komut_silici(ekstra_komut)
+liste_komut = komut_silici(liste_komut)
+genel_komut = komut_silici(genel_komut)
+panel_komut = komut_silici(panel_komut)
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
 app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
@@ -3583,12 +3639,13 @@ async def uye_durum(update, ctx):
         except Exception as e:
             log.warning(f"Captcha (uye_durum): {e}")
     await hosgeldin_gonder(ctx, cid, u, chat.title)
-    ndk = int(cget(cid, "newbies_dk") or 0)
+    ndk = int(cget(cid, "newbies_dk") or 15)
     if ndk > 0:
         try:
             await sustur(ctx, cid, u.id, ndk)
+            log.info(f"Newbies mute {ndk}dk (uye_durum): {cid} {u.id}")
         except Exception as e:
-            log.warning(f"Newbies mute (uye_durum): {e}")
+            log.warning(f"Newbies mute hatası (uye_durum): {e}")
 
 
 app.add_handler(ChatMemberHandler(uye_durum, ChatMemberHandler.CHAT_MEMBER))
