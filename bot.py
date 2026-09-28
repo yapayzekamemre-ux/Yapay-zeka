@@ -130,15 +130,27 @@ def cset(cid, k, v):
     durum_kaydet()
 
 def cset_global(k, v):
-    """Sahibin özelden verdiği ayar: global + bilinen tüm gruplar."""
+    """Sahibin özelden verdiği ayar: global + tüm gruplar (ayar + uyeler)."""
     durum["ayar"].setdefault(GLOBAL_AYAR, {})[k] = v
+    idler = set()
     for gcid in list(uyeler.keys()):
         try:
             if int(gcid) < 0:
-                durum["ayar"].setdefault(str(gcid), {})[k] = v
+                idler.add(str(gcid))
         except Exception:
             pass
+    for gcid in list(durum.get("ayar", {}).keys()):
+        if gcid == GLOBAL_AYAR:
+            continue
+        try:
+            if int(gcid) < 0:
+                idler.add(str(gcid))
+        except Exception:
+            pass
+    for gcid in idler:
+        durum["ayar"].setdefault(gcid, {})[k] = v
     durum_kaydet()
+    log.info(f"Global ayar: {k}={v} → {len(idler)} grup")
 
 def grup_ayari_uygula(cid, k, v, ozel):
     if ozel:
@@ -702,8 +714,7 @@ def komut_silici(fonk, sn=8):
 
         async def _reply_text(*args, **kwargs):
             # komut alıntısını gösterme
-            kwargs.setdefault("reply_to_message_id", None)
-            # bazı sürümlerde quote
+            kwargs.setdefault("do_quote", False)
             kwargs.pop("quote", None)
             r = await _orig_reply(*args, **kwargs)
             if r:
@@ -1015,7 +1026,11 @@ async def sahip_komut(update, ctx):
 async def ayar_komut(update, ctx):
     msg = update.effective_message
     chat = update.effective_chat
-    if chat.type == "private" or not await yetkili_mi(ctx, chat.id, update.effective_user.id):
+    user = update.effective_user
+    if chat.type == "private":
+        if not sahip_mi(user):
+            return
+    elif not await yetkili_mi(ctx, chat.id, user.id):
         return
     komut_adi = msg.text.split()[0][1:].split("@")[0].lower()
     ad, _, deger = komut_adi.partition("_")
@@ -1513,12 +1528,12 @@ async def komut(update, ctx, metin):
         return False
     if not await yetkili_mi(ctx, cid, user.id):
         if adresli:
-            await msg.reply_text("Bunu sadece sahibim yapabilir 😄")
+            await msg.reply_text("Bunu sadece sahibim yapabilir 😄", do_quote=False)
             return True
         return False
 
     async def de(s, html_mod=False):
-        m = await msg.reply_text(s, parse_mode=("HTML" if html_mod else None))
+        m = await msg.reply_text(s, parse_mode=("HTML" if html_mod else None), do_quote=False)
         try:
             t = asyncio.create_task(mesaj_sil_sn(ctx, cid, m.message_id, 10))
             gorevler.add(t)
@@ -1837,15 +1852,9 @@ async def yonet_komut(update, ctx):
     cid = chat.id
     if not msg or not msg.text:
         return
-    # Özelde sadece sahip ayar komutları çalışsın (gruba yayılır)
-    ozel_izinli = {
-        "hosgeldinmetni", "hosgeldinsifirla", "kuralayarla", "kuralsil",
-        "flood", "setflood", "uyarilimit", "uyarieylem",
-        "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler", "ayarlar",
-    }
-    ad0 = msg.text.split()[0][1:].split("@")[0].lower()
+    # Özelde sahip: tüm ayarlar tüm gruplara uygulanır
     if chat.type == "private":
-        if not sahip_mi(update.effective_user) or ad0 not in ozel_izinli:
+        if not sahip_mi(update.effective_user):
             return
     elif not await yetkili_mi(ctx, cid, update.effective_user.id):
         return
@@ -2722,7 +2731,7 @@ async def mesaj(update, ctx):
     else:
         h.append({"role": "assistant", "content": yanit})
     gecmis[anahtar] = h[-40:]
-    await msg.reply_text(yanit)
+    await msg.reply_text(yanit, do_quote=False)
 
 async def fiyat_komut(update, ctx):
     msg = update.effective_message
@@ -3022,7 +3031,8 @@ async def ekstra_komut(update, ctx):
         sn = int(arg) if arg.isdigit() else 0
         sn = max(0, min(sn, 600))
         grup_ayari_uygula(cid, "slowmode", sn, ozel)
-        await msg.reply_text(f"⏱ Slowmode: {sn} sn" + (" (kapalı)" if sn == 0 else ""))
+        yer = " (tüm gruplar)" if ozel else ""
+        await msg.reply_text(f"⏱ Slowmode: {sn} sn" + (" (kapalı)" if sn == 0 else "") + yer)
         return
 
     if ad == "nightmode":
@@ -3045,7 +3055,10 @@ async def ekstra_komut(update, ctx):
         dk = int(arg) if arg.isdigit() else 0
         dk = max(0, min(dk, 1440))
         grup_ayari_uygula(cid, "newbies_dk", dk, ozel)
-        await msg.reply_text(f"🆕 Yeni üyeler {dk} dk susturulacak." if dk else "🆕 Newbies susturma kapalı.")
+        yer = " (tüm gruplar)" if ozel else ""
+        await msg.reply_text(
+            (f"🆕 Yeni üyeler {dk} dk susturulacak." if dk else "🆕 Newbies susturma kapalı.") + yer
+        )
         return
 
     if ad == "ai_mod":
