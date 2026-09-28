@@ -2188,24 +2188,48 @@ async def genel_komut(update, ctx):
 
 async def hosgeldin_gonder(ctx, cid, u, baslik):
     if not cget(cid, "hosgeldin"):
+        log.info(f"Karşılama kapalı, atlandı: {cid}")
         return
     sablon = cget(cid, "hosgeldin_metin")
-    if sablon:
-        s = html.escape(sablon).replace("{ad}", u.mention_html()).replace("{grup}", html.escape(baslik or ""))
-        if "{ad}" not in sablon:
-            s = u.mention_html() + " " + s
-    else:
-        ai = await asyncio.to_thread(sor, [{"role": "user", "content":
-            "Gruba yeni katılan birine tek cümlelik, samimi ve kısa bir hoş geldin mesajı yaz. "
-            "İsim yazma, link verme."}])
-        s = f"{u.mention_html()} {html.escape((ai or 'Hoş geldin!').strip())}\nKural: link, küfür ve spam yasak. /kurallar"
-    m = await ctx.bot.send_message(cid, s, parse_mode="HTML")
     try:
-        task = asyncio.create_task(mesaj_sil_sn(ctx, cid, m.message_id, 5))
-        gorevler.add(task)
-        task.add_done_callback(gorevler.discard)
-    except Exception:
-        pass
+        if sablon:
+            s = html.escape(sablon)
+            mention = u.mention_html()
+            for k, v in (
+                ("{ad}", mention),
+                ("{Ad}", mention),
+                ("{isim}", mention),
+                ("{KullanıcıAdı}", mention),
+                ("{kullaniciadi}", mention),
+                ("{name}", mention),
+                ("{grup}", html.escape(baslik or "")),
+                ("{Grup}", html.escape(baslik or "")),
+            ):
+                s = s.replace(k, v)
+            if not any(x in sablon for x in ("{ad}", "{Ad}", "{isim}", "{KullanıcıAdı}", "{kullaniciadi}", "{name}")):
+                s = mention + "\n" + s
+        else:
+            try:
+                ai = await asyncio.to_thread(sor, [{"role": "user", "content":
+                    "Gruba yeni katılan birine tek cümlelik, samimi ve kısa bir hoş geldin mesajı yaz. "
+                    "İsim yazma, link verme."}])
+            except Exception as e:
+                log.warning(f"Karşılama AI hata: {e}")
+                ai = None
+            s = (
+                f"{u.mention_html()} {html.escape((ai or 'Hoş geldin!').strip())}"
+                f"\nKural: link, küfür ve spam yasak. /kurallar"
+            )
+        m = await ctx.bot.send_message(cid, s, parse_mode="HTML")
+        log.info(f"Karşılama gönderildi: {cid} -> {u.id}")
+        try:
+            task = asyncio.create_task(mesaj_sil_sn(ctx, cid, m.message_id, 30))
+            gorevler.add(task)
+            task.add_done_callback(gorevler.discard)
+        except Exception:
+            pass
+    except Exception as e:
+        log.warning(f"Karşılama gönderilemedi ({cid}): {e}")
 
 async def captcha_sure(ctx, cid, uid, mid):
     await asyncio.sleep(180)
@@ -3515,10 +3539,63 @@ app.add_handler(MessageHandler(
     servis_temizle
 ))
 
+
+async def uye_durum(update, ctx):
+    """ChatMember güncellemesi: gruba yeni katılan (join request / gizli join)."""
+    cm = update.chat_member
+    if not cm:
+        return
+    eski = cm.old_chat_member.status if cm.old_chat_member else ""
+    yeni = cm.new_chat_member.status if cm.new_chat_member else ""
+    # left/kicked -> member/restricted = katıldı
+    if eski not in ("left", "kicked", "banned") and yeni not in ("member", "restricted", "administrator"):
+        # also handle: never in chat
+        pass
+    katildi = eski in ("left", "kicked") and yeni in ("member", "restricted", "administrator")
+    if not katildi:
+        # ilk kez üye
+        if eski in ("left", "kicked", "") and yeni in ("member", "restricted"):
+            katildi = True
+    if not katildi:
+        return
+    u = cm.new_chat_member.user
+    if not u or u.is_bot:
+        return
+    chat = update.effective_chat
+    if not chat or chat.type == "private":
+        return
+    cid = chat.id
+    log.info(f"uye_durum katıldı: {cid} {u.id}")
+    uye_kaydi(cid, u, say=False)
+    kaydet()
+    if cget(cid, "captcha"):
+        try:
+            await sustur(ctx, cid, u.id)
+            klavye = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Robot değilim", callback_data=f"cap:{u.id}")]])
+            m = await ctx.bot.send_message(
+                cid, f"{u.mention_html()} hoş geldin! 3 dk içinde butona bas, yoksa gruptan atılırsın.",
+                parse_mode="HTML", reply_markup=klavye)
+            bekleyen[(cid, u.id)] = m.message_id
+            tsk = asyncio.create_task(captcha_sure(ctx, cid, u.id, m.message_id))
+            gorevler.add(tsk)
+            tsk.add_done_callback(gorevler.discard)
+            return
+        except Exception as e:
+            log.warning(f"Captcha (uye_durum): {e}")
+    await hosgeldin_gonder(ctx, cid, u, chat.title)
+    ndk = int(cget(cid, "newbies_dk") or 0)
+    if ndk > 0:
+        try:
+            await sustur(ctx, cid, u.id, ndk)
+        except Exception as e:
+            log.warning(f"Newbies mute (uye_durum): {e}")
+
+
+app.add_handler(ChatMemberHandler(uye_durum, ChatMemberHandler.CHAT_MEMBER))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
 app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
 app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & filters.UpdateType.MESSAGE, mesaj))
 app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.UpdateType.MESSAGE, kilit_kontrol), group=1)
 app.add_error_handler(hata)
 log.info("Bot başlıyor...")
-app.run_polling()
+app.run_polling(allowed_updates=Update.ALL_TYPES)
