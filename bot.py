@@ -2175,17 +2175,44 @@ async def yonet_komut(update, ctx):
             await de("Böyle bir not yok.")
     elif ad == "filtre":
         kw = kucult(a1)
-        t = a2.strip() or ((yanit.text or yanit.caption or "").strip() if yanit else "")
-        if kw and t:
-            durum["filtre"].setdefault(scid, {})[kw] = t
-            durum_kaydet()
-            await de(f"✅ Filtre eklendi: {kw}")
+        met_f = a2.strip() or ((yanit.text or yanit.caption or "").strip() if yanit else "")
+        if kw and met_f:
+            ozel = chat.type == "private"
+            if ozel:
+                # tüm gruplara yaz
+                durum["filtre"].setdefault(GLOBAL_AYAR, {})[kw] = met_f
+                for gcid in list(durum.get("ayar", {}).keys()) + list(uyeler.keys()):
+                    try:
+                        if str(gcid) == GLOBAL_AYAR:
+                            continue
+                        if int(str(gcid)) < 0:
+                            durum["filtre"].setdefault(str(gcid), {})[kw] = met_f
+                    except Exception:
+                        pass
+                durum_kaydet()
+                await de(f"✅ Filtre eklendi (tüm gruplar): {kw}")
+            else:
+                durum["filtre"].setdefault(scid, {})[kw] = met_f
+                durum_kaydet()
+                await de(f"✅ Filtre eklendi: {kw}")
         else:
             await de("Örnek: /filtre kelime cevap")
     elif ad == "filtresil":
-        if durum["filtre"].get(scid, {}).pop(kucult(a1), None) is not None:
+        ozel = chat.type == "private"
+        kw = kucult(a1)
+        silindi = False
+        if ozel:
+            if durum["filtre"].get(GLOBAL_AYAR, {}).pop(kw, None) is not None:
+                silindi = True
+            for gcid in list(durum.get("filtre", {}).keys()):
+                if durum["filtre"].get(gcid, {}).pop(kw, None) is not None:
+                    silindi = True
+        else:
+            if durum["filtre"].get(scid, {}).pop(kw, None) is not None:
+                silindi = True
+        if silindi:
             durum_kaydet()
-            await de("Filtre silindi.")
+            await de("Filtre silindi." + (" (tüm gruplar)" if ozel else ""))
         else:
             await de("Böyle bir filtre yok.")
     elif ad in ("kara", "karasil"):
@@ -2934,9 +2961,15 @@ async def mesaj(update, ctx):
             if tn:
                 await msg.reply_text(tn)
                 return
-        for kw_, cev in durum["filtre"].get(str(cid), {}).items():
-            if kw_ in kelimeler:
-                await msg.reply_text(cev)
+        # filtre: grup + global
+        flt = dict(durum["filtre"].get(GLOBAL_AYAR, {}) or {})
+        flt.update(durum["filtre"].get(str(cid), {}) or {})
+        met_k = kucult(metin)
+        for kw_, cev in flt.items():
+            if not kw_:
+                continue
+            if kw_ in kelimeler or kw_ in met_k:
+                await msg.reply_text(cev, do_quote=False)
                 return
         if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
