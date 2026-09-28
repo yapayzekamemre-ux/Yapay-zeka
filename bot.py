@@ -39,17 +39,12 @@ LISTE_KISA = {"günlük", "gunluk", "haftalık", "haftalik", "aylık", "aylik", 
               "duyuru", "duyurular", "duyuruları", "duyurulari"}
 
 SISTEM = (
-    "Sen bir Telegram grubunun zeki, esprili, samimi ve makaracı asistanısın. "
-    "İnsanlarla sıcak ve doğal konuş. Gerekirse hafif küfür de edebilirsin (amk, aq, lan gibi) ama abartma. "
-    "Türkçe konuş. Cevapların 1-3 cümle olsun, gereksiz uzatma. "
-    "Cümleleri asla yarım bırakma, her cümleyi düzgün bitir. "
-    "ÖNCEKİ KONUŞMAYI MUTLAKA TAKİP ET, bağlamı asla unutma, konu dışına çıkma, başka yerlere sıçrama. "
-    "İnsanların isimleriyle hitap et, samimi ol, espri yap. "
-    "Kendi adını, hangi model olduğunu veya hangi şirketin ürünü olduğunu ASLA söyleme. "
-    "Sorulursa sadece 'Ben grubun yapay zeka asistanıyım' de. "
-    "Grubun amacı, içeriği hakkında ASLA bilgi uydurma. "
-    "Siyaset konuşma. Yatırım tavsiyesi verme. Bilmediğin şeyi uydurma. "
-    "Sahibinin kalıcı talimatlarına sessizce uy."
+    "Sen Telegram grubunun samimi, esprili asistanısın. Türkçe konuş. "
+    "CEVAPLAR ÇOK KISA: en fazla 1-2 kısa cümle, 150 karakteri geçme. Uzun paragraf YASAK. "
+    "Samimi ol, gerekirse hafif küfür (amk, lan) ama abartma. "
+    "Önceki konuşmayı unutma, konu dışına çıkma. "
+    "Model/şirket adı söyleme. Yatırım/siyaset yok. Bilmediğini uydurma. "
+    "Sahip talimatlarına uy."
 )
 
 YARDIM = (
@@ -343,7 +338,7 @@ def nvidia_sor(m, sistem, model=None):
                     "model": model_id,
                     "messages": [{"role": "system", "content": sistem}] + m,
                     "temperature": 0.7,
-                    "max_tokens": 512,
+                    "max_tokens": 180,
                 },
                 timeout=25,
             )
@@ -383,7 +378,7 @@ def claude_sor(m, sistem):
         },
         json={
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 512,
+            "max_tokens": 180,
             "system": sistem,
             "messages": mesajlar,
         },
@@ -407,7 +402,7 @@ def deepseek_sor(m, sistem):
             "model": "deepseek-chat",
             "messages": [{"role": "system", "content": sistem}] + m,
             "temperature": 0.7,
-            "max_tokens": 512,
+            "max_tokens": 180,
         },
         timeout=30,
     )
@@ -2296,47 +2291,48 @@ def _hosgeldin_debounce(cid, uid, sn=15):
     return True
 
 async def hosgeldin_gonder(ctx, cid, u, baslik):
-    if not cget(cid, "hosgeldin"):
-        log.info(f"Karşılama kapalı, atlandı: {cid}")
-        return
-    if not _hosgeldin_debounce(cid, u.id):
-        log.info(f"Karşılama debounce: {cid} {u.id}")
-        return
-    sablon = cget(cid, "hosgeldin_metin")
+    """Karşılama mesajı — hata yutmaz, mutlaka dener."""
     try:
-        if sablon:
-            s = html.escape(sablon)
-            mention = u.mention_html()
-            for k, v in (
-                ("{ad}", mention),
-                ("{Ad}", mention),
-                ("{isim}", mention),
-                ("{KullanıcıAdı}", mention),
-                ("{kullaniciadi}", mention),
-                ("{name}", mention),
-                ("{grup}", html.escape(baslik or "")),
-                ("{Grup}", html.escape(baslik or "")),
-            ):
-                s = s.replace(k, v)
-            if not any(x in sablon for x in ("{ad}", "{Ad}", "{isim}", "{KullanıcıAdı}", "{kullaniciadi}", "{name}")):
-                s = mention + "\n" + s
-        else:
-            try:
-                ai = await asyncio.to_thread(sor, [{"role": "user", "content":
-                    "Gruba yeni katılan birine tek cümlelik, samimi ve kısa bir hoş geldin mesajı yaz. "
-                    "İsim yazma, link verme."}])
-            except Exception as e:
-                log.warning(f"Karşılama AI hata: {e}")
-                ai = None
-            s = (
-                f"{u.mention_html()} {html.escape((ai or 'Hoş geldin!').strip())}"
-                f"\nKural: link, küfür ve spam yasak. /kurallar"
+        if cget(cid, "hosgeldin") is False:
+            log.info(f"Karşılama kapalı: {cid}")
+            return
+        if not _hosgeldin_debounce(cid, u.id):
+            return
+        sablon = cget(cid, "hosgeldin_metin")
+        if not sablon or not str(sablon).strip():
+            sablon = (
+                "⛔ {ad} Hoşgeldiniz\n"
+                "⚠️ Katıldığı andan itibaren 15 dakika boyunca mesaj gönderemez\n"
+                "✅ 15 dakika sonra sohbeti başlatabilirsiniz"
             )
-        m = await ctx.bot.send_message(cid, s, parse_mode="HTML")
-        log.info(f"Karşılama gönderildi: {cid} -> {u.id} | {s[:80]}")
-        # Karşılama kalıcı kalsın (silme yok — kullanıcı görebilsin)
+        ad_html = u.mention_html()
+        ad_duz = u.full_name or "Üye"
+        s = str(sablon)
+        for a, b in (
+            ("{ad}", ad_html), ("{Ad}", ad_html), ("{isim}", ad_html),
+            ("{KullanıcıAdı}", ad_html), ("{kullaniciadi}", ad_html), ("{name}", ad_html),
+            ("{grup}", html.escape(baslik or "")), ("{Grup}", html.escape(baslik or "")),
+        ):
+            s = s.replace(a, b)
+        try:
+            await ctx.bot.send_message(cid, s, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception as e1:
+            log.warning(f"Karşılama HTML hata: {e1}")
+            s2 = str(sablon)
+            for a, b in (
+                ("{ad}", ad_duz), ("{Ad}", ad_duz), ("{isim}", ad_duz),
+                ("{KullanıcıAdı}", ad_duz), ("{kullaniciadi}", ad_duz), ("{name}", ad_duz),
+                ("{grup}", baslik or ""), ("{Grup}", baslik or ""),
+            ):
+                s2 = s2.replace(a, b)
+            await ctx.bot.send_message(cid, s2, disable_web_page_preview=True)
+        log.info(f"Karşılama OK: {cid} -> {u.id} {ad_duz}")
     except Exception as e:
-        log.warning(f"Karşılama gönderilemedi ({cid}): {e}")
+        log.exception(f"Karşılama kritik hata {cid}: {e}")
+        try:
+            await ctx.bot.send_message(cid, f"⛔ {u.full_name or 'Üye'} Hoşgeldiniz")
+        except Exception:
+            pass
 
 async def captcha_sure(ctx, cid, uid, mid):
     await asyncio.sleep(180)
@@ -2354,50 +2350,60 @@ async def captcha_sure(ctx, cid, uid, mid):
 async def hosgeldin(update, ctx):
     msg = update.effective_message
     chat = update.effective_chat
+    if not msg or not chat:
+        return
     cid = chat.id
-    log.info(f"NEW_CHAT_MEMBERS event: {cid} members={len(msg.new_chat_members or [])}")
-    # sistem mesajı sil (cleanservice)
-    if cget(cid, "cleanservice"):
-        try:
+    log.info(f"NEW_CHAT_MEMBERS: chat={cid} n={len(msg.new_chat_members or [])}")
+    try:
+        if cget(cid, "cleanservice"):
             await msg.delete()
-        except Exception as e:
-            log.warning(f"Katılım mesajı silinemedi: {e}")
-
+    except Exception:
+        pass
     for u in (msg.new_chat_members or []):
-        if u.is_bot:
-            # Bot eklendiyse sadece sistem mesajı silindi, hoşgeldin atma
-            continue
-        uye_kaydi(cid, u, say=False)
-        kaydet()
-        uname = f"@{u.username}" if u.username else "—"
-        await log_gonder(ctx, cid,
-            f"🟢 <b>Katıldı</b>"
-            f"👤 {html.escape(u.full_name)} ({uname})"
-            f"🆔 <code>{u.id}</code>"
-            f"📍 {html.escape(chat.title or str(cid))}")
-        if cget(cid, "captcha"):
-            try:
-                await sustur(ctx, cid, u.id)
-                klavye = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Robot değilim", callback_data=f"cap:{u.id}")]])
-                m = await ctx.bot.send_message(
-                    cid, f"{u.mention_html()} hoş geldin! 3 dk içinde butona bas, yoksa gruptan atılırsın.",
-                    parse_mode="HTML", reply_markup=klavye)
-                bekleyen[(cid, u.id)] = m.message_id
-                t = asyncio.create_task(captcha_sure(ctx, cid, u.id, m.message_id))
-                gorevler.add(t)
-                t.add_done_callback(gorevler.discard)
+        try:
+            if u.is_bot:
                 continue
-            except Exception as e:
-                log.warning(f"Captcha kurulamadı: {e}")
-        await hosgeldin_gonder(ctx, cid, u, chat.title)
-        # Newbies: yeni üyeyi sustur (varsayılan 15 dk)
-        ndk = int(cget(cid, "newbies_dk") or 15)
-        if ndk > 0:
+            log.info(f"Yeni üye: {u.id} {u.full_name}")
+            uye_kaydi(cid, u, say=False)
+            kaydet()
             try:
-                await sustur(ctx, cid, u.id, ndk)
-                log.info(f"Newbies mute {ndk}dk: {cid} {u.id}")
-            except Exception as e:
-                log.warning(f"Newbies mute hatası (bot 'kullanıcıları engelle' yetkisi lazım): {e}")
+                uname = f"@{u.username}" if u.username else "—"
+                await log_gonder(
+                    ctx, cid,
+                    f"🟢 <b>Katıldı</b>\n👤 {html.escape(u.full_name)} ({uname})\n"
+                    f"🆔 <code>{u.id}</code>\n📍 {html.escape(chat.title or str(cid))}",
+                )
+            except Exception:
+                pass
+            if cget(cid, "captcha"):
+                try:
+                    await sustur(ctx, cid, u.id)
+                    klavye = InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("✅ Robot değilim", callback_data=f"cap:{u.id}")]]
+                    )
+                    m = await ctx.bot.send_message(
+                        cid,
+                        f"{u.mention_html()} 3 dk içinde butona bas.",
+                        parse_mode="HTML",
+                        reply_markup=klavye,
+                    )
+                    bekleyen[(cid, u.id)] = m.message_id
+                    tsk = asyncio.create_task(captcha_sure(ctx, cid, u.id, m.message_id))
+                    gorevler.add(tsk)
+                    tsk.add_done_callback(gorevler.discard)
+                    continue
+                except Exception as e:
+                    log.warning(f"Captcha: {e}")
+            await hosgeldin_gonder(ctx, cid, u, chat.title or "")
+            ndk = int(cget(cid, "newbies_dk") or 15)
+            if ndk > 0:
+                try:
+                    await sustur(ctx, cid, u.id, ndk)
+                    log.info(f"Mute {ndk}dk: {u.id}")
+                except Exception as e:
+                    log.warning(f"Mute hata: {e}")
+        except Exception as e:
+            log.exception(f"hosgeldin üye döngü: {e}")
 
 async def ayrildi(update, ctx):
     """X gruptan ayrildi - sil + log + unut."""
@@ -2780,8 +2786,15 @@ async def mesaj(update, ctx):
 
     yanit = await asyncio.to_thread(sor, h[-20:], ek, arama_gerek(metin))
     if not yanit:
-        yanit = "Bir saniye, servisler yoğun — tekrar dene 🙏"
+        yanit = "Bir saniye, tekrar dene 🙏"
     else:
+        # uzun cevapları kısalt
+        yanit = yanit.strip()
+        if len(yanit) > 220:
+            kes = yanit[:220]
+            if " " in kes:
+                kes = kes.rsplit(" ", 1)[0]
+            yanit = kes + "…"
         h.append({"role": "assistant", "content": yanit})
     gecmis[anahtar] = h[-40:]
     await msg.reply_text(yanit, do_quote=False)
