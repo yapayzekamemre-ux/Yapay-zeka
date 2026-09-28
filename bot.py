@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 from groq import Groq
 from google import genai
 from google.genai import types
-from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Update
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, ChatMemberHandler, filters
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_KEY = os.environ["GROQ_KEY"]
