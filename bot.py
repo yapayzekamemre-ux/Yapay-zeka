@@ -2969,7 +2969,8 @@ async def mesaj(update, ctx):
             if not kw_:
                 continue
             if kw_ in kelimeler or kw_ in met_k:
-                await msg.reply_text(cev, do_quote=False)
+                # sağdaki örnek gibi: mesaja yanıt olarak gönder
+                await msg.reply_text(cev, do_quote=True)
                 return
         if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
