@@ -119,7 +119,15 @@ VARS = {
     "cleanservice": True,   # katıl/ayrıl sistem mesajı sil
     "cleancommand": True,   # /komut mesajlarını sil
     "reports": True,        # /report /rapor
-    "privaterules": False,  # kurallar özelden gelsin
+    "privaterules": False,
+    "hosgeldin_sil_sn": 15,
+    "link_izinli": [],          # serbest domain/url/kelime listesi
+    "antiraid": False,
+    "antiraid_limit": 5,        # X sn içinde bu kadar katılım = kilit
+    "antiraid_sn": 30,
+    "blocklist_mode": "mute",   # mute|kick|ban|sil
+    "report_log_only": False,   # rapor sadece log kanalına
+    "hosgeldin_dil": "tr",      # tr|en|ru|auto
 }
 
 GLOBAL_AYAR = "_global"
@@ -1269,6 +1277,81 @@ def spam_mi(chat_id, user_id, n):
     dq.append(now)
     return len(dq) == n and now - dq[0] < 10
 
+
+def link_izinli_mi(cid, metin, msg=None):
+    """Sahibin serbest bıraktığı link/domain/kelime var mı?"""
+    liste = cget(cid, "link_izinli") or []
+    if not liste:
+        return False
+    ham = (metin or "").lower()
+    if msg:
+        for e in (getattr(msg, "entities", None) or []) + (getattr(msg, "caption_entities", None) or []):
+            url = getattr(e, "url", None)
+            if url:
+                ham += " " + url.lower()
+            if getattr(e, "type", None) == "text_link" and url:
+                ham += " " + url.lower()
+    for izin in liste:
+        z = (izin or "").lower().strip()
+        if not z:
+            continue
+        if z in ham:
+            return True
+        # domain: example.com
+        if z.replace("https://", "").replace("http://", "") in ham:
+            return True
+    return False
+
+def hosgeldin_sablon_dil(cid, dil=None):
+    """Çok dilli karşılama şablonları."""
+    d = (dil or cget(cid, "hosgeldin_dil") or "tr").lower()
+    if d == "auto":
+        d = "tr"
+    sablon = cget(cid, "hosgeldin_metin")
+    if sablon and d == "tr":
+        return sablon
+    paket = {
+        "tr": (
+            "⛔ {ad} Hoşgeldiniz\n"
+            "⚠️ Katıldığı andan itibaren 15 dakika boyunca mesaj gönderemez\n"
+            "✅ 15 dakika sonra sohbeti başlatabilirsiniz"
+        ),
+        "en": (
+            "⛔ {ad} Welcome\n"
+            "⚠️ You cannot send messages for 15 minutes after joining\n"
+            "✅ You can chat after 15 minutes"
+        ),
+        "ru": (
+            "⛔ {ad} Добро пожаловать\n"
+            "⚠️ 15 минут нельзя писать сообщения\n"
+            "✅ Через 15 минут можно общаться"
+        ),
+        "ar": (
+            "⛔ {ad} أهلاً بك\n"
+            "⚠️ لا يمكنك إرسال رسائل لمدة 15 دقيقة\n"
+            "✅ يمكنك الدردشة بعد 15 دقيقة"
+        ),
+    }
+    if sablon and d == "tr":
+        return sablon
+    return paket.get(d) or paket["tr"]
+
+# antiraid sayaç
+_raid_sayac = {}
+
+def antiraid_kontrol(cid):
+    """Ani katılım: limit aşılırsa True (kilit öner)."""
+    if not cget(cid, "antiraid"):
+        return False
+    lim = int(cget(cid, "antiraid_limit") or 5)
+    sn = int(cget(cid, "antiraid_sn") or 30)
+    now = time.time()
+    q = _raid_sayac.setdefault(cid, [])
+    q.append(now)
+    _raid_sayac[cid] = [x for x in q if now - x <= sn]
+    return len(_raid_sayac[cid]) >= lim
+
+
 def mesaj_turleri(msg):
     t = []
     if msg.sticker:
@@ -1320,12 +1403,32 @@ async def ihlal(update, ctx, ad, sil):
     cid = update.effective_chat.id
     anahtar = (cid, user.id)
     uyari[anahtar] = uyari.get(anahtar, 0) + 1
-    # İhlal mesajını her zaman silmeye çalış (link/küfür/kara)
     if sil and msg:
         try:
             await msg.delete()
         except Exception as e:
             log.warning(f"İhlal mesajı silinemedi: {e}")
+    # blocklist_mode: yasaklı kelimede doğrudan ceza
+    if ad and "yasak" in ad.lower():
+        mod = cget(cid, "blocklist_mode") or "mute"
+        try:
+            if mod == "ban":
+                await ctx.bot.ban_chat_member(cid, user.id)
+            elif mod == "kick":
+                await ctx.bot.ban_chat_member(cid, user.id)
+                await ctx.bot.unban_chat_member(cid, user.id)
+            elif mod == "mute":
+                await sustur(ctx, cid, user.id, 10)
+            # sil: zaten silindi
+            uy = await ctx.bot.send_message(
+                cid, f"{user.mention_html()} blocklist ({mod}): {html.escape(ad)}",
+                parse_mode="HTML")
+            tsk = asyncio.create_task(mesaj_sil_sn(ctx, cid, uy.message_id, 10))
+            gorevler.add(tsk)
+            tsk.add_done_callback(gorevler.discard)
+            return
+        except Exception as e:
+            log.warning(f"blocklist ceza: {e}")
     if uyari[anahtar] == 1:
         uy = await ctx.bot.send_message(
             cid,
@@ -1922,7 +2025,6 @@ async def yonet_komut(update, ctx):
         grup_ayari_uygula(cid, "hosgeldin_metin", None, chat.type == "private")
         await de("Hoş geldin metni varsayılana döndü (yapay zeka yazar).")
     elif ad in ("cleanservice", "cleancommand", "reports", "privaterules"):
-        # Rose/Combot: /cleanservice on|off
         ozel = chat.type == "private"
         ac = True
         if a1:
@@ -1932,6 +2034,79 @@ async def yonet_komut(update, ctx):
         grup_ayari_uygula(cid, ad, ac, ozel)
         yer = " (tüm gruplar)" if ozel else ""
         await de(f"{'✅' if ac else '❌'} {ad}: {'açık' if ac else 'kapalı'}{yer}")
+    elif ad in ("hosgeldinsure", "welcometime", "welcomedel"):
+        ozel = chat.type == "private"
+        sn = int(a1) if a1.isdigit() else 15
+        sn = max(0, min(sn, 600))
+        grup_ayari_uygula(cid, "hosgeldin_sil_sn", sn, ozel)
+        yer = " (tüm gruplar)" if ozel else ""
+        if sn == 0:
+            await de(f"📌 Karşılama mesajı silinmeyecek.{yer}")
+        else:
+            await de(f"📌 Karşılama {sn} sn sonra silinecek.{yer}")
+    elif ad in ("linkizin", "allowlink", "izinlilink"):
+        ozel = chat.type == "private"
+        if not a1:
+            await de("Örnek: /linkizin t.me/benimkanal veya /linkizin example.com")
+            return
+        lst = list(cget(cid, "link_izinli") or [])
+        item = a1.strip()
+        if len(p) > 2:
+            item = " ".join(p[1:]).strip()
+        if item not in lst:
+            lst.append(item)
+        grup_ayari_uygula(cid, "link_izinli", lst, ozel)
+        yer = " (tüm gruplar)" if ozel else ""
+        await de(f"✅ Serbest link eklendi: {item}{yer}")
+    elif ad in ("linkizin_sil", "allowlink_sil"):
+        ozel = chat.type == "private"
+        lst = list(cget(cid, "link_izinli") or [])
+        item = " ".join(p[1:]).strip() if len(p) > 1 else a1
+        if item in lst:
+            lst.remove(item)
+            grup_ayari_uygula(cid, "link_izinli", lst, ozel)
+            await de(f"🗑 Kaldırıldı: {item}")
+        else:
+            await de("Listede yok. /linkizinler")
+    elif ad in ("linkizinler", "allowlinks"):
+        lst = cget(cid, "link_izinli") or []
+        txt = "\n".join("• " + str(x) for x in lst) if lst else "bos"
+        await de("Serbest linkler:\n" + txt)
+    elif ad == "antiraid":
+        ozel = chat.type == "private"
+        if not a1 or kucult(a1) in ("on", "ac", "aç", "1"):
+            grup_ayari_uygula(cid, "antiraid", True, ozel)
+            await de("🚨 Antiraid açık" + (" (tüm gruplar)" if ozel else ""))
+        elif kucult(a1) in ("off", "kapat", "0"):
+            grup_ayari_uygula(cid, "antiraid", False, ozel)
+            await de("Antiraid kapalı" + (" (tüm gruplar)" if ozel else ""))
+        else:
+            # /antiraid 5 30  → limit sn
+            par = a1.split()
+            if a1.isdigit():
+                grup_ayari_uygula(cid, "antiraid_limit", int(a1), ozel)
+                grup_ayari_uygula(cid, "antiraid", True, ozel)
+                await de(f"Antiraid limit: {a1} katılım / {cget(cid,'antiraid_sn')}sn")
+            else:
+                await de("Örnek: /antiraid on | /antiraid off | /antiraid 5")
+    elif ad == "blocklistmode":
+        ozel = chat.type == "private"
+        mod = kucult(a1 or "mute")
+        if mod not in ("mute", "kick", "ban", "sil", "delete"):
+            await de("Örnek: /blocklistmode mute|kick|ban|sil")
+            return
+        if mod == "delete":
+            mod = "sil"
+        grup_ayari_uygula(cid, "blocklist_mode", mod, ozel)
+        await de(f"Blocklist ceza: {mod}" + (" (tüm gruplar)" if ozel else ""))
+    elif ad in ("hosgeldindil", "welcomelang"):
+        ozel = chat.type == "private"
+        dil = kucult(a1 or "tr")
+        if dil not in ("tr", "en", "ru", "ar", "auto"):
+            await de("Diller: tr | en | ru | ar | auto")
+            return
+        grup_ayari_uygula(cid, "hosgeldin_dil", dil, ozel)
+        await de(f"Karşılama dili: {dil}" + (" (tüm gruplar)" if ozel else ""))
     elif ad == "setlog":
         # /setlog @kanal | /setlog -100... | kanal mesajına yanıt | iletilmiş kanala yanıt
         def kanal_id_bul(m):
@@ -2219,7 +2394,18 @@ async def rapor_gonder(update, ctx):
     except Exception:
         etiket = ""
     link = mesaj_linki(chat, hedef.message_id) or ""
-    await ctx.bot.send_message(chat.id, f"🚨 Rapor: {etiket}\n{link}", parse_mode="HTML")
+    met = f"🚨 <b>Rapor</b>\n{etiket}\n{link}"
+    if cget(chat.id, "report_log_only"):
+        await log_gonder(ctx, chat.id, met)
+        r = await msg.reply_text("Rapor iletildi.", do_quote=False)
+        try:
+            tsk = asyncio.create_task(mesaj_sil_sn(ctx, chat.id, r.message_id, 5))
+            gorevler.add(tsk)
+            tsk.add_done_callback(gorevler.discard)
+        except Exception:
+            pass
+    else:
+        await ctx.bot.send_message(chat.id, f"🚨 Rapor: {etiket}\n{link}", parse_mode="HTML")
 
 async def genel_komut(update, ctx):
     msg = update.effective_message
@@ -2298,13 +2484,7 @@ async def hosgeldin_gonder(ctx, cid, u, baslik):
             return
         if not _hosgeldin_debounce(cid, u.id):
             return
-        sablon = cget(cid, "hosgeldin_metin")
-        if not sablon or not str(sablon).strip():
-            sablon = (
-                "⛔ {ad} Hoşgeldiniz\n"
-                "⚠️ Katıldığı andan itibaren 15 dakika boyunca mesaj gönderemez\n"
-                "✅ 15 dakika sonra sohbeti başlatabilirsiniz"
-            )
+        sablon = hosgeldin_sablon_dil(cid)
         ad_html = u.mention_html()
         ad_duz = u.full_name or "Üye"
         s = str(sablon)
@@ -2314,8 +2494,10 @@ async def hosgeldin_gonder(ctx, cid, u, baslik):
             ("{grup}", html.escape(baslik or "")), ("{Grup}", html.escape(baslik or "")),
         ):
             s = s.replace(a, b)
+        mid = None
         try:
-            await ctx.bot.send_message(cid, s, parse_mode="HTML", disable_web_page_preview=True)
+            m = await ctx.bot.send_message(cid, s, parse_mode="HTML", disable_web_page_preview=True)
+            mid = m.message_id
         except Exception as e1:
             log.warning(f"Karşılama HTML hata: {e1}")
             s2 = str(sablon)
@@ -2325,12 +2507,26 @@ async def hosgeldin_gonder(ctx, cid, u, baslik):
                 ("{grup}", baslik or ""), ("{Grup}", baslik or ""),
             ):
                 s2 = s2.replace(a, b)
-            await ctx.bot.send_message(cid, s2, disable_web_page_preview=True)
+            m = await ctx.bot.send_message(cid, s2, disable_web_page_preview=True)
+            mid = m.message_id
         log.info(f"Karşılama OK: {cid} -> {u.id} {ad_duz}")
+        sn = int(cget(cid, "hosgeldin_sil_sn") or 0)
+        if mid and sn > 0:
+            try:
+                task = asyncio.create_task(mesaj_sil_sn(ctx, cid, mid, sn))
+                gorevler.add(task)
+                task.add_done_callback(gorevler.discard)
+            except Exception:
+                pass
     except Exception as e:
         log.exception(f"Karşılama kritik hata {cid}: {e}")
         try:
-            await ctx.bot.send_message(cid, f"⛔ {u.full_name or 'Üye'} Hoşgeldiniz")
+            m = await ctx.bot.send_message(cid, f"⛔ {u.full_name or 'Üye'} Hoşgeldiniz")
+            sn = int(cget(cid, "hosgeldin_sil_sn") or 0)
+            if sn > 0:
+                task = asyncio.create_task(mesaj_sil_sn(ctx, cid, m.message_id, sn))
+                gorevler.add(task)
+                task.add_done_callback(gorevler.discard)
         except Exception:
             pass
 
@@ -2394,6 +2590,17 @@ async def hosgeldin(update, ctx):
                     continue
                 except Exception as e:
                     log.warning(f"Captcha: {e}")
+            if antiraid_kontrol(cid):
+                try:
+                    # geçici: link kilidi aç (zaten varsa), uyarı at
+                    await ctx.bot.send_message(
+                        cid,
+                        "🚨 Antiraid: çok hızlı üye girişi — dikkat!",
+                        disable_notification=True,
+                    )
+                    log.warning(f"Antiraid tetik: {cid}")
+                except Exception:
+                    pass
             await hosgeldin_gonder(ctx, cid, u, chat.title or "")
             ndk = int(cget(cid, "newbies_dk") or 15)
             if ndk > 0:
@@ -2488,6 +2695,9 @@ async def kilit_kontrol(update, ctx):
                 return True
         return False
     if _izinli_kanal(msg):
+        return
+    metin = (msg.text or msg.caption or "")
+    if link_izinli_mi(chat.id, metin, msg):
         return
     kilit = cget(chat.id, "kilit") or []
     if not kilit or not any(x in kilit for x in mesaj_turleri(msg)):
@@ -2702,7 +2912,9 @@ async def mesaj(update, ctx):
         spam = n > 0 and spam_mi(cid, user.id, n)
         ad = None
         onayli = str(user.id) in _liste_uid(cid, "approved") or str(user.id) in _liste_uid(cid, "whitelist")
-        if not kanal_izinli and not onayli and (scam_var(metin) or ("link" in (cget(cid, "kilit") or []) and link_var(msg, metin))):
+        if link_izinli_mi(cid, metin, msg):
+            pass  # sahibin serbest linki
+        elif not kanal_izinli and not onayli and (scam_var(metin) or ("link" in (cget(cid, "kilit") or []) and link_var(msg, metin))):
             ad = "link/şifre paylaşımı"
         elif kufur_var(metin):
             ad = "küfür/hakaret"
@@ -3641,7 +3853,11 @@ app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem",
                                 "hosgeldinmetni", "hosgeldinsifirla", "setlog", "unsetlog", "kaydet", "notsil", "filtre", "filtresil",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler", "ayarlar", "del", "sil", "purge",
                                 "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle", "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur", "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save",
-                                "cleanservice", "cleancommand", "reports", "privaterules"], yonet_komut))
+                                "cleanservice", "cleancommand", "reports", "privaterules",
+                                "hosgeldinsure", "welcometime", "welcomedel",
+                                "linkizin", "allowlink", "izinlilink", "linkizin_sil", "allowlink_sil",
+                                "linkizinler", "allowlinks", "antiraid", "blocklistmode",
+                                "hosgeldindil", "welcomelang"], yonet_komut))
 app.add_handler(CommandHandler(["yardim", "help", "start", "kurallar", "rules", "not", "get", "notlar", "notes", "filtreler", "filters",
                                 "kilitler", "id", "info", "bilgi", "top", "istatistik", "rapor", "report", "adminlist"], genel_komut))
 app.add_handler(CommandHandler("sifirla", sifirla))
