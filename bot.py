@@ -2488,6 +2488,9 @@ async def mesaj(update, ctx):
     metin = msg.text or msg.caption
     if not metin:
         return
+    # Slash komutları CommandHandler'a bırak; AI cevaplamasın
+    if (msg.text or "").lstrip().startswith("/"):
+        return
     ozel = chat.type == "private"
     cid = chat.id
     kayit = uye_kaydi(cid, user)
@@ -3610,7 +3613,8 @@ app.add_handler(CommandHandler(list(ALIAS.keys()), mod_komut))
 app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem", "kuralayarla", "kuralsil",
                                 "hosgeldinmetni", "hosgeldinsifirla", "setlog", "unsetlog", "kaydet", "notsil", "filtre", "filtresil",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler", "ayarlar", "del", "sil", "purge",
-                                "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle", "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur", "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save"], yonet_komut))
+                                "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle", "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur", "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save",
+                                "cleanservice", "cleancommand", "reports", "privaterules"], yonet_komut))
 app.add_handler(CommandHandler(["yardim", "help", "start", "kurallar", "rules", "not", "get", "notlar", "notes", "filtreler", "filters",
                                 "kilitler", "id", "info", "bilgi", "top", "istatistik", "rapor", "report", "adminlist"], genel_komut))
 app.add_handler(CommandHandler("sifirla", sifirla))
