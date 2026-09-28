@@ -53,22 +53,23 @@ SISTEM = (
 )
 
 YARDIM = (
-    "<b>Herkes:</b> /rules /kurallar /id /info /bilgi /adminlist /top /rapor /report "
-    "/notes /notlar /filters /filtreler /locks /kilitler /fiyat btc\n\n"
-    "<b>Moderasyon (Rose/Combot):</b>\n"
+    "📋 <b>Rose / Combot tarzı komutlar</b>\n\n"
+    "<b>Herkes:</b> /rules /id /info /adminlist /top /report /notes /filters /locks /fiyat btc /gunluk\n\n"
+    "<b>Ceza (grupta, yanıtla):</b>\n"
     "/ban /sban /dban /tban 2h /unban\n"
     "/kick /skick /dkick\n"
     "/mute /smute /dmute /tmute 10m /unmute\n"
-    "/warn /dwarn /unwarn /warns /resetwarns\n"
+    "/warn /unwarn /warns /resetwarns\n"
     "/del /purge /pin /unpin\n\n"
-    "<b>Yönetim:</b> /panel (butonlu menü) /promote /demote /adminlist\n"
-    "/setwelcome metin /welcome on|off /resetwelcome\n"
-    "/setrules metin /rules /resetrules\n"
-    "/lock link|sticker|... /unlock link /locks /unlocks\n"
-    "/setflood 6 /warnlimit 3 /warntime mute\n"
-    "/setlog @kanal /unsetlog /save isim metin (#isim)\n\n"
-    "<b>Komutsuz:</b> mesaja yanıt + 'yapay banla / sustur / uçur'\n"
-    "Özelden: 'yapay karşılama mesajı şöyle yap: ...' tüm gruplara uygulanır."
+    "<b>Ayar (grup / özel sahip → tüm gruplar):</b>\n"
+    "/panel · /welcome on|off · /setwelcome metin · /resetwelcome\n"
+    "/setrules · /rules · /privaterules on|off\n"
+    "/lock link|sticker · /unlock · /locks · /unlocks\n"
+    "/setflood 6 · /warnlimit 3 · /newbies 15 · /slowmode 10\n"
+    "/cleanservice on|off · /cleancommand on|off · /reports on|off\n"
+    "/setlog @kanal · /kara kelime · /save · /filter\n\n"
+    "<b>AI:</b> <code>yapay merhaba</code>\n"
+    "<b>Özelden:</b> ayarlar tüm gruplara gider (Rose connect gerekmez)"
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -108,10 +109,18 @@ for _k, _v in (("son", 0), ("liste", []), ("sahip", None), ("sabit", {}), ("ayar
 if not durum["son"]:
     durum["son"] = time.time()
 
-VARS = {"ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
-        "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
-        "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None, "duyuru_aralik_saat": 3,
-        "slowmode": 0, "night_bas": None, "night_bit": None, "newbies_dk": 15, "ai_mod": False}
+VARS = {
+    "ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
+    "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
+    "hosgeldin_metin": None, "kurallar": None, "log_kanal": None, "duyuru_kanal": None,
+    "duyuru_aralik_saat": 3, "slowmode": 0, "night_bas": None, "night_bit": None,
+    "newbies_dk": 15, "ai_mod": False,
+    # Rose / Combot / ChatHelp tarzı
+    "cleanservice": True,   # katıl/ayrıl sistem mesajı sil
+    "cleancommand": True,   # /komut mesajlarını sil
+    "reports": True,        # /report /rapor
+    "privaterules": False,  # kurallar özelden gelsin
+}
 
 GLOBAL_AYAR = "_global"
 
@@ -700,11 +709,14 @@ async def mesaj_sil_sn(ctx, chat_id, message_id, sn=10):
         pass
 
 def komut_silici(fonk, sn=8):
-    """Grupta: kullanıcı komutunu + bot cevabını N sn sonra siler."""
+    """Grupta: kullanıcı komutunu + bot cevabını N sn sonra siler (cleancommand)."""
     async def sar(update, ctx):
         msg = update.effective_message
         chat = update.effective_chat
         if not msg or not chat or chat.type == "private":
+            await fonk(update, ctx)
+            return
+        if not cget(chat.id, "cleancommand"):
             await fonk(update, ctx)
             return
 
@@ -1909,6 +1921,17 @@ async def yonet_komut(update, ctx):
     elif ad == "hosgeldinsifirla":
         grup_ayari_uygula(cid, "hosgeldin_metin", None, chat.type == "private")
         await de("Hoş geldin metni varsayılana döndü (yapay zeka yazar).")
+    elif ad in ("cleanservice", "cleancommand", "reports", "privaterules"):
+        # Rose/Combot: /cleanservice on|off
+        ozel = chat.type == "private"
+        ac = True
+        if a1:
+            ac = kucult(a1) in ("on", "1", "ac", "aç", "true", "yes", "evet")
+            if kucult(a1) in ("off", "0", "kapat", "false", "no", "hayir", "hayır"):
+                ac = False
+        grup_ayari_uygula(cid, ad, ac, ozel)
+        yer = " (tüm gruplar)" if ozel else ""
+        await de(f"{'✅' if ac else '❌'} {ad}: {'açık' if ac else 'kapalı'}{yer}")
     elif ad == "setlog":
         # /setlog @kanal | /setlog -100... | kanal mesajına yanıt | iletilmiş kanala yanıt
         def kanal_id_bul(m):
@@ -2186,6 +2209,9 @@ async def yonet_komut(update, ctx):
 async def rapor_gonder(update, ctx):
     msg = update.effective_message
     chat = update.effective_chat
+    if not cget(chat.id, "reports"):
+        await msg.reply_text("Rapor kapalı (/reports on).", do_quote=False)
+        return
     hedef = msg.reply_to_message or msg
     try:
         adminler = await ctx.bot.get_chat_administrators(chat.id)
@@ -2211,7 +2237,15 @@ async def genel_komut(update, ctx):
         return
     scid = str(cid)
     if ad in ("kurallar", "rules"):
-        await msg.reply_text(cget(cid, "kurallar") or "Henüz kural yazılmamış.")
+        met = cget(cid, "kurallar") or "Henüz kural yazılmamış."
+        if cget(cid, "privaterules"):
+            try:
+                await ctx.bot.send_message(user.id, met)
+                await msg.reply_text("📜 Kurallar özelden gönderildi.", do_quote=False)
+            except Exception:
+                await msg.reply_text(met)
+        else:
+            await msg.reply_text(met)
     elif ad in ("not", "get"):
         isim = kucult(p[1]) if len(p) > 1 else ""
         await msg.reply_text(durum["not"].get(scid, {}).get(isim) or "Böyle bir not yok. /notlar yaz.")
@@ -2308,11 +2342,12 @@ async def hosgeldin(update, ctx):
     msg = update.effective_message
     chat = update.effective_chat
     cid = chat.id
-    # "X kişisini eklediniz / gruba katıldı" sistem mesajını sil
-    try:
-        await msg.delete()
-    except Exception as e:
-        log.warning(f"Katılım mesajı silinemedi: {e}")
+    # sistem mesajı sil (cleanservice)
+    if cget(cid, "cleanservice"):
+        try:
+            await msg.delete()
+        except Exception as e:
+            log.warning(f"Katılım mesajı silinemedi: {e}")
 
     for u in (msg.new_chat_members or []):
         if u.is_bot:
@@ -2357,10 +2392,11 @@ async def ayrildi(update, ctx):
     if not msg or not chat:
         return
     cid = chat.id
-    try:
-        await msg.delete()
-    except Exception:
-        pass
+    if cget(cid, "cleanservice"):
+        try:
+            await msg.delete()
+        except Exception:
+            pass
     u = msg.left_chat_member
     if u and not u.is_bot:
         uname = f"@{u.username}" if u.username else "—"
