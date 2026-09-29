@@ -2976,10 +2976,10 @@ async def mesaj(update, ctx):
             return
         botun_mesaji = (msg.reply_to_message and msg.reply_to_message.from_user
                         and msg.reply_to_message.from_user.id == ctx.bot.id)
+        # Grupta: sadece "yapay" geçince veya bota yanıtta cevap ver (sahip dahil)
         cagrildi = (
             "yapay" in kucult(metin)
             or bool(botun_mesaji)
-            or sahip_mi(user)
         )
         if (cagrildi or len(kelimeler) <= 3) and set(kelimeler) & LISTE_KISA:
             gun, baslik = liste_gun(kelimeler)
