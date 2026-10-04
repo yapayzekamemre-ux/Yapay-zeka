@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from groq import Groq
 from google import genai
 from google.genai import types
-from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllChatAdministrators, BotCommandScopeAllGroupChats, Update
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, ChatMemberHandler, filters
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
@@ -31,7 +31,7 @@ def keep_alive():
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-SAHIP_KULLANICI = (os.environ.get("SAHIP_KULLANICI") or os.environ.get("SAHIP_USERNAME") or "").lower().lstrip("@")
+SAHIP_KULLANICI = "@Turkpronim"
 TIP_ARALIK = 3600
 TR = timezone(timedelta(hours=3))
 NUMARALAR = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
@@ -39,11 +39,10 @@ LISTE_KISA = {"günlük", "gunluk", "haftalık", "haftalik", "aylık", "aylik", 
               "duyuru", "duyurular", "duyuruları", "duyurulari"}
 
 SISTEM = (
-    "Sen grubun samimi, esprili asistanısın. Adın Yapay. Türkçe konuş. "
+    "Sen Telegram grubunun samimi, esprili asistanısın. Türkçe konuş. "
     "CEVAPLAR ÇOK KISA: en fazla 1-2 kısa cümle, 150 karakteri geçme. Uzun paragraf YASAK. "
     "Samimi ol, gerekirse hafif küfür (amk, lan) ama abartma. "
     "Önceki konuşmayı unutma, konu dışına çıkma. "
-    "Kişiye SADECE verilen ismiyle hitap et. Asla 'Telegram' diye hitap etme. "
     "Model/şirket adı söyleme. Yatırım/siyaset yok. Bilmediğini uydurma. "
     "Sahip talimatlarına uy."
 )
@@ -128,10 +127,7 @@ VARS = {
     "antiraid_sn": 30,
     "blocklist_mode": "mute",   # mute|kick|ban|sil
     "report_log_only": False,   # rapor sadece log kanalına
-    "hosgeldin_dil": "tr",
-    "kanal_yorum": False,
-    "otopin": False,  # kanal postlarını otomatik pinleme KAPALI
-  # sadece /kanalyorum on ile aç; her posta yorum yok
+    "hosgeldin_dil": "tr",      # tr|en|ru|auto
 }
 
 GLOBAL_AYAR = "_global"
@@ -187,28 +183,20 @@ def tum_kilitleri_ac(ozel=True, cid=None):
         cset(cid, "kilit", [])
 
 async def log_gonder(ctx, kaynak_cid, metin):
-    """Giren/çıkan ve işlemleri log veya duyuru kanalına yaz."""
-    kid = cget(kaynak_cid, "log_kanal") or cget(kaynak_cid, "duyuru_kanal")
-    if not kid:
-        # global ayardan dene
-        kid = cget(GLOBAL_AYAR, "log_kanal") or cget(GLOBAL_AYAR, "duyuru_kanal")
+    """Grup işlemlerini rapor kanalına yaz. log_kanal ayarlı değilse sessizce çık."""
+    kid = cget(kaynak_cid, "log_kanal")
     if not kid:
         return
     try:
-        hedef = int(str(kid)) if str(kid).lstrip("-").isdigit() else kid
-        if isinstance(hedef, str):
-            hedef = hedef if hedef.startswith("@") else f"@{hedef.lstrip('@')}"
-        await ctx.bot.send_message(hedef, metin, parse_mode="HTML", disable_web_page_preview=True)
+        await ctx.bot.send_message(int(kid), metin, parse_mode="HTML", disable_web_page_preview=True)
     except Exception as e:
-        log.warning(f"Log/duyuru kanalına yazılamadı ({kid}): {e}")
+        log.warning(f"Log kanalına yazılamadı ({kid}): {e}")
 
 SAHIP_KOD = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
 if not durum["sahip"]:
     print("\n=========================================")
-    print(" Sahip yok: ozelden /start veya /sahip yaz.")
-    if SAHIP_KULLANICI:
-        print(" @" + SAHIP_KULLANICI + " yazinca da otomatik sahip olur.")
-    print(" Yedek kod: " + SAHIP_KOD + "  (/sahip " + SAHIP_KOD + ")")
+    print(" @" + SAHIP_KULLANICI + " yazinca otomatik sahip olur.")
+    print(" Yedek kod: " + SAHIP_KOD + "  (botuna ozelden /sahip " + SAHIP_KOD + ")")
     print("=========================================\n")
 
 def kaydet():
@@ -728,7 +716,7 @@ async def mesaj_sil_sn(ctx, chat_id, message_id, sn=10):
     except Exception:
         pass
 
-def komut_silici(fonk, sn=3):
+def komut_silici(fonk, sn=8):
     """Grupta: kullanıcı komutunu + bot cevabını N sn sonra siler (cleancommand)."""
     async def sar(update, ctx):
         msg = update.effective_message
@@ -798,7 +786,7 @@ def mesaj_linki(chat, mid):
 
 def kanal_post_linki(msg):
     """Kanal / otomatik iletim mesajından orijinal kanal post linki.
-    Örn: https://t.me/bağlı duyuru kanalı/123
+    Örn: https://t.me/turkpronimkanal
     """
     if not msg:
         return None
@@ -861,7 +849,7 @@ async def mesaj_ozeti(ctx, m, chat):
     d = getattr(m, "date", None)
     if d and d.year > 2000:
         tarih = d.timestamp()
-    # Önce kanal post linki (bağlı duyuru kanalı), yoksa grup mesajı
+    # Önce kanal post linki (YeniBirAirdrops), yoksa grup mesajı
     link = kanal_post_linki(m) or mesaj_linki(chat, mid)
     return {"id": mid, "metin": metin[:1500], "link": link, "tarih": tarih}
 
@@ -913,7 +901,7 @@ def arsiv_baslik_uret(metin, link=None):
     # Linkten token/bot adı çıkar
     if link:
         m = re.search(r"t\.me/([A-Za-z0-9_]+)", link)
-        if m and m.group(1).lower() not in ("bagli-kanal", "c"):
+        if m and m.group(1).lower() not in ("yenibirairdrops", "c"):
             return m.group(1)[:40]
     # AI kısa başlık
     if ham or link:
@@ -1048,19 +1036,12 @@ async def sahip_komut(update, ctx):
     if durum.get("sahip"):
         await msg.reply_text("Sahip zaten kayıtlı." if user.id == durum["sahip"] else "Yetkin yok.")
         return
-    # 1) Yedek kod  2) Boş /sahip → ilk özelden yazan sahip olur (hesap sıfırlama)
-    kod_ok = ctx.args and ctx.args[0].upper() == SAHIP_KOD
-    bos_claim = not ctx.args
-    if kod_ok or bos_claim:
+    if ctx.args and ctx.args[0].upper() == SAHIP_KOD:
         durum["sahip"] = user.id
         durum_kaydet()
-        await msg.reply_text(
-            f"✅ Sahip sensin (ID: {user.id}).\n"
-            "Özelden tüm ayarlar artık sende."
-        )
-        log.info(f"Sahip kaydı: {user.id}")
+        await msg.reply_text("✅ Sahip sensin. Tüm yönetim komutları artık sadece sende.")
     else:
-        await msg.reply_text("Kod yanlış. Sahip yoksa sadece /sahip yazman yeterli.")
+        await msg.reply_text("Kod yanlış.")
 
 async def ayar_komut(update, ctx):
     msg = update.effective_message
@@ -1199,7 +1180,7 @@ async def duyuru_saatlik(app):
             log.warning(f"Duyuru döngüsü hatası: {e}")
 
 async def baslat(app):
-    # Link kilidi açık: sadece bağlı duyuru kanalı kanalından gelenler serbest
+    # Link kilidi açık: sadece YeniBirAirdrops kanalından gelenler serbest
     try:
         for gcid, ay in list(durum.get("ayar", {}).items()):
             if not isinstance(ay, dict):
@@ -1212,44 +1193,18 @@ async def baslat(app):
             set(durum["ayar"].get(GLOBAL_AYAR, {}).get("kilit") or []) | {"link"}
         )
         durum_kaydet()
-        # Eski kayıtlarda otopin açıksa kapat (naber pinlenmesin)
-        for gcid, ay in list(durum.get("ayar", {}).items()):
-            if isinstance(ay, dict) and ay.get("otopin"):
-                ay["otopin"] = False
-        durum["ayar"].setdefault(GLOBAL_AYAR, {})["otopin"] = False
-        durum_kaydet()
-        log.info("Link kilidi aktif; otopin KAPALI")
+        log.info("Link kilidi aktif — sadece YeniBirAirdrops kanal paylaşımları serbest")
     except Exception as e:
         log.warning(f"Kilit ayarı: {e}")
     app.bot_data["ipucu"] = asyncio.create_task(ipucu_dongusu(app))
     app.bot_data["duyuru"] = asyncio.create_task(duyuru_saatlik(app))
     app.bot_data["schedule"] = asyncio.create_task(schedule_dongusu(app))
     try:
-        # Normal üyeler komut listesini GÖRMEZ
-        await app.bot.set_my_commands([], scope=BotCommandScopeDefault())
-        await app.bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())
-        # Sadece özel sohbet + grup YÖNETİCİLERİ (kurucu/admin) menüyü görür
-        admin_cmds = [
-            BotCommand("yardim", "Komut listesi"),
-            BotCommand("panel", "Yönetim paneli"),
-            BotCommand("ban", "Yasakla"),
-            BotCommand("mute", "Sustur"),
-            BotCommand("warn", "Uyarı"),
-            BotCommand("lock", "Kilit"),
-            BotCommand("unlock", "Kilidi aç"),
-            BotCommand("welcome", "Karşılama"),
-            BotCommand("setlog", "Log kanalı"),
-            BotCommand("duyurukanal", "Duyuru kanalı"),
-            BotCommand("linkizin", "Serbest link"),
-            BotCommand("cleanservice", "Servis sil"),
-            BotCommand("cleancommand", "Komut sil"),
-            BotCommand("rules", "Kurallar"),
-            BotCommand("setflood", "Flood"),
-            BotCommand("newbies", "Yeni üye sustur"),
-        ]
-        await app.bot.set_my_commands(admin_cmds, scope=BotCommandScopeAllChatAdministrators())
-        await app.bot.set_my_commands(admin_cmds, scope=BotCommandScopeAllPrivateChats())
-        log.info("Komut menüsü: sadece admin/özel")
+        await app.bot.set_my_commands([
+            BotCommand("yardim", "Komut listesi"), BotCommand("kurallar", "Grup kuralları"),
+            BotCommand("gunluk", "Bugünkü duyurular"), BotCommand("haftalik", "Haftalık duyurular"),
+            BotCommand("aylik", "Aylık duyurular"), BotCommand("fiyat", "Token fiyatı"),
+            BotCommand("top", "En aktif üyeler"), BotCommand("rapor", "Yöneticilere bildir")])
     except Exception as e:
         log.warning(f"Komut menüsü kurulamadı: {e}")
 
@@ -1272,6 +1227,7 @@ KUFUR_KOK = ("siktir", "sikeyim", "sikerim", "orospu", "yarrak", "amına", "amin
 LINK_RE = re.compile(r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\b[a-z0-9-]+\.(?:com|io|xyz|net|org|me|app|co|link|fun|ai|gg|site|online|top|click)\b\S*)")
 IZINLI = (
     "coingecko.com", "coinmarketcap.com", "dexscreener.com", "tradingview.com",
+    "t.me/yenibirairdrops", "telegram.me/yenibirairdrops", "yenibirairdrops",
 )
 SCAM_IFADE = ("seed phrase", "private key", "gizli anahtar", "özel anahtar", "12 kelime", "24 kelime",
               "kurtarma ifadesi", "recovery phrase", "cüzdanını bağla", "connect your wallet")
@@ -1291,83 +1247,27 @@ def scam_var(t):
     k = kucult(t)
     return any(i in k for i in SCAM_IFADE)
 
-def _linkleri_topla(msg, metin):
-    adaylar = list(LINK_RE.findall(kucult(metin or "")))
-    if msg:
-        for e in (getattr(msg, "entities", None) or []) + (getattr(msg, "caption_entities", None) or []):
-            try:
-                if getattr(e, "type", None) == "text_link" and getattr(e, "url", None):
-                    adaylar.append(e.url.lower())
-                elif getattr(e, "type", None) == "url":
-                    if msg.text:
-                        adaylar.append(msg.parse_entity(e).lower())
-                    elif msg.caption:
-                        adaylar.append(msg.parse_caption_entity(e).lower())
-            except Exception:
-                pass
-    return adaylar
-
-def _normalize_link(a):
-    a2 = (a or "").lower().strip()
-    a2 = a2.replace("https://", "").replace("http://", "").rstrip("/")
-    return a2
-
-def _izin_listesi(cid):
-    """duyuru_kanal + link_izinli + sabit domainler"""
-    out = list(IZINLI)
-    duy = cget(cid, "duyuru_kanal")
-    if duy:
-        s = str(duy).strip().lstrip("@").lower()
-        if s:
-            out.append(s)
-            out.append(f"t.me/{s}")
-            out.append(f"telegram.me/{s}")
-    for x in (cget(cid, "link_izinli") or []):
-        z = _normalize_link(str(x).lstrip("@"))
-        if z:
-            out.append(z)
-            if not z.startswith("t.me/") and " " not in z and "." not in z:
-                out.append(f"t.me/{z}")
-    # global
-    for x in (cget(GLOBAL_AYAR, "link_izinli") or []):
-        z = _normalize_link(str(x).lstrip("@"))
-        if z:
-            out.append(z)
-    gd = cget(GLOBAL_AYAR, "duyuru_kanal")
-    if gd:
-        s = str(gd).strip().lstrip("@").lower()
-        out.append(s)
-        out.append(f"t.me/{s}")
-    return out
-
-def link_izinli_mi(cid, metin, msg=None):
-    izinler = _izin_listesi(cid)
-    if not izinler:
-        return False
-    for a in _linkleri_topla(msg, metin):
-        a2 = _normalize_link(a)
-        for z in izinler:
-            if z and z in a2:
-                return True
-    # metin içinde kanal adı geçiyorsa (invite link vs)
-    ham = kucult(metin or "")
-    for z in izinler:
-        if z and len(z) > 2 and z in ham:
-            return True
-    return False
-
-def link_var(msg, metin, cid=None):
-    """Yasaklanması gereken link var mı? Serbest listedekiler sayılmaz."""
-    adaylar = _linkleri_topla(msg, metin)
-    if not adaylar:
-        return False
-    izinler = _izin_listesi(cid) if cid is not None else list(IZINLI)
+def link_var(msg, metin):
+    adaylar = LINK_RE.findall(kucult(metin))
+    for e in (msg.entities or msg.caption_entities or []):
+        try:
+            if e.type == "text_link" and e.url:
+                adaylar.append(e.url.lower())
+            elif e.type == "url":
+                parca = msg.parse_entity(e) if msg.text else msg.parse_caption_entity(e)
+                adaylar.append(parca.lower())
+        except Exception:
+            pass
+    temiz = []
     for a in adaylar:
-        a2 = _normalize_link(a)
-        if any(z and z in a2 for z in izinler):
+        a2 = a.lower().replace("https://", "").replace("http://", "")
+        if any(d in a2 for d in IZINLI):
             continue
-        return True  # en az bir serbest olmayan link
-    return False
+        # t.me/YeniBirAirdrops veya t.me/c/... kanal postları serbest
+        if a2.startswith("t.me/yenibirairdrops") or "t.me/yenibirairdrops/" in a2:
+            continue
+        temiz.append(a)
+    return len(temiz) > 0
 
 def spam_mi(chat_id, user_id, n):
     dq = zamanlar.get((chat_id, user_id))
@@ -1378,41 +1278,27 @@ def spam_mi(chat_id, user_id, n):
     return len(dq) == n and now - dq[0] < 10
 
 
-
-def bagli_kanal_mi(cid, ch):
-    """Mesajın kaynağı sahibin bağladığı duyuru kanalı mı?"""
-    if ch is None:
+def link_izinli_mi(cid, metin, msg=None):
+    """Sahibin serbest bıraktığı link/domain/kelime var mı?"""
+    liste = cget(cid, "link_izinli") or []
+    if not liste:
         return False
-    izinli = cget(cid, "duyuru_kanal")
-    un = (getattr(ch, "username", None) or "").lower()
-    title = kucult(getattr(ch, "title", None) or "")
-    kid = getattr(ch, "id", None)
-    if not izinli:
-        return False
-    s = str(izinli).strip()
-    if s.lstrip("-").isdigit() and kid is not None:
-        try:
-            if int(s) == int(kid):
-                return True
-        except Exception:
-            pass
-    z = s.lower().lstrip("@")
-    if z and (z == un or z in title.replace(" ", "") or z in title):
-        return True
-    # link_izinli listesinde kanal adı da olabilir
-    for x in (cget(cid, "link_izinli") or []):
-        xz = kucult(str(x)).replace("https://", "").replace("http://", "").replace("t.me/", "").lstrip("@")
-        if xz and (xz == un or xz in title.replace(" ", "")):
+    ham = (metin or "").lower()
+    if msg:
+        for e in (getattr(msg, "entities", None) or []) + (getattr(msg, "caption_entities", None) or []):
+            url = getattr(e, "url", None)
+            if url:
+                ham += " " + url.lower()
+            if getattr(e, "type", None) == "text_link" and url:
+                ham += " " + url.lower()
+    for izin in liste:
+        z = (izin or "").lower().strip()
+        if not z:
+            continue
+        if z in ham:
             return True
-    return False
-
-def mesaj_bagli_kanal_mi(cid, m):
-    for ch in (
-        getattr(m, "sender_chat", None),
-        getattr(m, "forward_from_chat", None),
-        getattr(getattr(m, "forward_origin", None), "chat", None),
-    ):
-        if bagli_kanal_mi(cid, ch):
+        # domain: example.com
+        if z.replace("https://", "").replace("http://", "") in ham:
             return True
     return False
 
@@ -1430,21 +1316,7 @@ def hosgeldin_sablon_dil(cid, dil=None):
             "⚠️ Katıldığı andan itibaren 15 dakika boyunca mesaj gönderemez\n"
             "✅ 15 dakika sonra sohbeti başlatabilirsiniz"
         ),
-        "en": (
-            "⛔ {ad} Welcome\n"
-            "⚠️ You cannot send messages for 15 minutes after joining\n"
-            "✅ You can chat after 15 minutes"
-        ),
-        "ru": (
-            "⛔ {ad} Добро пожаловать\n"
-            "⚠️ 15 минут нельзя писать сообщения\n"
-            "✅ Через 15 минут можно общаться"
-        ),
-        "ar": (
-            "⛔ {ad} أهلاً بك\n"
-            "⚠️ لا يمكنك إرسال رسائل لمدة 15 دقيقة\n"
-            "✅ يمكنك الدردشة بعد 15 دقيقة"
-        ),
+        
     }
     if sablon and d == "tr":
         return sablon
@@ -2138,24 +2010,6 @@ async def yonet_komut(update, ctx):
     elif ad == "hosgeldinsifirla":
         grup_ayari_uygula(cid, "hosgeldin_metin", None, chat.type == "private")
         await de("Hoş geldin metni varsayılana döndü (yapay zeka yazar).")
-    elif ad in ("otopin", "autopin"):
-        ozel = chat.type == "private"
-        ac = True
-        if a1:
-            ac = kucult(a1) in ("on", "1", "ac", "aç", "true", "yes", "evet")
-            if kucult(a1) in ("off", "0", "kapat", "false", "no", "hayir", "hayır"):
-                ac = False
-        grup_ayari_uygula(cid, "otopin", ac, ozel)
-        await de(f"{'✅' if ac else '❌'} Otomatik pin (sadece linkli kanal): {'açık' if ac else 'kapalı'}")
-    elif ad in ("kanalyorum", "channelcomment"):
-        ozel = chat.type == "private"
-        ac = True
-        if a1:
-            ac = kucult(a1) in ("on", "1", "ac", "aç", "true", "yes", "evet")
-            if kucult(a1) in ("off", "0", "kapat", "false", "no", "hayir", "hayır"):
-                ac = False
-        grup_ayari_uygula(cid, "kanal_yorum", ac, ozel)
-        await de(f"{'✅' if ac else '❌'} Kanal AI yorum: {'açık' if ac else 'kapalı'}")
     elif ad in ("cleanservice", "cleancommand", "reports", "privaterules"):
         ozel = chat.type == "private"
         ac = True
@@ -2239,31 +2093,6 @@ async def yonet_komut(update, ctx):
             return
         grup_ayari_uygula(cid, "hosgeldin_dil", dil, ozel)
         await de(f"Karşılama dili: {dil}" + (" (tüm gruplar)" if ozel else ""))
-    elif ad in ("duyurukanal", "setchannel", "kanalbgla"):
-        ozel = chat.type == "private"
-        # /duyurukanal @kanaladi  veya kanal mesajına yanıt
-        hedef = None
-        if a1:
-            hedef = a1.lstrip("@")
-        elif yanit:
-            ch = getattr(yanit, "forward_from_chat", None) or getattr(yanit, "sender_chat", None)
-            if ch:
-                hedef = ch.username or str(ch.id)
-            elif yanit.forward_origin and getattr(yanit.forward_origin, "chat", None):
-                ch = yanit.forward_origin.chat
-                hedef = ch.username or str(ch.id)
-        if not hedef:
-            await de("Örnek: /duyurukanal @yenikanal\nveya kanaldan mesajı gruba ilet, yanıtla: /duyurukanal")
-            return
-        grup_ayari_uygula(cid, "duyuru_kanal", str(hedef), ozel)
-        # link serbest listesine de ekle
-        lst = list(cget(cid, "link_izinli") or [])
-        item = str(hedef).lstrip("@")
-        if item not in lst:
-            lst.append(item)
-            grup_ayari_uygula(cid, "link_izinli", lst, ozel)
-        yer = " (tüm gruplar)" if ozel else ""
-        await de(f"✅ Duyuru kanalı bağlandı: {hedef}{yer}\nBu kanaldan gelenler sabitlenir / link serbest.")
     elif ad == "setlog":
         # /setlog @kanal | /setlog -100... | kanal mesajına yanıt | iletilmiş kanala yanıt
         def kanal_id_bul(m):
@@ -2330,7 +2159,7 @@ async def yonet_komut(update, ctx):
             await de("Not silindi.")
         else:
             await de("Böyle bir not yok.")
-    elif ad in ("filtre", "filter"):
+    elif ad == "filtre":
         kw = kucult(a1)
         met_f = a2.strip() or ((yanit.text or yanit.caption or "").strip() if yanit else "")
         if kw and met_f:
@@ -2354,7 +2183,7 @@ async def yonet_komut(update, ctx):
                 await de(f"✅ Filtre eklendi: {kw}")
         else:
             await de("Örnek: /filtre kelime cevap")
-    elif ad in ("filtresil", "stop", "filter_sil"):
+    elif ad == "filtresil":
         ozel = chat.type == "private"
         kw = kucult(a1)
         silindi = False
@@ -2601,15 +2430,6 @@ async def genel_komut(update, ctx):
     p = msg.text.split()
     ad = p[0][1:].split("@")[0].lower()
     if ad in ("yardim", "help", "start"):
-        if chat.type == "private" and not durum.get("sahip") and user:
-            durum["sahip"] = user.id
-            durum_kaydet()
-            await msg.reply_text(
-                f"✅ Sahip olarak kaydedildin (ID: {user.id}).\n"
-                "Şimdi ayarları özelden yapabilirsin.\n\n" + YARDIM,
-                parse_mode="HTML",
-            )
-            return
         await msg.reply_text(YARDIM, parse_mode="HTML")
         return
     if chat.type == "private":
@@ -2873,8 +2693,21 @@ async def kilit_kontrol(update, ctx):
     user = update.effective_user
     if not msg or not user or user.is_bot or chat.type == "private":
         return
-    # Bağlı duyuru kanalı paylaşımları kilide takılmaz
-    if mesaj_bagli_kanal_mi(chat.id, msg):
+    # Sadece YeniBirAirdrops kanal paylaşımları kilide takılmaz
+    def _izinli_kanal(m):
+        for ch in (
+            getattr(m, "sender_chat", None),
+            getattr(m, "forward_from_chat", None),
+            getattr(getattr(m, "forward_origin", None), "chat", None),
+        ):
+            if ch is None:
+                continue
+            un = (getattr(ch, "username", None) or "").lower()
+            title = kucult(getattr(ch, "title", None) or "")
+            if un == "yenibirairdrops" or "yenibirairdrops" in title.replace(" ", "") or "yeni bir airdrop" in title:
+                return True
+        return False
+    if _izinli_kanal(msg):
         return
     metin = (msg.text or msg.caption or "")
     if link_izinli_mi(chat.id, metin, msg):
@@ -2893,38 +2726,32 @@ async def mesaj(update, ctx):
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
-    if not msg or not chat:
-        return
-    # Bot mesajlarını yoksay (kendi döngüsü)
-    if user and user.is_bot:
+    if not msg or not user or user.is_bot:
         return
     metin = msg.text or msg.caption
     if not metin:
         return
+    # Slash komutları CommandHandler'a bırak; AI cevaplamasın
     if (msg.text or "").lstrip().startswith("/"):
         return
     ozel = chat.type == "private"
     cid = chat.id
-    # Anonim / kanal tartışması: user yoksa sender_chat ile devam (AI için)
-    if user:
-        kayit = uye_kaydi(cid, user)
-    else:
-        kayit = {"ilk": "?", "mesaj": 0}
-    if user and not ozel and str(user.id) in _liste_uid(cid, "blacklist"):
+    kayit = uye_kaydi(cid, user)
+    if not ozel and str(user.id) in _liste_uid(cid, "blacklist"):
         try:
             await msg.delete()
             await ctx.bot.ban_chat_member(cid, user.id)
         except Exception:
             pass
         return
-    if user and not ozel and gece_modu_aktif(cid) and not await muaf_mi(ctx, cid, user.id):
+    if not ozel and gece_modu_aktif(cid) and not await muaf_mi(ctx, cid, user.id):
         try:
             await msg.delete()
         except Exception:
             pass
         return
     sm = int(cget(cid, "slowmode") or 0)
-    if user and not ozel and sm > 0 and not await muaf_mi(ctx, cid, user.id):
+    if not ozel and sm > 0 and not await muaf_mi(ctx, cid, user.id):
         anahtar_sm = ("sm", cid, user.id)
         son = zamanlar.get(anahtar_sm)
         now = time.time()
@@ -2972,45 +2799,72 @@ async def mesaj(update, ctx):
                 await msg.reply_text(f"✅ {sayac} gruba gönderildi:\n{gonderilecek}")
             return
 
-    # Otomatik pin KAPALI (varsayılan). Acmak icin: /otopin on — sadece linkli kanal iletileri.
-    if not ozel and cget(cid, "otopin") is True:
-        izinli = cget(cid, "duyuru_kanal")
-        auto = bool(getattr(msg, "is_automatic_forward", False))
-        if izinli and auto:
-            fo_chat = getattr(msg, "forward_from_chat", None)
+    # Sadece bağlı kanaldan (Yeni Bir Airdrop vb.) gelen otomatik iletileri sabitle + arşive al
+    if not ozel:
+        kanal_mesaji = False
+        kanal_adi = ""
+        sc = getattr(msg, "sender_chat", None)
+        if sc is not None and getattr(sc, "type", "") == "channel":
+            kanal_mesaji = True
+            kanal_adi = (sc.title or sc.username or "")
+        if getattr(msg, "is_automatic_forward", False):
+            kanal_mesaji = True
             fo = getattr(msg, "forward_origin", None)
-            fo_c = getattr(fo, "chat", None) if fo is not None else None
-            sc = getattr(msg, "sender_chat", None)
-            kaynak = fo_c or fo_chat or (sc if sc and getattr(sc, "type", "") == "channel" else None)
+            if fo is not None and getattr(fo, "chat", None) is not None:
+                kanal_adi = (fo.chat.title or fo.chat.username or kanal_adi)
+            elif getattr(msg, "forward_from_chat", None) is not None:
+                kanal_adi = (msg.forward_from_chat.title or msg.forward_from_chat.username or kanal_adi)
+        if kanal_mesaji:
+            izinli = cget(cid, "duyuru_kanal")  # None = varsayılan: YeniBirAirdrops
+            ad_k = kucult(kanal_adi)
+            uname = ""
+            if sc is not None:
+                uname = (sc.username or "").lower()
+            fo_chat = getattr(msg, "forward_from_chat", None)
+            if fo_chat is not None and not uname:
+                uname = (fo_chat.username or "").lower()
+            fo = getattr(msg, "forward_origin", None)
+            if fo is not None and getattr(fo, "chat", None) is not None and not uname:
+                uname = (fo.chat.username or "").lower()
             uygun = False
-            if kaynak is not None:
-                s = str(izinli).strip().lstrip("@")
-                un = (getattr(kaynak, "username", None) or "").lower()
-                kid = getattr(kaynak, "id", None)
-                if s.lstrip("-").isdigit() and kid is not None:
-                    try:
-                        uygun = int(s) == int(kid)
-                    except Exception:
-                        uygun = False
-                else:
-                    uygun = s.lower() == un
-            ham = msg.text or msg.caption or ""
-            link_var_mi = bool(re.search(r"(https?://\S+|t\.me/\S+|telegram\.me/\S+)", ham, re.I))
-            if not link_var_mi:
-                for e in (getattr(msg, "entities", None) or []) + (getattr(msg, "caption_entities", None) or []):
-                    if getattr(e, "type", None) in ("url", "text_link"):
-                        link_var_mi = True
-                        break
-            if uygun and link_var_mi:
+            if izinli:
+                if str(izinli).lstrip("-").isdigit():
+                    kid = sc.id if sc else None
+                    if kid and int(izinli) == int(kid):
+                        uygun = True
+                    elif fo_chat and int(izinli) == int(fo_chat.id):
+                        uygun = True
+                elif kucult(str(izinli)) in ad_k or kucult(str(izinli)) == uname:
+                    uygun = True
+            else:
+                # Varsayılan kaynak: https://t.me/YeniBirAirdrops
+                uygun = (
+                    "yenibirairdrops" in ad_k.replace(" ", "")
+                    or "yeni bir airdrop" in ad_k
+                    or (sc and (sc.username or "").lower() == "yenibirairdrops")
+                )
+            if uygun:
                 try:
                     kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
                     if kayit_ozet:
                         kayit_ozet["tarih"] = time.time()
+                        # Başlık: metin yoksa AI ile üret
+                        met = kayit_ozet.get("metin") or ""
+                        if len(met.strip()) < 8:
+                            try:
+                                bas = await asyncio.to_thread(
+                                    arsiv_baslik_uret, met, kayit_ozet.get("link")
+                                )
+                                kayit_ozet["baslik"] = bas
+                            except Exception:
+                                pass
+                        else:
+                            kayit_ozet["baslik"] = arsiv_baslik_uret(met, kayit_ozet.get("link"))
                         arsiv_ekle(cid, kayit_ozet)
                         await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
-                        log.info("otopin link OK")
+                        log.info(f"Kanal duyurusu pin+arsiv: {cid} | {kanal_adi} | {kayit_ozet.get('baslik')}")
                 except Exception as e:
-                    log.warning(f"otopin hata: {e}")
+                    log.warning(f"Otomatik duyuru/pin hatası: {e}")
 
     if await komut(update, ctx, metin):
         return
@@ -3045,24 +2899,35 @@ async def mesaj(update, ctx):
             return
 
     if not ozel:
-        kanal_izinli = mesaj_bagli_kanal_mi(cid, msg) or (
-            getattr(msg, "is_automatic_forward", False) and mesaj_bagli_kanal_mi(cid, msg)
+        # Sadece YeniBirAirdrops kanalından gelen paylaşımlar link yasağından muaf
+        def _yenibir_kanal_mi(m):
+            sc = getattr(m, "sender_chat", None)
+            fo = getattr(m, "forward_from_chat", None)
+            fo2 = getattr(m, "forward_origin", None)
+            adaylar = []
+            if sc is not None:
+                adaylar.append(sc)
+            if fo is not None:
+                adaylar.append(fo)
+            if fo2 is not None and getattr(fo2, "chat", None) is not None:
+                adaylar.append(fo2.chat)
+            for ch in adaylar:
+                un = (getattr(ch, "username", None) or "").lower()
+                title = kucult(getattr(ch, "title", None) or "")
+                if un == "yenibirairdrops" or "yenibirairdrops" in title.replace(" ", "") or "yeni bir airdrop" in title:
+                    return True
+            return False
+
+        kanal_izinli = _yenibir_kanal_mi(msg) or (
+            getattr(msg, "is_automatic_forward", False) and _yenibir_kanal_mi(msg)
         )
-        # Kanaldan sohbete düşen / duyuru kanalı t.me linkleri serbest
-        duy = str(cget(cid, "duyuru_kanal") or "").lower().lstrip("@")
-        met_l = kucult(metin)
-        kanal_link_ok = False
-        if duy and (duy in met_l or f"t.me/{duy}" in met_l):
-            kanal_link_ok = True
-        if link_izinli_mi(cid, metin, msg):
-            kanal_link_ok = True
         n = cget(cid, "flood")
-        spam = n > 0 and user is not None and spam_mi(cid, user.id, n)
+        spam = n > 0 and spam_mi(cid, user.id, n)
         ad = None
-        onayli = user is not None and (str(user.id) in _liste_uid(cid, "approved") or str(user.id) in _liste_uid(cid, "whitelist"))
-        if kanal_izinli or kanal_link_ok:
-            pass
-        elif not onayli and (scam_var(metin) or ("link" in (cget(cid, "kilit") or []) and link_var(msg, metin, cid))):
+        onayli = str(user.id) in _liste_uid(cid, "approved") or str(user.id) in _liste_uid(cid, "whitelist")
+        if link_izinli_mi(cid, metin, msg):
+            pass  # sahibin serbest linki
+        elif not kanal_izinli and not onayli and (scam_var(metin) or ("link" in (cget(cid, "kilit") or []) and link_var(msg, metin))):
             ad = "link/şifre paylaşımı"
         elif kufur_var(metin):
             ad = "küfür/hakaret"
@@ -3070,7 +2935,7 @@ async def mesaj(update, ctx):
             ad = "yasaklı kelime"
         elif spam:
             ad = "spam"
-        if ad and user is not None and not await muaf_mi(ctx, cid, user.id):
+        if ad and not await muaf_mi(ctx, cid, user.id):
             await ihlal(update, ctx, ad, True)  # ihlal mesajı silinsin
             return
         if "@admin" in kucult(metin):
@@ -3095,30 +2960,22 @@ async def mesaj(update, ctx):
                 return
         if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
-        # Grupta / tartışmada: metinde "yapay" veya @bot geçince (anonim/grup imzası fark etmez)
-        bot_un = (ctx.bot.username or "").lower()
-        met_k = kucult(metin)
-        cagrildi = "yapay" in met_k or (bot_un and f"@{bot_un}" in met_k)
-        for e in (getattr(msg, "entities", None) or []):
-            et = getattr(e, "type", None)
-            if et == "mention" and bot_un and bot_un in kucult(metin):
-                cagrildi = True
-            if et == "text_mention" and getattr(e, "user", None) and e.user.id == ctx.bot.id:
-                cagrildi = True
+        botun_mesaji = (msg.reply_to_message and msg.reply_to_message.from_user
+                        and msg.reply_to_message.from_user.id == ctx.bot.id)
+        cagrildi = (
+            "yapay" in kucult(metin)
+            or bool(botun_mesaji)
+            or sahip_mi(user)
+        )
         if (cagrildi or len(kelimeler) <= 3) and set(kelimeler) & LISTE_KISA:
             gun, baslik = liste_gun(kelimeler)
             await arsiv_gonder(update, ctx, gun, baslik)
             return
         if not cagrildi:
             return
-        log.info(f"AI cagrildi: chat={cid} user={getattr(user,'id',None)} text={metin[:80]!r}")
     else:
         if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
-
-    # Grup AI kapalı mı
-    if not ozel and cget(cid, "ai") is False:
-        return
 
     await ctx.bot.send_chat_action(cid, "typing")
 
@@ -3136,19 +2993,9 @@ async def mesaj(update, ctx):
     if not ozel and cget(cid, "ai_mod") and not await yetkili_mi(ctx, cid, user.id):
         return
 
-    ad_kisi = None
-    if user:
-        ad_kisi = (user.first_name or user.full_name or user.username or "").strip()
-    if not ad_kisi or ad_kisi.lower() in ("telegram", "bot", "channel", "kanal"):
-        ad_kisi = "dostum"
-    ek = (
-        f"\nŞu an yazan kişinin adı: {ad_kisi}. "
-        f"Ona sadece '{ad_kisi}' diye hitap et. 'Telegram' deme."
-    )
-    if user:
-        ek += f" Grupta {kayit.get('mesaj', 0)} mesajı var."
-    if user and sahip_mi(user):
-        ek += " Bu kişi SAHİP; samimi ol."
+    ek = f"\nŞu an sana yazan kişi: {user.full_name}. Bu kişi {kayit['ilk']} tarihinden beri grupta, {kayit['mesaj']} mesaj yazdı. Ona ismiyle hitap et."
+    if sahip_mi(user):
+        ek += "\nBu kişi grubun SAHİBİ ve senin patronun (Jimin). Ona karşı çok samimi, sıcak ve itaatkâr ol."
     if durum["talimat"]:
         ek += ("\nSahibinin kalıcı talimatları (sessizce uy): "
                + " | ".join(x["t"] for x in durum["talimat"][-10:]))
@@ -3165,8 +3012,7 @@ async def mesaj(update, ctx):
         ek += ("\nBu soruda grubun içeriği hakkında HİÇBİR bilgi verme. "
                "Esprili ve kısa bir kaçamak cevap ver.")
 
-    uid = user.id if user else (getattr(msg.sender_chat, "id", None) or 0)
-    anahtar = (cid, uid)
+    anahtar = (cid, user.id)
     h = gecmis.setdefault(anahtar, [])
     h.append({"role": "user", "content": metin})
 
@@ -3183,14 +3029,7 @@ async def mesaj(update, ctx):
             yanit = kes + "…"
         h.append({"role": "assistant", "content": yanit})
     gecmis[anahtar] = h[-40:]
-    try:
-        await msg.reply_text(yanit, do_quote=True)
-    except Exception as e:
-        log.warning(f"AI reply hata: {e}")
-        try:
-            await ctx.bot.send_message(cid, yanit)
-        except Exception as e2:
-            log.warning(f"AI send hata: {e2}")
+    await msg.reply_text(yanit, do_quote=False)
 
 async def fiyat_komut(update, ctx):
     msg = update.effective_message
@@ -3275,7 +3114,7 @@ def scam_link_skor(metin):
         skor += 2; notlar.append("davet linki")
     if any(x in k for x in ("airdrop", "claim", "connect wallet", "seed", "private key", "cüzdan bağla")):
         skor += 3; notlar.append("şüpheli kelime")
-    if re.search(r"https?://\S+", k) and "bagli-kanal" not in k:
+    if re.search(r"https?://\S+", k) and "yenibirairdrops" not in k:
         skor += 1; notlar.append("harici link")
     if skor >= 4:
         seviye = "🔴 Yüksek risk"
@@ -3691,7 +3530,7 @@ def panel_klavye(cid, sayfa="ana"):
             [InlineKeyboardButton("🗓 Aylık", callback_data=f"pn:{cid}:duy30"),
              InlineKeyboardButton("📌 Pin son duyuru", callback_data=f"pn:{cid}:pinlast")],
             [InlineKeyboardButton("ℹ️ /setlog @kanal — rapor kanalı", callback_data=f"pn:{cid}:info:setlog")],
-            [InlineKeyboardButton("ℹ️ Kanal bağla: bağlı duyuru kanalı", callback_data=f"pn:{cid}:info:kanal")],
+            [InlineKeyboardButton("ℹ️ Kanal bağla: YeniBirAirdrops", callback_data=f"pn:{cid}:info:kanal")],
             [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana")],
         ]
     elif sayfa == "arac":
@@ -3735,7 +3574,7 @@ def panel_metin(cid, sayfa="ana"):
             f"Warn: {cget(cid,'warn_limit')} → {cget(cid,'warn_eylem')} | Newbies: {cget(cid,'newbies_dk')}dk"
         )
     if sayfa == "kilit":
-        return f"🔒 <b>Kilitler</b>\nAktif: {kilit}\n\nTıkla: kilit aç/kapa. Link kilitliyken sadece bağlı duyuru kanalı + onaylı üyeler serbest."
+        return f"🔒 <b>Kilitler</b>\nAktif: {kilit}\n\nTıkla: kilit aç/kapa. Link kilitliyken sadece YeniBirAirdrops + onaylı üyeler serbest."
     if sayfa == "mod":
         return (
             "🛡 <b>Moderasyon</b>\n"
@@ -3751,7 +3590,7 @@ def panel_metin(cid, sayfa="ana"):
         return (
             "📢 <b>Duyuru</b>\n"
             f"Arşiv kayıt: {n}\n"
-            "Kanal: bağlı duyuru kanalı bağlı olmalı.\n"
+            "Kanal: YeniBirAirdrops bağlı olmalı.\n"
             "<code>/gunluk</code> <code>/haftalik</code> <code>/setlog @kanal</code>\n"
             "Mesaja yanıt: <code>/duyuruekle</code>"
         )
@@ -3990,7 +3829,7 @@ async def panel_buton(update, ctx):
             "kick": "/kick | /warn | /warns",
             "del": "/del yanıtla | /purge | /pin /unpin",
             "setlog": "Kanaldan mesaj ilet, yanıtla: /setlog",
-            "kanal": "Grup bilgisi → Kanalı bağla → bağlı duyuru kanalı",
+            "kanal": "Grup bilgisi → Kanalı bağla → YeniBirAirdrops",
             "scam": "Şüpheli mesaja yanıt: /scam",
             "ca": "/ca 0x... contract adresi",
             "fiyat": "/fiyat btc",
@@ -4021,72 +3860,8 @@ liste_komut = komut_silici(liste_komut)
 genel_komut = komut_silici(genel_komut)
 panel_komut = komut_silici(panel_komut)
 
-
-async def kanal_post_yorum(update, ctx):
-    """Duyuru kanalına yazılan her postun altına kısa AI yorum."""
-    post = update.channel_post or update.edited_channel_post
-    if not post or not post.chat:
-        return
-    ch = post.chat
-    # Bot kendi mesajına yorum yazmasın
-    if post.from_user and post.from_user.is_bot:
-        return
-    if getattr(post, "via_bot", None):
-        return
-    metin = (post.text or post.caption or "").strip()
-    if not metin and not (post.photo or post.video or post.document):
-        return
-    # Bu kanal bağlı duyuru mu? (herhangi bir grupta veya global)
-    bagli = False
-    un = (ch.username or "").lower()
-    kid = str(ch.id)
-    for scid, ay in list((durum.get("ayar") or {}).items()):
-        dk = (ay or {}).get("duyuru_kanal")
-        if not dk:
-            continue
-        s = str(dk).lower().lstrip("@")
-        if s == un or s == kid or s == str(ch.id):
-            bagli = True
-            break
-    g = (durum.get("ayar") or {}).get(GLOBAL_AYAR) or {}
-    if g.get("duyuru_kanal"):
-        s = str(g["duyuru_kanal"]).lower().lstrip("@")
-        if s == un or s == kid:
-            bagli = True
-    if not bagli:
-        # duyuru_kanal hiç set değilse ve kanal_yorum açıksa yine de dene (tek kanal senaryosu)
-        if not any((a or {}).get("duyuru_kanal") for a in (durum.get("ayar") or {}).values()):
-            bagli = True
-    if not bagli:
-        return
-    # kanal_yorum kapalı mı
-    if cget(GLOBAL_AYAR, "kanal_yorum") is False:
-        return
-    try:
-        prompt = (
-            "Telegram duyuru kanalı postuna çok kısa (1-2 cümle) samimi Türkçe yorum yaz. "
-            "Reklam gibi olma, yatırım tavsiyesi verme, abartma. Sadece yorum metni döndür.\n\n"
-            f"Post: {(metin or '[medya]')[:500]}"
-        )
-        yanit = await asyncio.to_thread(sor, [{"role": "user", "content": prompt}], "", False)
-        if not yanit:
-            return
-        yanit = yanit.strip()
-        if len(yanit) > 280:
-            yanit = yanit[:277] + "..."
-        await ctx.bot.send_message(
-            ch.id,
-            yanit,
-            reply_to_message_id=post.message_id,
-            disable_web_page_preview=True,
-        )
-    except Exception as e:
-        log.warning(f"Kanal yorum hata: {e}")
-
-
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
 app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
-app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, kanal_post_yorum))
 app.add_handler(CommandHandler("sahip", sahip_komut))
 app.add_handler(CommandHandler("durum", durum_komut))
 app.add_handler(CommandHandler("duyuru", duyuru_komut))
@@ -4095,11 +3870,11 @@ app.add_handler(CommandHandler(["ai_ac", "ai_kapat", "ipucu_ac", "ipucu_kapat", 
 app.add_handler(CommandHandler(["gunluk", "haftalik", "aylik", "duyurular"], liste_komut))
 app.add_handler(CommandHandler(list(ALIAS.keys()), mod_komut))
 app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem", "kuralayarla", "kuralsil",
-                                "hosgeldinmetni", "hosgeldinsifirla", "setlog", "unsetlog", "kaydet", "notsil", "filtre", "filter", "filtresil", "stop",
+                                "hosgeldinmetni", "hosgeldinsifirla", "setlog", "unsetlog", "kaydet", "notsil", "filtre", "filtresil",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler", "ayarlar", "del", "sil", "purge",
                                 "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle", "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur", "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save",
-                                "otopin", "autopin", "kanalyorum", "channelcomment", "cleanservice", "cleancommand", "reports", "privaterules",
-                                "hosgeldinsure", "welcometime", "welcomedel", "duyurukanal", "setchannel", "kanalbgla",
+                                "cleanservice", "cleancommand", "reports", "privaterules",
+                                "hosgeldinsure", "welcometime", "welcomedel",
                                 "linkizin", "allowlink", "izinlilink", "linkizin_sil", "allowlink_sil",
                                 "linkizinler", "allowlinks", "antiraid", "blocklistmode",
                                 "hosgeldindil", "welcomelang"], yonet_komut))
