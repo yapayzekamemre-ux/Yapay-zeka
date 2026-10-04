@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from groq import Groq
 from google import genai
 from google.genai import types
-from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Update
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllChatAdministrators, BotCommandScopeAllGroupChats, Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, ChatMemberHandler, filters
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
@@ -726,7 +726,7 @@ async def mesaj_sil_sn(ctx, chat_id, message_id, sn=10):
     except Exception:
         pass
 
-def komut_silici(fonk, sn=8):
+def komut_silici(fonk, sn=3):
     """Grupta: kullanıcı komutunu + bot cevabını N sn sonra siler (cleancommand)."""
     async def sar(update, ctx):
         msg = update.effective_message
@@ -1217,11 +1217,31 @@ async def baslat(app):
     app.bot_data["duyuru"] = asyncio.create_task(duyuru_saatlik(app))
     app.bot_data["schedule"] = asyncio.create_task(schedule_dongusu(app))
     try:
-        await app.bot.set_my_commands([
-            BotCommand("yardim", "Komut listesi"), BotCommand("kurallar", "Grup kuralları"),
-            BotCommand("gunluk", "Bugünkü duyurular"), BotCommand("haftalik", "Haftalık duyurular"),
-            BotCommand("aylik", "Aylık duyurular"), BotCommand("fiyat", "Token fiyatı"),
-            BotCommand("top", "En aktif üyeler"), BotCommand("rapor", "Yöneticilere bildir")])
+        # Normal üyeler komut listesini GÖRMEZ
+        await app.bot.set_my_commands([], scope=BotCommandScopeDefault())
+        await app.bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())
+        # Sadece özel sohbet + grup YÖNETİCİLERİ (kurucu/admin) menüyü görür
+        admin_cmds = [
+            BotCommand("yardim", "Komut listesi"),
+            BotCommand("panel", "Yönetim paneli"),
+            BotCommand("ban", "Yasakla"),
+            BotCommand("mute", "Sustur"),
+            BotCommand("warn", "Uyarı"),
+            BotCommand("lock", "Kilit"),
+            BotCommand("unlock", "Kilidi aç"),
+            BotCommand("welcome", "Karşılama"),
+            BotCommand("setlog", "Log kanalı"),
+            BotCommand("duyurukanal", "Duyuru kanalı"),
+            BotCommand("linkizin", "Serbest link"),
+            BotCommand("cleanservice", "Servis sil"),
+            BotCommand("cleancommand", "Komut sil"),
+            BotCommand("rules", "Kurallar"),
+            BotCommand("setflood", "Flood"),
+            BotCommand("newbies", "Yeni üye sustur"),
+        ]
+        await app.bot.set_my_commands(admin_cmds, scope=BotCommandScopeAllChatAdministrators())
+        await app.bot.set_my_commands(admin_cmds, scope=BotCommandScopeAllPrivateChats())
+        log.info("Komut menüsü: sadece admin/özel")
     except Exception as e:
         log.warning(f"Komut menüsü kurulamadı: {e}")
 
