@@ -127,7 +127,8 @@ VARS = {
     "antiraid_sn": 30,
     "blocklist_mode": "mute",   # mute|kick|ban|sil
     "report_log_only": False,   # rapor sadece log kanalına
-    "hosgeldin_dil": "tr",      # tr|en|ru|auto
+    "hosgeldin_dil": "tr",
+    "kanal_yorum": False,  # sadece /kanalyorum on ile aç; her posta yorum yok
 }
 
 GLOBAL_AYAR = "_global"
@@ -183,14 +184,20 @@ def tum_kilitleri_ac(ozel=True, cid=None):
         cset(cid, "kilit", [])
 
 async def log_gonder(ctx, kaynak_cid, metin):
-    """Grup işlemlerini rapor kanalına yaz. log_kanal ayarlı değilse sessizce çık."""
-    kid = cget(kaynak_cid, "log_kanal")
+    """Giren/çıkan ve işlemleri log veya duyuru kanalına yaz."""
+    kid = cget(kaynak_cid, "log_kanal") or cget(kaynak_cid, "duyuru_kanal")
+    if not kid:
+        # global ayardan dene
+        kid = cget(GLOBAL_AYAR, "log_kanal") or cget(GLOBAL_AYAR, "duyuru_kanal")
     if not kid:
         return
     try:
-        await ctx.bot.send_message(int(kid), metin, parse_mode="HTML", disable_web_page_preview=True)
+        hedef = int(str(kid)) if str(kid).lstrip("-").isdigit() else kid
+        if isinstance(hedef, str):
+            hedef = hedef if hedef.startswith("@") else f"@{hedef.lstrip('@')}"
+        await ctx.bot.send_message(hedef, metin, parse_mode="HTML", disable_web_page_preview=True)
     except Exception as e:
-        log.warning(f"Log kanalına yazılamadı ({kid}): {e}")
+        log.warning(f"Log/duyuru kanalına yazılamadı ({kid}): {e}")
 
 SAHIP_KOD = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
 if not durum["sahip"]:
@@ -2071,6 +2078,15 @@ async def yonet_komut(update, ctx):
     elif ad == "hosgeldinsifirla":
         grup_ayari_uygula(cid, "hosgeldin_metin", None, chat.type == "private")
         await de("Hoş geldin metni varsayılana döndü (yapay zeka yazar).")
+    elif ad in ("kanalyorum", "channelcomment"):
+        ozel = chat.type == "private"
+        ac = True
+        if a1:
+            ac = kucult(a1) in ("on", "1", "ac", "aç", "true", "yes", "evet")
+            if kucult(a1) in ("off", "0", "kapat", "false", "no", "hayir", "hayır"):
+                ac = False
+        grup_ayari_uygula(cid, "kanal_yorum", ac, ozel)
+        await de(f"{'✅' if ac else '❌'} Kanal AI yorum: {'açık' if ac else 'kapalı'}")
     elif ad in ("cleanservice", "cleancommand", "reports", "privaterules"):
         ozel = chat.type == "private"
         ac = True
@@ -3923,8 +3939,72 @@ liste_komut = komut_silici(liste_komut)
 genel_komut = komut_silici(genel_komut)
 panel_komut = komut_silici(panel_komut)
 
+
+async def kanal_post_yorum(update, ctx):
+    """Duyuru kanalına yazılan her postun altına kısa AI yorum."""
+    post = update.channel_post or update.edited_channel_post
+    if not post or not post.chat:
+        return
+    ch = post.chat
+    # Bot kendi mesajına yorum yazmasın
+    if post.from_user and post.from_user.is_bot:
+        return
+    if getattr(post, "via_bot", None):
+        return
+    metin = (post.text or post.caption or "").strip()
+    if not metin and not (post.photo or post.video or post.document):
+        return
+    # Bu kanal bağlı duyuru mu? (herhangi bir grupta veya global)
+    bagli = False
+    un = (ch.username or "").lower()
+    kid = str(ch.id)
+    for scid, ay in list((durum.get("ayar") or {}).items()):
+        dk = (ay or {}).get("duyuru_kanal")
+        if not dk:
+            continue
+        s = str(dk).lower().lstrip("@")
+        if s == un or s == kid or s == str(ch.id):
+            bagli = True
+            break
+    g = (durum.get("ayar") or {}).get(GLOBAL_AYAR) or {}
+    if g.get("duyuru_kanal"):
+        s = str(g["duyuru_kanal"]).lower().lstrip("@")
+        if s == un or s == kid:
+            bagli = True
+    if not bagli:
+        # duyuru_kanal hiç set değilse ve kanal_yorum açıksa yine de dene (tek kanal senaryosu)
+        if not any((a or {}).get("duyuru_kanal") for a in (durum.get("ayar") or {}).values()):
+            bagli = True
+    if not bagli:
+        return
+    # kanal_yorum kapalı mı
+    if cget(GLOBAL_AYAR, "kanal_yorum") is False:
+        return
+    try:
+        prompt = (
+            "Telegram duyuru kanalı postuna çok kısa (1-2 cümle) samimi Türkçe yorum yaz. "
+            "Reklam gibi olma, yatırım tavsiyesi verme, abartma. Sadece yorum metni döndür.\n\n"
+            f"Post: {(metin or '[medya]')[:500]}"
+        )
+        yanit = await asyncio.to_thread(sor, [{"role": "user", "content": prompt}], "", False)
+        if not yanit:
+            return
+        yanit = yanit.strip()
+        if len(yanit) > 280:
+            yanit = yanit[:277] + "..."
+        await ctx.bot.send_message(
+            ch.id,
+            yanit,
+            reply_to_message_id=post.message_id,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log.warning(f"Kanal yorum hata: {e}")
+
+
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
 app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
+app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, kanal_post_yorum))
 app.add_handler(CommandHandler("sahip", sahip_komut))
 app.add_handler(CommandHandler("durum", durum_komut))
 app.add_handler(CommandHandler("duyuru", duyuru_komut))
@@ -3936,7 +4016,7 @@ app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem",
                                 "hosgeldinmetni", "hosgeldinsifirla", "setlog", "unsetlog", "kaydet", "notsil", "filtre", "filtresil",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler", "ayarlar", "del", "sil", "purge",
                                 "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle", "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur", "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save",
-                                "cleanservice", "cleancommand", "reports", "privaterules",
+                                "kanalyorum", "channelcomment", "cleanservice", "cleancommand", "reports", "privaterules",
                                 "hosgeldinsure", "welcometime", "welcomedel", "duyurukanal", "setchannel", "kanalbgla",
                                 "linkizin", "allowlink", "izinlilink", "linkizin_sil", "allowlink_sil",
                                 "linkizinler", "allowlinks", "antiraid", "blocklistmode",
