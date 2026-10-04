@@ -2981,21 +2981,32 @@ async def mesaj(update, ctx):
                     uygun = False
             else:
                 uygun = s.lower() == un  # sadece username TAM eşleşme
+        # SADECE içinde link olan kanal postları pinlenir (naber / düz metin pinlenmez)
         if uygun:
-            try:
-                kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
-                if kayit_ozet:
-                    kayit_ozet["tarih"] = time.time()
-                    met = kayit_ozet.get("metin") or ""
-                    try:
-                        kayit_ozet["baslik"] = arsiv_baslik_uret(met, kayit_ozet.get("link"))
-                    except Exception:
-                        kayit_ozet["baslik"] = (met[:40] if met else "Duyuru")
-                    arsiv_ekle(cid, kayit_ozet)
-                    await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
-                    log.info(f"Kanal duyurusu pin: {cid} | {getattr(kaynak,'username',None)}")
-            except Exception as e:
-                log.warning(f"Otomatik duyuru/pin hatası: {e}")
+            ham = (msg.text or msg.caption or "")
+            link_var_mi = bool(LINK_RE.search(kucult(ham)))
+            if not link_var_mi and msg:
+                for e in (getattr(msg, "entities", None) or []) + (getattr(msg, "caption_entities", None) or []):
+                    if getattr(e, "type", None) in ("url", "text_link"):
+                        link_var_mi = True
+                        break
+            if not link_var_mi:
+                log.info(f"Kanal postu link yok, pin yok: {cid}")
+            else:
+                try:
+                    kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
+                    if kayit_ozet:
+                        kayit_ozet["tarih"] = time.time()
+                        met = kayit_ozet.get("metin") or ""
+                        try:
+                            kayit_ozet["baslik"] = arsiv_baslik_uret(met, kayit_ozet.get("link"))
+                        except Exception:
+                            kayit_ozet["baslik"] = (met[:40] if met else "Duyuru")
+                        arsiv_ekle(cid, kayit_ozet)
+                        await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
+                        log.info(f"Kanal link pin: {cid} | {getattr(kaynak,'username',None)}")
+                except Exception as e:
+                    log.warning(f"Otomatik duyuru/pin hatası: {e}")
 
     if await komut(update, ctx, metin):
         return
