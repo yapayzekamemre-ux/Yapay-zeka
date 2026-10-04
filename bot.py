@@ -2824,32 +2824,38 @@ async def mesaj(update, ctx):
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
-    if not msg or not user or user.is_bot:
+    if not msg or not chat:
+        return
+    # Bot mesajlarını yoksay (kendi döngüsü)
+    if user and user.is_bot:
         return
     metin = msg.text or msg.caption
     if not metin:
         return
-    # Slash komutları CommandHandler'a bırak; AI cevaplamasın
     if (msg.text or "").lstrip().startswith("/"):
         return
     ozel = chat.type == "private"
     cid = chat.id
-    kayit = uye_kaydi(cid, user)
-    if not ozel and str(user.id) in _liste_uid(cid, "blacklist"):
+    # Anonim / kanal tartışması: user yoksa sender_chat ile devam (AI için)
+    if user:
+        kayit = uye_kaydi(cid, user)
+    else:
+        kayit = {"ilk": "?", "mesaj": 0}
+    if user and not ozel and str(user.id) in _liste_uid(cid, "blacklist"):
         try:
             await msg.delete()
             await ctx.bot.ban_chat_member(cid, user.id)
         except Exception:
             pass
         return
-    if not ozel and gece_modu_aktif(cid) and not await muaf_mi(ctx, cid, user.id):
+    if user and not ozel and gece_modu_aktif(cid) and not await muaf_mi(ctx, cid, user.id):
         try:
             await msg.delete()
         except Exception:
             pass
         return
     sm = int(cget(cid, "slowmode") or 0)
-    if not ozel and sm > 0 and not await muaf_mi(ctx, cid, user.id):
+    if user and not ozel and sm > 0 and not await muaf_mi(ctx, cid, user.id):
         anahtar_sm = ("sm", cid, user.id)
         son = zamanlar.get(anahtar_sm)
         now = time.time()
@@ -2897,72 +2903,47 @@ async def mesaj(update, ctx):
                 await msg.reply_text(f"✅ {sayac} gruba gönderildi:\n{gonderilecek}")
             return
 
-    # Sadece bağlı kanaldan (Yeni Bir Airdrop vb.) gelen otomatik iletileri sabitle + arşive al
+    # Sadece bağlı duyuru kanalından OTOMATİK iletilen postları pin+arşiv (normal sohbet mesajı ASLA pinlenmez)
     if not ozel:
-        kanal_mesaji = False
-        kanal_adi = ""
+        izinli = cget(cid, "duyuru_kanal")
+        auto = bool(getattr(msg, "is_automatic_forward", False))
         sc = getattr(msg, "sender_chat", None)
-        if sc is not None and getattr(sc, "type", "") == "channel":
-            kanal_mesaji = True
-            kanal_adi = (sc.title or sc.username or "")
-        if getattr(msg, "is_automatic_forward", False):
-            kanal_mesaji = True
-            fo = getattr(msg, "forward_origin", None)
-            if fo is not None and getattr(fo, "chat", None) is not None:
-                kanal_adi = (fo.chat.title or fo.chat.username or kanal_adi)
-            elif getattr(msg, "forward_from_chat", None) is not None:
-                kanal_adi = (msg.forward_from_chat.title or msg.forward_from_chat.username or kanal_adi)
-        if kanal_mesaji:
-            izinli = cget(cid, "duyuru_kanal")  # None = varsayılan: bağlı duyuru kanalı
-            ad_k = kucult(kanal_adi)
-            uname = ""
-            if sc is not None:
-                uname = (sc.username or "").lower()
-            fo_chat = getattr(msg, "forward_from_chat", None)
-            if fo_chat is not None and not uname:
-                uname = (fo_chat.username or "").lower()
-            fo = getattr(msg, "forward_origin", None)
-            if fo is not None and getattr(fo, "chat", None) is not None and not uname:
-                uname = (fo.chat.username or "").lower()
-            uygun = False
-            if izinli:
-                if str(izinli).lstrip("-").isdigit():
-                    kid = sc.id if sc else None
-                    if kid and int(izinli) == int(kid):
-                        uygun = True
-                    elif fo_chat and int(izinli) == int(fo_chat.id):
-                        uygun = True
-                elif kucult(str(izinli)) in ad_k or kucult(str(izinli)) == uname:
-                    uygun = True
-            else:
-                # Varsayılan kaynak: https://t.me/bağlı duyuru kanalı
-                uygun = (
-                    "bagli-kanal" in ad_k.replace(" ", "")
-                    or "yeni bir airdrop" in ad_k
-                    or (sc and (sc.username or "").lower() == "bagli-kanal")
-                )
-            if uygun:
+        fo_chat = getattr(msg, "forward_from_chat", None)
+        fo = getattr(msg, "forward_origin", None)
+        fo_c = getattr(fo, "chat", None) if fo is not None else None
+        kaynak = None
+        if auto:
+            kaynak = fo_c or fo_chat or (sc if sc and getattr(sc, "type", "") == "channel" else None)
+        elif sc is not None and getattr(sc, "type", "") == "channel":
+            # doğrudan kanal imzalı mesaj (tartışma grubuna düşen kanal postu)
+            kaynak = sc
+        uygun = False
+        if izinli and kaynak is not None:
+            s = str(izinli).strip().lstrip("@")
+            un = (getattr(kaynak, "username", None) or "").lower()
+            kid = getattr(kaynak, "id", None)
+            if s.lstrip("-").isdigit() and kid is not None:
                 try:
-                    kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
-                    if kayit_ozet:
-                        kayit_ozet["tarih"] = time.time()
-                        # Başlık: metin yoksa AI ile üret
-                        met = kayit_ozet.get("metin") or ""
-                        if len(met.strip()) < 8:
-                            try:
-                                bas = await asyncio.to_thread(
-                                    arsiv_baslik_uret, met, kayit_ozet.get("link")
-                                )
-                                kayit_ozet["baslik"] = bas
-                            except Exception:
-                                pass
-                        else:
-                            kayit_ozet["baslik"] = arsiv_baslik_uret(met, kayit_ozet.get("link"))
-                        arsiv_ekle(cid, kayit_ozet)
-                        await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
-                        log.info(f"Kanal duyurusu pin+arsiv: {cid} | {kanal_adi} | {kayit_ozet.get('baslik')}")
-                except Exception as e:
-                    log.warning(f"Otomatik duyuru/pin hatası: {e}")
+                    uygun = int(s) == int(kid)
+                except Exception:
+                    uygun = False
+            else:
+                uygun = s.lower() == un  # sadece username TAM eşleşme
+        if uygun:
+            try:
+                kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
+                if kayit_ozet:
+                    kayit_ozet["tarih"] = time.time()
+                    met = kayit_ozet.get("metin") or ""
+                    try:
+                        kayit_ozet["baslik"] = arsiv_baslik_uret(met, kayit_ozet.get("link"))
+                    except Exception:
+                        kayit_ozet["baslik"] = (met[:40] if met else "Duyuru")
+                    arsiv_ekle(cid, kayit_ozet)
+                    await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
+                    log.info(f"Kanal duyurusu pin: {cid} | {getattr(kaynak,'username',None)}")
+            except Exception as e:
+                log.warning(f"Otomatik duyuru/pin hatası: {e}")
 
     if await komut(update, ctx, metin):
         return
@@ -3001,9 +2982,9 @@ async def mesaj(update, ctx):
             getattr(msg, "is_automatic_forward", False) and mesaj_bagli_kanal_mi(cid, msg)
         )
         n = cget(cid, "flood")
-        spam = n > 0 and spam_mi(cid, user.id, n)
+        spam = n > 0 and user is not None and spam_mi(cid, user.id, n)
         ad = None
-        onayli = str(user.id) in _liste_uid(cid, "approved") or str(user.id) in _liste_uid(cid, "whitelist")
+        onayli = user is not None and (str(user.id) in _liste_uid(cid, "approved") or str(user.id) in _liste_uid(cid, "whitelist"))
         if link_izinli_mi(cid, metin, msg):
             pass  # sahibin serbest linki
         elif not kanal_izinli and not onayli and (scam_var(metin) or ("link" in (cget(cid, "kilit") or []) and link_var(msg, metin))):
@@ -3014,7 +2995,7 @@ async def mesaj(update, ctx):
             ad = "yasaklı kelime"
         elif spam:
             ad = "spam"
-        if ad and not await muaf_mi(ctx, cid, user.id):
+        if ad and user is not None and not await muaf_mi(ctx, cid, user.id):
             await ihlal(update, ctx, ad, True)  # ihlal mesajı silinsin
             return
         if "@admin" in kucult(metin):
@@ -3039,13 +3020,26 @@ async def mesaj(update, ctx):
                 return
         if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
-        botun_mesaji = (msg.reply_to_message and msg.reply_to_message.from_user
-                        and msg.reply_to_message.from_user.id == ctx.bot.id)
-        # Grupta: sadece "yapay" geçince veya bota yanıtta cevap ver (sahip dahil)
+        # Grupta / kanal tartışmasında: "yapay" veya @bot kullanıcı adı geçince
+        bot_un = ""
+        try:
+            me = ctx.bot.username or ""
+            bot_un = me.lower()
+        except Exception:
+            pass
+        met_k = kucult(metin)
         cagrildi = (
-            "yapay" in kucult(metin)
-            or bool(botun_mesaji)
+            "yapay" in met_k
+            or (bot_un and f"@{bot_un}" in met_k)
+            or (bot_un and bot_un in met_k and f"@" in metin)
         )
+        # entities: text_mention / mention
+        for e in (getattr(msg, "entities", None) or []):
+            if getattr(e, "type", None) == "mention":
+                cagrildi = True
+            if getattr(e, "type", None) == "text_mention" and getattr(e, "user", None):
+                if e.user.id == ctx.bot.id:
+                    cagrildi = True
         if (cagrildi or len(kelimeler) <= 3) and set(kelimeler) & LISTE_KISA:
             gun, baslik = liste_gun(kelimeler)
             await arsiv_gonder(update, ctx, gun, baslik)
@@ -3072,9 +3066,12 @@ async def mesaj(update, ctx):
     if not ozel and cget(cid, "ai_mod") and not await yetkili_mi(ctx, cid, user.id):
         return
 
-    ek = f"\nŞu an sana yazan kişi: {user.full_name}. Bu kişi {kayit['ilk']} tarihinden beri grupta, {kayit['mesaj']} mesaj yazdı. Ona ismiyle hitap et."
-    if sahip_mi(user):
-        ek += "\nBu kişi grubun SAHİBİ ve senin patronun (Jimin). Ona karşı çok samimi, sıcak ve itaatkâr ol."
+    ad_kisi = (user.full_name if user else None) or getattr(getattr(msg, "sender_chat", None), "title", None) or "Üye"
+    ek = f"\nŞu an sana yazan kişi: {ad_kisi}."
+    if user:
+        ek += f" Bu kişi {kayit.get('ilk', '?')} tarihinden beri grupta, {kayit.get('mesaj', 0)} mesaj yazdı. Ona ismiyle hitap et."
+    if user and sahip_mi(user):
+        ek += "\nBu kişi grubun SAHİBİ. Ona karşı samimi ol."
     if durum["talimat"]:
         ek += ("\nSahibinin kalıcı talimatları (sessizce uy): "
                + " | ".join(x["t"] for x in durum["talimat"][-10:]))
@@ -3091,7 +3088,8 @@ async def mesaj(update, ctx):
         ek += ("\nBu soruda grubun içeriği hakkında HİÇBİR bilgi verme. "
                "Esprili ve kısa bir kaçamak cevap ver.")
 
-    anahtar = (cid, user.id)
+    uid = user.id if user else (getattr(msg.sender_chat, "id", None) or 0)
+    anahtar = (cid, uid)
     h = gecmis.setdefault(anahtar, [])
     h.append({"role": "user", "content": metin})
 
@@ -3108,7 +3106,7 @@ async def mesaj(update, ctx):
             yanit = kes + "…"
         h.append({"role": "assistant", "content": yanit})
     gecmis[anahtar] = h[-40:]
-    await msg.reply_text(yanit, do_quote=False)
+    await msg.reply_text(yanit, do_quote=True)
 
 async def fiyat_komut(update, ctx):
     msg = update.effective_message
