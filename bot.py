@@ -31,7 +31,7 @@ def keep_alive():
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-SAHIP_KULLANICI = "jiminienn"
+SAHIP_KULLANICI = (os.environ.get("SAHIP_KULLANICI") or os.environ.get("SAHIP_USERNAME") or "").lower().lstrip("@")
 TIP_ARALIK = 3600
 TR = timezone(timedelta(hours=3))
 NUMARALAR = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
@@ -195,8 +195,10 @@ async def log_gonder(ctx, kaynak_cid, metin):
 SAHIP_KOD = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
 if not durum["sahip"]:
     print("\n=========================================")
-    print(" @" + SAHIP_KULLANICI + " yazinca otomatik sahip olur.")
-    print(" Yedek kod: " + SAHIP_KOD + "  (botuna ozelden /sahip " + SAHIP_KOD + ")")
+    print(" Sahip yok: ozelden /start veya /sahip yaz.")
+    if SAHIP_KULLANICI:
+        print(" @" + SAHIP_KULLANICI + " yazinca da otomatik sahip olur.")
+    print(" Yedek kod: " + SAHIP_KOD + "  (/sahip " + SAHIP_KOD + ")")
     print("=========================================\n")
 
 def kaydet():
@@ -786,7 +788,7 @@ def mesaj_linki(chat, mid):
 
 def kanal_post_linki(msg):
     """Kanal / otomatik iletim mesajından orijinal kanal post linki.
-    Örn: https://t.me/YeniBirAirdrops/123
+    Örn: https://t.me/bağlı duyuru kanalı/123
     """
     if not msg:
         return None
@@ -849,7 +851,7 @@ async def mesaj_ozeti(ctx, m, chat):
     d = getattr(m, "date", None)
     if d and d.year > 2000:
         tarih = d.timestamp()
-    # Önce kanal post linki (YeniBirAirdrops), yoksa grup mesajı
+    # Önce kanal post linki (bağlı duyuru kanalı), yoksa grup mesajı
     link = kanal_post_linki(m) or mesaj_linki(chat, mid)
     return {"id": mid, "metin": metin[:1500], "link": link, "tarih": tarih}
 
@@ -901,7 +903,7 @@ def arsiv_baslik_uret(metin, link=None):
     # Linkten token/bot adı çıkar
     if link:
         m = re.search(r"t\.me/([A-Za-z0-9_]+)", link)
-        if m and m.group(1).lower() not in ("yenibirairdrops", "c"):
+        if m and m.group(1).lower() not in ("bagli-kanal", "c"):
             return m.group(1)[:40]
     # AI kısa başlık
     if ham or link:
@@ -1036,12 +1038,19 @@ async def sahip_komut(update, ctx):
     if durum.get("sahip"):
         await msg.reply_text("Sahip zaten kayıtlı." if user.id == durum["sahip"] else "Yetkin yok.")
         return
-    if ctx.args and ctx.args[0].upper() == SAHIP_KOD:
+    # 1) Yedek kod  2) Boş /sahip → ilk özelden yazan sahip olur (hesap sıfırlama)
+    kod_ok = ctx.args and ctx.args[0].upper() == SAHIP_KOD
+    bos_claim = not ctx.args
+    if kod_ok or bos_claim:
         durum["sahip"] = user.id
         durum_kaydet()
-        await msg.reply_text("✅ Sahip sensin. Tüm yönetim komutları artık sadece sende.")
+        await msg.reply_text(
+            f"✅ Sahip sensin (ID: {user.id}).\n"
+            "Özelden tüm ayarlar artık sende."
+        )
+        log.info(f"Sahip kaydı: {user.id}")
     else:
-        await msg.reply_text("Kod yanlış.")
+        await msg.reply_text("Kod yanlış. Sahip yoksa sadece /sahip yazman yeterli.")
 
 async def ayar_komut(update, ctx):
     msg = update.effective_message
@@ -1180,7 +1189,7 @@ async def duyuru_saatlik(app):
             log.warning(f"Duyuru döngüsü hatası: {e}")
 
 async def baslat(app):
-    # Link kilidi açık: sadece YeniBirAirdrops kanalından gelenler serbest
+    # Link kilidi açık: sadece bağlı duyuru kanalı kanalından gelenler serbest
     try:
         for gcid, ay in list(durum.get("ayar", {}).items()):
             if not isinstance(ay, dict):
@@ -1193,7 +1202,7 @@ async def baslat(app):
             set(durum["ayar"].get(GLOBAL_AYAR, {}).get("kilit") or []) | {"link"}
         )
         durum_kaydet()
-        log.info("Link kilidi aktif — sadece YeniBirAirdrops kanal paylaşımları serbest")
+        log.info("Link kilidi aktif — sadece bağlı duyuru kanalı kanal paylaşımları serbest")
     except Exception as e:
         log.warning(f"Kilit ayarı: {e}")
     app.bot_data["ipucu"] = asyncio.create_task(ipucu_dongusu(app))
@@ -1227,7 +1236,7 @@ KUFUR_KOK = ("siktir", "sikeyim", "sikerim", "orospu", "yarrak", "amına", "amin
 LINK_RE = re.compile(r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\b[a-z0-9-]+\.(?:com|io|xyz|net|org|me|app|co|link|fun|ai|gg|site|online|top|click)\b\S*)")
 IZINLI = (
     "coingecko.com", "coinmarketcap.com", "dexscreener.com", "tradingview.com",
-    "t.me/yenibirairdrops", "telegram.me/yenibirairdrops", "yenibirairdrops",
+    "t.me/bagli-kanal", "telegram.me/bagli-kanal", "bagli-kanal",
 )
 SCAM_IFADE = ("seed phrase", "private key", "gizli anahtar", "özel anahtar", "12 kelime", "24 kelime",
               "kurtarma ifadesi", "recovery phrase", "cüzdanını bağla", "connect your wallet")
@@ -1263,8 +1272,8 @@ def link_var(msg, metin):
         a2 = a.lower().replace("https://", "").replace("http://", "")
         if any(d in a2 for d in IZINLI):
             continue
-        # t.me/YeniBirAirdrops veya t.me/c/... kanal postları serbest
-        if a2.startswith("t.me/yenibirairdrops") or "t.me/yenibirairdrops/" in a2:
+        # t.me/bağlı duyuru kanalı veya t.me/c/... kanal postları serbest
+        if a2.startswith("t.me/bagli-kanal") or "t.me/bagli-kanal/" in a2:
             continue
         temiz.append(a)
     return len(temiz) > 0
@@ -1299,6 +1308,44 @@ def link_izinli_mi(cid, metin, msg=None):
             return True
         # domain: example.com
         if z.replace("https://", "").replace("http://", "") in ham:
+            return True
+    return False
+
+
+def bagli_kanal_mi(cid, ch):
+    """Mesajın kaynağı sahibin bağladığı duyuru kanalı mı?"""
+    if ch is None:
+        return False
+    izinli = cget(cid, "duyuru_kanal")
+    un = (getattr(ch, "username", None) or "").lower()
+    title = kucult(getattr(ch, "title", None) or "")
+    kid = getattr(ch, "id", None)
+    if not izinli:
+        return False
+    s = str(izinli).strip()
+    if s.lstrip("-").isdigit() and kid is not None:
+        try:
+            if int(s) == int(kid):
+                return True
+        except Exception:
+            pass
+    z = s.lower().lstrip("@")
+    if z and (z == un or z in title.replace(" ", "") or z in title):
+        return True
+    # link_izinli listesinde kanal adı da olabilir
+    for x in (cget(cid, "link_izinli") or []):
+        xz = kucult(str(x)).replace("https://", "").replace("http://", "").replace("t.me/", "").lstrip("@")
+        if xz and (xz == un or xz in title.replace(" ", "")):
+            return True
+    return False
+
+def mesaj_bagli_kanal_mi(cid, m):
+    for ch in (
+        getattr(m, "sender_chat", None),
+        getattr(m, "forward_from_chat", None),
+        getattr(getattr(m, "forward_origin", None), "chat", None),
+    ):
+        if bagli_kanal_mi(cid, ch):
             return True
     return False
 
@@ -2107,6 +2154,31 @@ async def yonet_komut(update, ctx):
             return
         grup_ayari_uygula(cid, "hosgeldin_dil", dil, ozel)
         await de(f"Karşılama dili: {dil}" + (" (tüm gruplar)" if ozel else ""))
+    elif ad in ("duyurukanal", "setchannel", "kanalbgla"):
+        ozel = chat.type == "private"
+        # /duyurukanal @kanaladi  veya kanal mesajına yanıt
+        hedef = None
+        if a1:
+            hedef = a1.lstrip("@")
+        elif yanit:
+            ch = getattr(yanit, "forward_from_chat", None) or getattr(yanit, "sender_chat", None)
+            if ch:
+                hedef = ch.username or str(ch.id)
+            elif yanit.forward_origin and getattr(yanit.forward_origin, "chat", None):
+                ch = yanit.forward_origin.chat
+                hedef = ch.username or str(ch.id)
+        if not hedef:
+            await de("Örnek: /duyurukanal @yenikanal\nveya kanaldan mesajı gruba ilet, yanıtla: /duyurukanal")
+            return
+        grup_ayari_uygula(cid, "duyuru_kanal", str(hedef), ozel)
+        # link serbest listesine de ekle
+        lst = list(cget(cid, "link_izinli") or [])
+        item = str(hedef).lstrip("@")
+        if item not in lst:
+            lst.append(item)
+            grup_ayari_uygula(cid, "link_izinli", lst, ozel)
+        yer = " (tüm gruplar)" if ozel else ""
+        await de(f"✅ Duyuru kanalı bağlandı: {hedef}{yer}\nBu kanaldan gelenler sabitlenir / link serbest.")
     elif ad == "setlog":
         # /setlog @kanal | /setlog -100... | kanal mesajına yanıt | iletilmiş kanala yanıt
         def kanal_id_bul(m):
@@ -2444,6 +2516,15 @@ async def genel_komut(update, ctx):
     p = msg.text.split()
     ad = p[0][1:].split("@")[0].lower()
     if ad in ("yardim", "help", "start"):
+        if chat.type == "private" and not durum.get("sahip") and user:
+            durum["sahip"] = user.id
+            durum_kaydet()
+            await msg.reply_text(
+                f"✅ Sahip olarak kaydedildin (ID: {user.id}).\n"
+                "Şimdi ayarları özelden yapabilirsin.\n\n" + YARDIM,
+                parse_mode="HTML",
+            )
+            return
         await msg.reply_text(YARDIM, parse_mode="HTML")
         return
     if chat.type == "private":
@@ -2707,21 +2788,8 @@ async def kilit_kontrol(update, ctx):
     user = update.effective_user
     if not msg or not user or user.is_bot or chat.type == "private":
         return
-    # Sadece YeniBirAirdrops kanal paylaşımları kilide takılmaz
-    def _izinli_kanal(m):
-        for ch in (
-            getattr(m, "sender_chat", None),
-            getattr(m, "forward_from_chat", None),
-            getattr(getattr(m, "forward_origin", None), "chat", None),
-        ):
-            if ch is None:
-                continue
-            un = (getattr(ch, "username", None) or "").lower()
-            title = kucult(getattr(ch, "title", None) or "")
-            if un == "yenibirairdrops" or "yenibirairdrops" in title.replace(" ", "") or "yeni bir airdrop" in title:
-                return True
-        return False
-    if _izinli_kanal(msg):
+    # Bağlı duyuru kanalı paylaşımları kilide takılmaz
+    if mesaj_bagli_kanal_mi(chat.id, msg):
         return
     metin = (msg.text or msg.caption or "")
     if link_izinli_mi(chat.id, metin, msg):
@@ -2829,7 +2897,7 @@ async def mesaj(update, ctx):
             elif getattr(msg, "forward_from_chat", None) is not None:
                 kanal_adi = (msg.forward_from_chat.title or msg.forward_from_chat.username or kanal_adi)
         if kanal_mesaji:
-            izinli = cget(cid, "duyuru_kanal")  # None = varsayılan: YeniBirAirdrops
+            izinli = cget(cid, "duyuru_kanal")  # None = varsayılan: bağlı duyuru kanalı
             ad_k = kucult(kanal_adi)
             uname = ""
             if sc is not None:
@@ -2851,11 +2919,11 @@ async def mesaj(update, ctx):
                 elif kucult(str(izinli)) in ad_k or kucult(str(izinli)) == uname:
                     uygun = True
             else:
-                # Varsayılan kaynak: https://t.me/YeniBirAirdrops
+                # Varsayılan kaynak: https://t.me/bağlı duyuru kanalı
                 uygun = (
-                    "yenibirairdrops" in ad_k.replace(" ", "")
+                    "bagli-kanal" in ad_k.replace(" ", "")
                     or "yeni bir airdrop" in ad_k
-                    or (sc and (sc.username or "").lower() == "yenibirairdrops")
+                    or (sc and (sc.username or "").lower() == "bagli-kanal")
                 )
             if uygun:
                 try:
@@ -2913,27 +2981,8 @@ async def mesaj(update, ctx):
             return
 
     if not ozel:
-        # Sadece YeniBirAirdrops kanalından gelen paylaşımlar link yasağından muaf
-        def _yenibir_kanal_mi(m):
-            sc = getattr(m, "sender_chat", None)
-            fo = getattr(m, "forward_from_chat", None)
-            fo2 = getattr(m, "forward_origin", None)
-            adaylar = []
-            if sc is not None:
-                adaylar.append(sc)
-            if fo is not None:
-                adaylar.append(fo)
-            if fo2 is not None and getattr(fo2, "chat", None) is not None:
-                adaylar.append(fo2.chat)
-            for ch in adaylar:
-                un = (getattr(ch, "username", None) or "").lower()
-                title = kucult(getattr(ch, "title", None) or "")
-                if un == "yenibirairdrops" or "yenibirairdrops" in title.replace(" ", "") or "yeni bir airdrop" in title:
-                    return True
-            return False
-
-        kanal_izinli = _yenibir_kanal_mi(msg) or (
-            getattr(msg, "is_automatic_forward", False) and _yenibir_kanal_mi(msg)
+        kanal_izinli = mesaj_bagli_kanal_mi(cid, msg) or (
+            getattr(msg, "is_automatic_forward", False) and mesaj_bagli_kanal_mi(cid, msg)
         )
         n = cget(cid, "flood")
         spam = n > 0 and spam_mi(cid, user.id, n)
@@ -3128,7 +3177,7 @@ def scam_link_skor(metin):
         skor += 2; notlar.append("davet linki")
     if any(x in k for x in ("airdrop", "claim", "connect wallet", "seed", "private key", "cüzdan bağla")):
         skor += 3; notlar.append("şüpheli kelime")
-    if re.search(r"https?://\S+", k) and "yenibirairdrops" not in k:
+    if re.search(r"https?://\S+", k) and "bagli-kanal" not in k:
         skor += 1; notlar.append("harici link")
     if skor >= 4:
         seviye = "🔴 Yüksek risk"
@@ -3544,7 +3593,7 @@ def panel_klavye(cid, sayfa="ana"):
             [InlineKeyboardButton("🗓 Aylık", callback_data=f"pn:{cid}:duy30"),
              InlineKeyboardButton("📌 Pin son duyuru", callback_data=f"pn:{cid}:pinlast")],
             [InlineKeyboardButton("ℹ️ /setlog @kanal — rapor kanalı", callback_data=f"pn:{cid}:info:setlog")],
-            [InlineKeyboardButton("ℹ️ Kanal bağla: YeniBirAirdrops", callback_data=f"pn:{cid}:info:kanal")],
+            [InlineKeyboardButton("ℹ️ Kanal bağla: bağlı duyuru kanalı", callback_data=f"pn:{cid}:info:kanal")],
             [InlineKeyboardButton("⬅️ Ana menü", callback_data=f"pn:{cid}:pg:ana")],
         ]
     elif sayfa == "arac":
@@ -3588,7 +3637,7 @@ def panel_metin(cid, sayfa="ana"):
             f"Warn: {cget(cid,'warn_limit')} → {cget(cid,'warn_eylem')} | Newbies: {cget(cid,'newbies_dk')}dk"
         )
     if sayfa == "kilit":
-        return f"🔒 <b>Kilitler</b>\nAktif: {kilit}\n\nTıkla: kilit aç/kapa. Link kilitliyken sadece YeniBirAirdrops + onaylı üyeler serbest."
+        return f"🔒 <b>Kilitler</b>\nAktif: {kilit}\n\nTıkla: kilit aç/kapa. Link kilitliyken sadece bağlı duyuru kanalı + onaylı üyeler serbest."
     if sayfa == "mod":
         return (
             "🛡 <b>Moderasyon</b>\n"
@@ -3604,7 +3653,7 @@ def panel_metin(cid, sayfa="ana"):
         return (
             "📢 <b>Duyuru</b>\n"
             f"Arşiv kayıt: {n}\n"
-            "Kanal: YeniBirAirdrops bağlı olmalı.\n"
+            "Kanal: bağlı duyuru kanalı bağlı olmalı.\n"
             "<code>/gunluk</code> <code>/haftalik</code> <code>/setlog @kanal</code>\n"
             "Mesaja yanıt: <code>/duyuruekle</code>"
         )
@@ -3843,7 +3892,7 @@ async def panel_buton(update, ctx):
             "kick": "/kick | /warn | /warns",
             "del": "/del yanıtla | /purge | /pin /unpin",
             "setlog": "Kanaldan mesaj ilet, yanıtla: /setlog",
-            "kanal": "Grup bilgisi → Kanalı bağla → YeniBirAirdrops",
+            "kanal": "Grup bilgisi → Kanalı bağla → bağlı duyuru kanalı",
             "scam": "Şüpheli mesaja yanıt: /scam",
             "ca": "/ca 0x... contract adresi",
             "fiyat": "/fiyat btc",
@@ -3888,7 +3937,7 @@ app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler", "ayarlar", "del", "sil", "purge",
                                 "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle", "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur", "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save",
                                 "cleanservice", "cleancommand", "reports", "privaterules",
-                                "hosgeldinsure", "welcometime", "welcomedel",
+                                "hosgeldinsure", "welcometime", "welcomedel", "duyurukanal", "setchannel", "kanalbgla",
                                 "linkizin", "allowlink", "izinlilink", "linkizin_sil", "allowlink_sil",
                                 "linkizinler", "allowlinks", "antiraid", "blocklistmode",
                                 "hosgeldindil", "welcomelang"], yonet_komut))
