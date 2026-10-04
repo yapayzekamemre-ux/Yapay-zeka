@@ -129,7 +129,9 @@ VARS = {
     "blocklist_mode": "mute",   # mute|kick|ban|sil
     "report_log_only": False,   # rapor sadece log kanalına
     "hosgeldin_dil": "tr",
-    "kanal_yorum": False,  # sadece /kanalyorum on ile aç; her posta yorum yok
+    "kanal_yorum": False,
+    "otopin": False,  # kanal postlarını otomatik pinleme KAPALI
+  # sadece /kanalyorum on ile aç; her posta yorum yok
 }
 
 GLOBAL_AYAR = "_global"
@@ -1210,7 +1212,13 @@ async def baslat(app):
             set(durum["ayar"].get(GLOBAL_AYAR, {}).get("kilit") or []) | {"link"}
         )
         durum_kaydet()
-        log.info("Link kilidi aktif — sadece bağlı duyuru kanalı kanal paylaşımları serbest")
+        # Eski kayıtlarda otopin açıksa kapat (naber pinlenmesin)
+        for gcid, ay in list(durum.get("ayar", {}).items()):
+            if isinstance(ay, dict) and ay.get("otopin"):
+                ay["otopin"] = False
+        durum["ayar"].setdefault(GLOBAL_AYAR, {})["otopin"] = False
+        durum_kaydet()
+        log.info("Link kilidi aktif; otopin KAPALI")
     except Exception as e:
         log.warning(f"Kilit ayarı: {e}")
     app.bot_data["ipucu"] = asyncio.create_task(ipucu_dongusu(app))
@@ -2130,6 +2138,15 @@ async def yonet_komut(update, ctx):
     elif ad == "hosgeldinsifirla":
         grup_ayari_uygula(cid, "hosgeldin_metin", None, chat.type == "private")
         await de("Hoş geldin metni varsayılana döndü (yapay zeka yazar).")
+    elif ad in ("otopin", "autopin"):
+        ozel = chat.type == "private"
+        ac = True
+        if a1:
+            ac = kucult(a1) in ("on", "1", "ac", "aç", "true", "yes", "evet")
+            if kucult(a1) in ("off", "0", "kapat", "false", "no", "hayir", "hayır"):
+                ac = False
+        grup_ayari_uygula(cid, "otopin", ac, ozel)
+        await de(f"{'✅' if ac else '❌'} Otomatik pin (sadece linkli kanal): {'açık' if ac else 'kapalı'}")
     elif ad in ("kanalyorum", "channelcomment"):
         ozel = chat.type == "private"
         ac = True
@@ -2955,16 +2972,15 @@ async def mesaj(update, ctx):
                 await msg.reply_text(f"✅ {sayac} gruba gönderildi:\n{gonderilecek}")
             return
 
-    # Pin: SADECE bağlı kanaldan otomatik iletilen + içinde gerçek URL (http/t.me) olan postlar
-    if not ozel:
+    # Otomatik pin KAPALI (varsayılan). Acmak icin: /otopin on — sadece linkli kanal iletileri.
+    if not ozel and cget(cid, "otopin") is True:
         izinli = cget(cid, "duyuru_kanal")
         auto = bool(getattr(msg, "is_automatic_forward", False))
-        sc = getattr(msg, "sender_chat", None)
-        # Kanal imzasıyla sohbete yazılan düz metin (naber) PINLENMEZ — sadece auto-forward
         if izinli and auto:
             fo_chat = getattr(msg, "forward_from_chat", None)
             fo = getattr(msg, "forward_origin", None)
             fo_c = getattr(fo, "chat", None) if fo is not None else None
+            sc = getattr(msg, "sender_chat", None)
             kaynak = fo_c or fo_chat or (sc if sc and getattr(sc, "type", "") == "channel" else None)
             uygun = False
             if kaynak is not None:
@@ -2978,39 +2994,23 @@ async def mesaj(update, ctx):
                         uygun = False
                 else:
                     uygun = s.lower() == un
-            # Gerçek link: sadece http(s) veya t.me / telegram.me
-            ham = (msg.text or msg.caption or "")
-            link_var_mi = bool(re.search(
-                r"(https?://\S+|t\.me/\S+|telegram\.me/\S+)",
-                ham,
-                re.I,
-            ))
-            if not link_var_mi and msg:
+            ham = msg.text or msg.caption or ""
+            link_var_mi = bool(re.search(r"(https?://\S+|t\.me/\S+|telegram\.me/\S+)", ham, re.I))
+            if not link_var_mi:
                 for e in (getattr(msg, "entities", None) or []) + (getattr(msg, "caption_entities", None) or []):
-                    if getattr(e, "type", None) == "url":
+                    if getattr(e, "type", None) in ("url", "text_link"):
                         link_var_mi = True
                         break
-                    if getattr(e, "type", None) == "text_link" and getattr(e, "url", None):
-                        if re.search(r"https?://|t\.me/|telegram\.me/", e.url or "", re.I):
-                            link_var_mi = True
-                            break
             if uygun and link_var_mi:
                 try:
                     kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
                     if kayit_ozet:
                         kayit_ozet["tarih"] = time.time()
-                        met = kayit_ozet.get("metin") or ""
-                        try:
-                            kayit_ozet["baslik"] = arsiv_baslik_uret(met, kayit_ozet.get("link"))
-                        except Exception:
-                            kayit_ozet["baslik"] = (met[:40] if met else "Duyuru")
                         arsiv_ekle(cid, kayit_ozet)
                         await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
-                        log.info(f"Kanal LINK pin OK: {cid}")
+                        log.info("otopin link OK")
                 except Exception as e:
-                    log.warning(f"Pin hata: {e}")
-            elif uygun and not link_var_mi:
-                log.info(f"Pin atlandı (link yok): {ham[:40]!r}")
+                    log.warning(f"otopin hata: {e}")
 
     if await komut(update, ctx, metin):
         return
@@ -4098,7 +4098,7 @@ app.add_handler(CommandHandler(["flood", "setflood", "uyarilimit", "uyarieylem",
                                 "hosgeldinmetni", "hosgeldinsifirla", "setlog", "unsetlog", "kaydet", "notsil", "filtre", "filter", "filtresil", "stop",
                                 "kara", "karasil", "karalar", "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler", "ayarlar", "del", "sil", "purge",
                                 "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle", "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur", "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save",
-                                "kanalyorum", "channelcomment", "cleanservice", "cleancommand", "reports", "privaterules",
+                                "otopin", "autopin", "kanalyorum", "channelcomment", "cleanservice", "cleancommand", "reports", "privaterules",
                                 "hosgeldinsure", "welcometime", "welcomedel", "duyurukanal", "setchannel", "kanalbgla",
                                 "linkizin", "allowlink", "izinlilink", "linkizin_sil", "allowlink_sil",
                                 "linkizinler", "allowlinks", "antiraid", "blocklistmode",
