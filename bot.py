@@ -2955,44 +2955,46 @@ async def mesaj(update, ctx):
                 await msg.reply_text(f"✅ {sayac} gruba gönderildi:\n{gonderilecek}")
             return
 
-    # Sadece bağlı duyuru kanalından OTOMATİK iletilen postları pin+arşiv (normal sohbet mesajı ASLA pinlenmez)
+    # Pin: SADECE bağlı kanaldan otomatik iletilen + içinde gerçek URL (http/t.me) olan postlar
     if not ozel:
         izinli = cget(cid, "duyuru_kanal")
         auto = bool(getattr(msg, "is_automatic_forward", False))
         sc = getattr(msg, "sender_chat", None)
-        fo_chat = getattr(msg, "forward_from_chat", None)
-        fo = getattr(msg, "forward_origin", None)
-        fo_c = getattr(fo, "chat", None) if fo is not None else None
-        kaynak = None
-        if auto:
+        # Kanal imzasıyla sohbete yazılan düz metin (naber) PINLENMEZ — sadece auto-forward
+        if izinli and auto:
+            fo_chat = getattr(msg, "forward_from_chat", None)
+            fo = getattr(msg, "forward_origin", None)
+            fo_c = getattr(fo, "chat", None) if fo is not None else None
             kaynak = fo_c or fo_chat or (sc if sc and getattr(sc, "type", "") == "channel" else None)
-        elif sc is not None and getattr(sc, "type", "") == "channel":
-            # doğrudan kanal imzalı mesaj (tartışma grubuna düşen kanal postu)
-            kaynak = sc
-        uygun = False
-        if izinli and kaynak is not None:
-            s = str(izinli).strip().lstrip("@")
-            un = (getattr(kaynak, "username", None) or "").lower()
-            kid = getattr(kaynak, "id", None)
-            if s.lstrip("-").isdigit() and kid is not None:
-                try:
-                    uygun = int(s) == int(kid)
-                except Exception:
-                    uygun = False
-            else:
-                uygun = s.lower() == un  # sadece username TAM eşleşme
-        # SADECE içinde link olan kanal postları pinlenir (naber / düz metin pinlenmez)
-        if uygun:
+            uygun = False
+            if kaynak is not None:
+                s = str(izinli).strip().lstrip("@")
+                un = (getattr(kaynak, "username", None) or "").lower()
+                kid = getattr(kaynak, "id", None)
+                if s.lstrip("-").isdigit() and kid is not None:
+                    try:
+                        uygun = int(s) == int(kid)
+                    except Exception:
+                        uygun = False
+                else:
+                    uygun = s.lower() == un
+            # Gerçek link: sadece http(s) veya t.me / telegram.me
             ham = (msg.text or msg.caption or "")
-            link_var_mi = bool(LINK_RE.search(kucult(ham)))
+            link_var_mi = bool(re.search(
+                r"(https?://\S+|t\.me/\S+|telegram\.me/\S+)",
+                ham,
+                re.I,
+            ))
             if not link_var_mi and msg:
                 for e in (getattr(msg, "entities", None) or []) + (getattr(msg, "caption_entities", None) or []):
-                    if getattr(e, "type", None) in ("url", "text_link"):
+                    if getattr(e, "type", None) == "url":
                         link_var_mi = True
                         break
-            if not link_var_mi:
-                log.info(f"Kanal postu link yok, pin yok: {cid}")
-            else:
+                    if getattr(e, "type", None) == "text_link" and getattr(e, "url", None):
+                        if re.search(r"https?://|t\.me/|telegram\.me/", e.url or "", re.I):
+                            link_var_mi = True
+                            break
+            if uygun and link_var_mi:
                 try:
                     kayit_ozet = await mesaj_ozeti(ctx, msg, chat)
                     if kayit_ozet:
@@ -3004,9 +3006,11 @@ async def mesaj(update, ctx):
                             kayit_ozet["baslik"] = (met[:40] if met else "Duyuru")
                         arsiv_ekle(cid, kayit_ozet)
                         await ctx.bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
-                        log.info(f"Kanal link pin: {cid} | {getattr(kaynak,'username',None)}")
+                        log.info(f"Kanal LINK pin OK: {cid}")
                 except Exception as e:
-                    log.warning(f"Otomatik duyuru/pin hatası: {e}")
+                    log.warning(f"Pin hata: {e}")
+            elif uygun and not link_var_mi:
+                log.info(f"Pin atlandı (link yok): {ham[:40]!r}")
 
     if await komut(update, ctx, metin):
         return
