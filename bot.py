@@ -6,7 +6,7 @@ from groq import Groq
 from google import genai
 from google.genai import types
 from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllChatAdministrators, BotCommandScopeAllGroupChats, Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, ChatMemberHandler, filters
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler, filters
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_KEY = os.environ["GROQ_KEY"]
@@ -50,10 +50,10 @@ def _self_ping():
         for u in urls:
             try:
                 urllib.request.urlopen(u, timeout=15)
-                log.info(f"keep-alive OK: {u}")
+                logging.getLogger("bot").info(f"keep-alive OK: {u}")
                 break
             except Exception as e:
-                log.warning(f"keep-alive fail {u}: {e}")
+                logging.getLogger("bot").warning(f"keep-alive fail {u}: {e}")
         time.sleep(180)  # 3 dakika
 
 threading.Thread(target=keep_alive, daemon=True).start()
@@ -4096,7 +4096,7 @@ app.add_handler(CommandHandler([
     "filtre", "filter", "filtresil", "stop",
     "kara", "karasil", "karalar", "kilit", "kilitac", "lock", "unlock", "locks", "unlocks", "kilitler",
     "ayarlar", "del", "sil", "purge", "pin", "sabitle", "unpin", "sabitkaldir", "duyuruekle",
-    "promote", "demote", "adminlist", "admins", "yoneticiler", "yukselt", "dusur",
+    "promote", "demote", "yukselt", "dusur",
     "setwelcome", "welcome", "resetwelcome", "setrules", "resetrules", "warnlimit", "warntime", "save",
     "cleanservice", "cleancommand", "reports", "privaterules",
     "hosgeldinsure", "welcometime", "welcomedel",
@@ -4108,18 +4108,18 @@ app.add_handler(CommandHandler([
 ], yonet_komut))
 app.add_handler(CommandHandler([
     "yardim", "help", "start", "kurallar", "rules", "not", "get", "notlar", "notes",
-    "filtreler", "filters", "kilitler", "id", "info", "bilgi", "top", "istatistik",
-    "rapor", "report", "adminlist",
+    "filtreler", "filters", "id", "info", "bilgi", "top", "istatistik",
+    "rapor", "report", "adminlist", "admins", "yoneticiler",
 ], genel_komut))
 app.add_handler(CommandHandler("sifirla", sifirla))
 app.add_handler(CommandHandler("fiyat", fiyat_komut))
 app.add_handler(CommandHandler("ipucu", ipucu_komut))
 app.add_handler(CommandHandler([
-    "stats", "istatistik", "active", "inactive", "gas", "ca", "scam",
+    "stats", "active", "inactive", "gas", "ca", "scam",
     "approve", "unapprove", "approved", "whitelist", "unwhitelist",
-    "blacklist", "unblacklist", "blocklist", "nightmode", "slowmode",
+    "blacklist", "unblacklist", "blocklist", "nightmode",
     "captcha", "antiflood", "connect", "disconnect", "repeat", "unrepeat",
-    "filterlist", "notes", "cleanservice", "cleancommand",
+    "filterlist",
 ], ekstra_komut))
 app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
 app.add_handler(CallbackQueryHandler(panel_buton, pattern=r"^pn:"))
