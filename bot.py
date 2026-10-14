@@ -30,23 +30,31 @@ def keep_alive():
     HTTPServer(("0.0.0.0", port), _Ping).serve_forever()
 
 def _self_ping():
-    """Render free tier uyumasın diye kendini periyodik uyandır."""
+    """Render free: DIS URL'e ping (localhost uyandirmaz). 3 dk'da bir."""
     import urllib.request
     port = int(os.environ.get("PORT", 8080))
-    urls = []
-    ext = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-    if ext:
-        if not ext.startswith("http"):
-            ext = "https://" + ext
-        urls.append(ext.rstrip("/") + "/")
-    urls.append(f"http://127.0.0.1:{port}/")
+    time.sleep(15)  # server ayaga kalksin
     while True:
-        time.sleep(240)  # 4 dakikada bir
+        urls = []
+        for key in ("RENDER_EXTERNAL_URL", "KEEP_ALIVE_URL", "APP_URL"):
+            ext = (os.environ.get(key) or "").strip()
+            if ext:
+                if not ext.startswith("http"):
+                    ext = "https://" + ext
+                urls.append(ext.rstrip("/") + "/")
+        host = (os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip()
+        if host:
+            urls.append("https://" + host.rstrip("/") + "/")
+        # ayni surecte local de dene (zararsiz)
+        urls.append(f"http://127.0.0.1:{port}/")
         for u in urls:
             try:
-                urllib.request.urlopen(u, timeout=10)
-            except Exception:
-                pass
+                urllib.request.urlopen(u, timeout=15)
+                log.info(f"keep-alive OK: {u}")
+                break
+            except Exception as e:
+                log.warning(f"keep-alive fail {u}: {e}")
+        time.sleep(180)  # 3 dakika
 
 threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=_self_ping, daemon=True).start()
@@ -4108,7 +4116,7 @@ app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
 app.add_handler(CallbackQueryHandler(panel_buton, pattern=r"^pn:"))
 app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, sabitlendi))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
-app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBERS, ayrildi))
+app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
 # AI: sadece metinde "yapay" geçince (mesaj() içinde cagrildi)
 app.add_handler(MessageHandler(
     (filters.TEXT | filters.CAPTION) & (~filters.COMMAND) & filters.UpdateType.MESSAGE, mesaj
