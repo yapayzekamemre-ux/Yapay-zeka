@@ -134,7 +134,7 @@ if not durum["son"]:
     durum["son"] = time.time()
 
 VARS = {
-    "ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": False,
+    "ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": True,
     "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
     "hosgeldin_metin": (
         "⛔ {ad} Hoşgeldiniz\n"
@@ -1245,8 +1245,9 @@ async def baslat(app):
             if isinstance(ay, dict) and ay.get("otopin"):
                 ay["otopin"] = False
         durum["ayar"].setdefault(GLOBAL_AYAR, {})["otopin"] = False
+        durum["ayar"].setdefault(GLOBAL_AYAR, {})["adminizin"] = True
         durum_kaydet()
-        log.info("Link kilidi aktif; otopin KAPALI")
+        log.info("Link kilidi aktif; otopin KAPALI; adminizin AÇIK")
     except Exception as e:
         log.warning(f"Kilit ayarı: {e}")
     app.bot_data["ipucu"] = asyncio.create_task(ipucu_dongusu(app))
@@ -2315,11 +2316,22 @@ async def yonet_komut(update, ctx):
                 return None
             if getattr(m, "forward_from_chat", None) is not None:
                 return m.forward_from_chat.id
-            if getattr(m, "sender_chat", None) is not None and getattr(m.sender_chat, "type", "") in ("channel", "supergroup"):
+            if getattr(m, "sender_chat", None) is not None and getattr(m.sender_chat, "type", "") in ("channel", "supergroup", "group"):
                 return m.sender_chat.id
             fo = getattr(m, "forward_origin", None)
             if fo is not None:
                 ch = getattr(fo, "chat", None)
+                if ch is not None:
+                    return ch.id
+                # MessageOriginChannel / Chat
+                for attr in ("sender_chat", "chat"):
+                    ch = getattr(fo, attr, None)
+                    if ch is not None and getattr(ch, "id", None):
+                        return ch.id
+            # harici yanıt (bazı istemciler)
+            er = getattr(m, "external_reply", None)
+            if er is not None:
+                ch = getattr(er, "chat", None)
                 if ch is not None:
                     return ch.id
             return None
