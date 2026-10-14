@@ -2113,6 +2113,10 @@ async def yonet_komut(update, ctx):
         if not sahip_mi(update.effective_user):
             return
     elif not await yetkili_mi(ctx, cid, update.effective_user.id):
+        try:
+            await msg.reply_text("Bu komut için yönetici / sahip olmalısın.", do_quote=False)
+        except Exception:
+            pass
         return
     p = msg.text.split(None, 2)
     ad = p[0][1:].split("@")[0].lower()
@@ -2130,6 +2134,19 @@ async def yonet_komut(update, ctx):
             await de("Flood: " + ("kapalı" if int(a1) == 0 else f"10 sn'de {a1} mesaj") + (" (tüm gruplar)" if chat.type == "private" else ""))
         else:
             await de("Örnek: /flood 6 (0 = kapalı)")
+    elif ad == "newbies":
+        dk = int(a1) if a1.isdigit() else 0
+        dk = max(0, min(dk, 1440))
+        grup_ayari_uygula(cid, "newbies_dk", dk, chat.type == "private")
+        yer = " (tüm gruplar)" if chat.type == "private" else ""
+        await de((f"🆕 Yeni üyeler {dk} dk susturulacak." if dk else "🆕 Newbies kapalı.") + yer)
+    elif ad == "slowmode":
+        sn = int(a1) if a1.isdigit() else 0
+        sn = max(0, min(sn, 600))
+        grup_ayari_uygula(cid, "slowmode", sn, chat.type == "private")
+        yer = " (tüm gruplar)" if chat.type == "private" else ""
+        await de(f"⏱ Slowmode: {sn} sn" + (" (kapalı)" if sn == 0 else "") + yer)
+
     elif ad in ("uyarilimit", "warnlimit"):
         if a1.isdigit() and 1 <= int(a1) <= 20:
             grup_ayari_uygula(cid, "warn_limit", int(a1), chat.type == "private")
@@ -2324,9 +2341,11 @@ async def yonet_komut(update, ctx):
         if not hedef:
             await de(
                 "Rapor kanalı ayarlamak için:\n"
-                "1) Kanalından bir mesajı gruba ilet\n"
-                "2) O iletilmiş mesaja yanıt verip yaz: /setlog\n\n"
-                "veya kanalın @kullaniciadi varsa: /setlog @kanaladi"
+                "1) Botu RAPOR grubuna ekle ve YÖNETİCİ yap\n"
+                "2) Rapor grubundan bir mesajı bu gruba İLET\n"
+                "3) O iletilmiş mesaja YANIT verip yaz: /setlog\n\n"
+                "veya @kullaniciadi varsa: /setlog @adi\n"
+                "Davet linki (t.me/+) ÇALIŞMAZ."
             )
             return
         cset(cid, "log_kanal", hedef)
@@ -2683,6 +2702,19 @@ async def genel_komut(update, ctx):
     elif ad == "istatistik":
         k = uyeler.get(scid, {})
         await msg.reply_text(f"📊 Tanıdığım üye: {len(k)}\n💬 Toplam mesaj: {sum(u['mesaj'] for u in k.values())}")
+    elif ad in ("adminlist", "admins", "yoneticiler"):
+        try:
+            ads = await ctx.bot.get_chat_administrators(cid)
+            satir = ["👮 Yöneticiler:"]
+            for a in ads:
+                u = a.user
+                if u.is_bot:
+                    continue
+                un = f"@{u.username}" if u.username else u.full_name
+                satir.append(f"• {html.escape(un)} (<code>{u.id}</code>)")
+            await msg.reply_text(chr(10).join(satir), parse_mode="HTML")
+        except Exception as e:
+            await msg.reply_text(f"Liste alınamadı: {e}")
     elif ad in ("rapor", "report"):
         await rapor_gonder(update, ctx)
 
@@ -4116,8 +4148,8 @@ app.add_handler(CommandHandler("fiyat", fiyat_komut))
 app.add_handler(CommandHandler("ipucu", ipucu_komut))
 app.add_handler(CommandHandler([
     "stats", "active", "inactive", "gas", "ca", "scam",
-    "approve", "unapprove", "approved", "whitelist", "unwhitelist",
-    "blacklist", "unblacklist", "blocklist", "nightmode",
+    "approve", "unapprove", "approved", "unapproved", "whitelist", "unwhitelist",
+    "blacklist", "unblacklist", "blocklist", "nightmode", "newbies", "slowmode",
     "captcha", "antiflood", "connect", "disconnect", "repeat", "unrepeat",
     "filterlist",
 ], ekstra_komut))
