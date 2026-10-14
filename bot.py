@@ -3086,7 +3086,16 @@ async def mesaj(update, ctx):
         # Grupta / tartışmada: metinde "yapay" veya @bot geçince (anonim/grup imzası fark etmez)
         bot_un = (ctx.bot.username or "").lower()
         met_k = kucult(metin)
-        cagrildi = "yapay" in met_k or (bot_un and f"@{bot_un}" in met_k)
+        # Bota yanıt (reply) → yapay yazmadan da konuş
+        rt = msg.reply_to_message
+        bota_yanit = bool(
+            rt and rt.from_user and rt.from_user.id == ctx.bot.id
+        )
+        cagrildi = (
+            "yapay" in met_k
+            or (bot_un and f"@{bot_un}" in met_k)
+            or bota_yanit
+        )
         for e in (getattr(msg, "entities", None) or []):
             et = getattr(e, "type", None)
             if et == "mention" and bot_un and bot_un in kucult(metin):
