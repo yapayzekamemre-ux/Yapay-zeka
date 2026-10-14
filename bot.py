@@ -99,7 +99,7 @@ if not durum["son"]:
     durum["son"] = time.time()
 
 VARS = {
-    "ai": True, "ipucu": False, "hosgeldin": False, "captcha": False, "adminizin": True,
+    "ai": True, "ipucu": True, "hosgeldin": True, "captcha": False, "adminizin": True,
     "kilit": ["link"], "flood": 6, "warn_limit": 3, "warn_eylem": "mute",
     "hosgeldin_metin": (
         "⛔ {ad} Hoşgeldiniz\n"
@@ -455,7 +455,7 @@ def sor(mesajlar, ek="", arama=False):
 NIYET_SISTEM = (
     "Telegram grup botu için niyet anlama motorusun. Kullanıcının Türkçe, yazım hatalı, kısaltmalı ya da argo "
     "olabilecek mesajını oku, SADECE geçerli JSON döndür, başka hiçbir açıklama, giriş cümlesi yazma.\n"
-    "action alani her zaman 'yok' olmali. Ban/mute/kick YAPMA. "
+    "action alanı şunlardan biri olmalı: ban, unban, kick, mute, unmute, warn, sil, pin, unpin, duy, "
     "talimat, talimat_sil, talimat_liste, ayar, hosgeldin_metin, kural_metin, yok.\n"
     "Anlamlar: ban=kalıcı yasakla, unban=yasağı kaldır, kick=gruptan at ama yasaklama, mute=belirli süre sustur, "
     "unmute=susturmayı kaldır, warn=uyarı ver, sil=yanıtlanan mesajı sil, pin=yanıtlanan mesajı sabitle, "
@@ -1235,7 +1235,7 @@ async def komut(update, ctx, metin):
         tl = durum["talimat"]
         await de(("📋 Talimatlar:\n" + "\n".join(f"{i}. {x['t']}" for i, x in enumerate(tl, 1))) if tl else "Henüz talimat yok.")
         return True
-    if False and eylem in ("hosgeldin_metin", "kural_metin"):  # kaldirildi
+    if eylem in ("hosgeldin_metin", "kural_metin"):
         s = niyet_metin or (metin.split(":", 1)[1].strip() if ":" in metin else "")
         if not s:
             await de("Metni belirtmen lazım, örnek: 'yapay hoşgeldin mesajını şöyle yap: ...'")
@@ -1265,7 +1265,7 @@ async def komut(update, ctx, metin):
         return adresli
     m = ""
     hid = None
-    if False and eylem in ("ban", "unban", "kick", "mute", "unmute", "warn"):  # kaldirildi
+    if eylem in ("ban", "unban", "kick", "mute", "unmute", "warn"):
         hid, hadi = hedef_coz(msg, cid, t)
         if not hid:
             if adresli:
@@ -1613,7 +1613,7 @@ async def mesaj(update, ctx):
 
     # sadece AI
 
-    if False and not ozel and "yapay" in kucult(metin) and "ceza" in kucult(metin):
+    if not ozel and "yapay" in kucult(metin) and "ceza" in kucult(metin):
         hedef_user = None
         if msg.reply_to_message and msg.reply_to_message.from_user:
             hedef_user = msg.reply_to_message.from_user
@@ -1669,10 +1669,10 @@ async def mesaj(update, ctx):
         elif spam:
             ad = "spam"
         if ad and user is not None and not await muaf_mi(ctx, cid, user.id):
-            return  # ihlal/mod kaldirildi
+            await ihlal(update, ctx, ad, True)  # ihlal mesajı silinsin
             return
         if "@admin" in kucult(metin):
-            return  # rapor kaldirildi
+            await rapor_gonder(update, ctx)
             return
         if metin.startswith("#") and len(metin) > 1:
             parca = metin[1:].split()
@@ -1689,8 +1689,8 @@ async def mesaj(update, ctx):
                 continue
             if kw_ in kelimeler or kw_ in met_k:
                 # sağdaki örnek gibi: mesaja yanıt olarak gönder
-                pass  # filtre kaldirildi
-                # return
+                await msg.reply_text(cev, do_quote=True)
+                return
         if kt and await fiyat_gonder(update, ctx, kt[1], kt[0], False):
             return
         # Grupta / tartışmada: metinde "yapay" veya @bot geçince (anonim/grup imzası fark etmez)
@@ -1714,7 +1714,7 @@ async def mesaj(update, ctx):
                 cagrildi = True
         if (cagrildi or len(kelimeler) <= 3) and set(kelimeler) & LISTE_KISA:
             gun, baslik = liste_gun(kelimeler)
-            pass  # arsiv kaldirildi
+            await arsiv_gonder(update, ctx, gun, baslik)
             return
         if not cagrildi:
             return
@@ -1920,10 +1920,12 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
 
 # HIC KOMUT YOK — sadece AI sohbet + giris/cikis
 app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
+app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
+app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
 app.add_handler(MessageHandler(
     (filters.TEXT | filters.CAPTION) & (~filters.COMMAND) & filters.UpdateType.MESSAGE, mesaj
 ))
 
 app.add_error_handler(hata)
-log.info("Bot basliyor (sadece AI + fiyat)...")
+log.info("Bot basliyor (sadece AI, komut yok)...")
 app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
