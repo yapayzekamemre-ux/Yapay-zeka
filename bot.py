@@ -52,6 +52,21 @@ SAHIP_KULLANICI = (
 
 TR = timezone(timedelta(hours=3))
 
+# Hazir egitici / uyari mesajlari (arkadas botu tarzi)
+DEFAULT_IPUCU = [
+    "💡 <b>Yatırım sistemleri risklidir.</b>\nÖn satışlar ya da ödeme yaparak katıldığınız airdroplar her zaman kazanç sağlamayabilir. Bu bilinçte katılım sağlayın.",
+    "💡 <b>Vote escrow nedir?</b>\nTokenlerin uzun süre kilitlenmesi karşılığında oy ağırlığının arttığı ve uzun vadeli bağlılığı ödüllendiren mekanizmadır.",
+    "💡 <b>DYOR</b> — Do Your Own Research.\nBir projeye girmeden whitepaper, ekip, tokenomics ve kontrat adresini kontrol et.",
+    "💡 <b>Seed phrase / private key</b> asla kimseyle paylaşma. Destek ekibi diye yazanlar dolandırıcı olabilir.",
+    "💡 <b>Rugpull:</b> Likiditenin çekilip projenin terk edilmesi. Audit ve kilitli likiditeye bak.",
+    "💡 <b>Airdrop avcılığı:</b> Birden fazla cüzdan = ban riski. Kuralları oku, Sybil kontrolüne dikkat.",
+    "💡 <b>Slippage</b> yüksek pairlerde alım satımda fiyat kayması yaşanır. Büyük işlemde parçala.",
+    "💡 <b>Phishing:</b> Sahte siteler seed ister. Adresi her zaman resmi kaynaktan kopyala.",
+    "💡 <b>Gas wage:</b> Yoğun saatlerde ücret artar. Acil değilse sakin saatleri bekle.",
+    "💡 <b>FOMO</b> ile alım çoğu zaman zarardır. Planın yoksa işlem açma.",
+]
+
+
 
 # ---------- keep-alive ----------
 class _Ping(BaseHTTPRequestHandler):
@@ -187,6 +202,10 @@ DEFAULT_G = {
     "duyuru_aktif": False,
     "duyuru_saat": 2,
     "duyuru_posts": [],
+    "ipucu_aktif": False,
+    "ipucu_saat": 3,
+    "ipucu_last": 0,
+    "ipucu_liste": [],
 }
 
 
@@ -583,6 +602,7 @@ def panel_kb(cid):
             ],
             [
                 InlineKeyboardButton(f"📢 Duyuru {_ok(cget(cid,'duyuru_aktif'))}", callback_data="p:duyuru"),
+                InlineKeyboardButton(f"💡 İpucu {_ok(cget(cid,'ipucu_aktif'))}", callback_data="p:ipucu"),
             ],
             [
                 InlineKeyboardButton("🚫 Disabling", callback_data="p:disable"),
@@ -971,6 +991,42 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data in ("duys1", "duys2", "duys3"):
         cset(cid, "duyuru_saat", int(data[-1]))
+        await yenile()
+        return
+
+
+    if data == "ipucu":
+        aktif = bool(cget(cid, "ipucu_aktif"))
+        saat = int(cget(cid, "ipucu_saat") or 3)
+        ozel = cget(cid, "ipucu_liste") or []
+        await q.edit_message_text(
+            f"💡 <b>Otomatik ipucu / bilgi</b>\n"
+            f"Durum: {_ok(aktif)}\n"
+            f"Aralık: her {saat} saat\n"
+            f"Özel mesaj: {len(ozel)} adet\n\n"
+            f"<code>/ipucuac</code> · <code>/ipucukapat</code>\n"
+            f"<code>/ipucusaat 3</code>\n"
+            f"<code>/ipucuekle metin</code>\n"
+            f"<code>/ipucu</code> — şimdi bir tane gönder\n"
+            f"<code>/ipucutemizle</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Aktif {_ok(aktif)}", callback_data="p:ipucu_tog")],
+                [
+                    InlineKeyboardButton("2s", callback_data="p:ips2"),
+                    InlineKeyboardButton("3s", callback_data="p:ips3"),
+                    InlineKeyboardButton("6s", callback_data="p:ips6"),
+                ],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]),
+        )
+        return
+    if data == "ipucu_tog":
+        cset(cid, "ipucu_aktif", not bool(cget(cid, "ipucu_aktif")))
+        await yenile()
+        return
+    if data in ("ips2", "ips3", "ips6"):
+        cset(cid, "ipucu_saat", int(data[3:]))
         await yenile()
         return
 
@@ -2029,25 +2085,119 @@ async def duyurusaat_komut(update, context):
 
 
 async def duyuru_periyodik(context: ContextTypes.DEFAULT_TYPE):
-    """JobQueue: aktif gruplara bugunku listeyi at."""
+    """JobQueue: duyuru listesi + ipucu."""
     bot = context.bot
     now = time.time()
     for gid_s, conf in list((durum.get("grup") or {}).items()):
-        if not isinstance(conf, dict) or not conf.get("duyuru_aktif"):
-            continue
-        if not conf.get("duyuru_kanal"):
-            continue
-        saat = int(conf.get("duyuru_saat") or 2)
-        last = float(conf.get("duyuru_last") or 0)
-        if now - last < saat * 3600 - 30:
+        if not isinstance(conf, dict):
             continue
         try:
             gid = int(gid_s)
-            await duyuru_gonder_grup(bot, gid)
-            conf["duyuru_last"] = now
-            durum_kaydet()
-        except Exception as e:
-            log.warning("duyuru job %s: %s", gid_s, e)
+        except Exception:
+            continue
+        # duyuru listesi
+        if conf.get("duyuru_aktif") and conf.get("duyuru_kanal"):
+            saat = int(conf.get("duyuru_saat") or 2)
+            last = float(conf.get("duyuru_last") or 0)
+            if now - last >= saat * 3600 - 30:
+                try:
+                    await duyuru_gonder_grup(bot, gid)
+                    conf["duyuru_last"] = now
+                    durum_kaydet()
+                except Exception as e:
+                    log.warning("duyuru job %s: %s", gid_s, e)
+        # ipucu
+        if conf.get("ipucu_aktif"):
+            saat = int(conf.get("ipucu_saat") or 3)
+            last = float(conf.get("ipucu_last") or 0)
+            if now - last >= saat * 3600 - 30:
+                try:
+                    await ipucu_gonder_grup(bot, gid)
+                    conf["ipucu_last"] = now
+                    durum_kaydet()
+                except Exception as e:
+                    log.warning("ipucu job %s: %s", gid_s, e)
+
+
+
+def _ipucu_havuz(chat_id):
+    ozel = list(cget(chat_id, "ipucu_liste") or [])
+    return ozel + list(DEFAULT_IPUCU)
+
+
+async def ipucu_gonder_grup(bot, chat_id):
+    import random
+    havuz = _ipucu_havuz(chat_id)
+    if not havuz:
+        return
+    text = random.choice(havuz)
+    try:
+        await bot.send_message(chat_id, text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        log.warning("ipucu: %s", e)
+
+
+async def ipucu_komut(update, context):
+    g = await _mod_giris(update, context, "ipucu")
+    if not g:
+        return
+    _, chat, _ = g
+    await ipucu_gonder_grup(context.bot, chat.id)
+
+
+async def ipucuac_komut(update, context):
+    g = await _mod_giris(update, context, "ipucuac")
+    if not g:
+        return
+    _, chat, _ = g
+    cset(chat.id, "ipucu_aktif", True)
+    await kisa_cevap(context.bot, chat.id, "💡 Otomatik ipucu açıldı.")
+
+
+async def ipucukapat_komut(update, context):
+    g = await _mod_giris(update, context, "ipucukapat")
+    if not g:
+        return
+    _, chat, _ = g
+    cset(chat.id, "ipucu_aktif", False)
+    await kisa_cevap(context.bot, chat.id, "💡 Otomatik ipucu kapatıldı.")
+
+
+async def ipucusaat_komut(update, context):
+    g = await _mod_giris(update, context, "ipucusaat")
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args or not context.args[0].isdigit():
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/ipucusaat 3</code>")
+        return
+    s = max(1, min(int(context.args[0]), 24))
+    cset(chat.id, "ipucu_saat", s)
+    await kisa_cevap(context.bot, chat.id, f"✅ Her {s} saatte bir ipucu.")
+
+
+async def ipucuekle_komut(update, context):
+    g = await _mod_giris(update, context, "ipucuekle")
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/ipucuekle metin...</code>")
+        return
+    metin = " ".join(context.args)
+    lst = list(cget(chat.id, "ipucu_liste") or [])
+    lst.append("💡 " + metin)
+    cset(chat.id, "ipucu_liste", lst[-50:])
+    await kisa_cevap(context.bot, chat.id, f"✅ İpucu eklendi ({len(lst)} adet).")
+
+
+async def ipucutemizle_komut(update, context):
+    g = await _mod_giris(update, context, "ipucutemizle")
+    if not g:
+        return
+    _, chat, _ = g
+    cset(chat.id, "ipucu_liste", [])
+    await kisa_cevap(context.bot, chat.id, "✅ Özel ipuçları silindi (varsayılanlar durur).")
 
 
 async def rules_komut(update, context):
@@ -2530,6 +2680,12 @@ def main():
     app.add_handler(CommandHandler("duyuruac", duyuruac_komut))
     app.add_handler(CommandHandler("duyurukapat", duyurukapat_komut))
     app.add_handler(CommandHandler("duyurusaat", duyurusaat_komut))
+    app.add_handler(CommandHandler("ipucu", ipucu_komut))
+    app.add_handler(CommandHandler("ipucuac", ipucuac_komut))
+    app.add_handler(CommandHandler("ipucukapat", ipucukapat_komut))
+    app.add_handler(CommandHandler("ipucusaat", ipucusaat_komut))
+    app.add_handler(CommandHandler("ipucuekle", ipucuekle_komut))
+    app.add_handler(CommandHandler("ipucutemizle", ipucutemizle_komut))
     app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, kanal_duyuru_yakala))
     app.add_handler(
         MessageHandler(
