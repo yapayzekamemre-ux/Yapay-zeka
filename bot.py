@@ -118,12 +118,14 @@ try:
         durum = json.load(f)
 except Exception:
     durum = {}
-for _k, _v in (("sahip", None), ("talimat", []), ("grup", {})):
+for _k, _v in (("sahip", None), ("talimat", []), ("grup", {}), ("federations", {}), ("fed_bans", {})):
     durum.setdefault(_k, _v)
 
 gecmis = {}
 uyarilar = {}
 flood_buf = defaultdict(lambda: deque())  # (chat,uid) -> timestamps
+join_times = defaultdict(lambda: deque())  # chat_id -> join timestamps
+pending_captcha = {}  # (chat_id, user_id) -> True
 
 DEFAULT_G = {
     "hosgeldin": False,
@@ -163,6 +165,21 @@ DEFAULT_G = {
     "engel_bot": True,
     "engel_kanal": False,
     "mesaj_max": 0,
+    # Rose tarzi ekler
+    "captcha": False,
+    "approval": False,
+    "clean_cmd": True,
+    "antiraid": False,
+    "antiraid_adet": 5,
+    "antiraid_sn": 10,
+    "blocklist": [],
+    "notes": {},
+    "filters": {},
+    "captcha_math": True,
+    "purge_limit": 50,
+    "auto_pin_welcome": False,
+    "fed_id": None,
+    "topic_mode": False,
 }
 
 
@@ -488,35 +505,56 @@ async def fiyat_gonder(update, miktar, sembol):
 
 # ---------- panel ----------
 def panel_kb(cid):
+    """Rose tarzi ana panel — tum dugmeler islevsel."""
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(f"👋 Hoş Geldin {_ok(cget(cid,'hosgeldin'))}", callback_data="p:hg"),
-                InlineKeyboardButton(f"👋 Hoşçakal {_ok(cget(cid,'hoscaakal'))}", callback_data="p:hc"),
+                InlineKeyboardButton(f"👋 Greetings {_ok(cget(cid,'hosgeldin') or cget(cid,'hoscaakal'))}", callback_data="p:greet"),
+                InlineKeyboardButton(f"🌊 Antiflood {_ok(cget(cid,'flood'))}", callback_data="p:flood"),
             ],
             [
-                InlineKeyboardButton("📜 Kurallar", callback_data="p:kurallar"),
-                InlineKeyboardButton("⚠ Uyarılar", callback_data="p:uyari"),
+                InlineKeyboardButton(f"🛡 AntiRaid {_ok(cget(cid,'antiraid'))}", callback_data="p:antiraid"),
+                InlineKeyboardButton(f"✅ Approval {_ok(cget(cid,'approval'))}", callback_data="p:approval"),
             ],
             [
-                InlineKeyboardButton(f"📷 Medya {_ok(cget(cid,'medya_engel'))}", callback_data="p:medya"),
-                InlineKeyboardButton(f"🔗 Link {_ok(cget(cid,'link_engel'))}", callback_data="p:link"),
+                InlineKeyboardButton(f"🔐 CAPTCHA {_ok(cget(cid,'captcha'))}", callback_data="p:captcha"),
+                InlineKeyboardButton(f"🧹 Clean Cmd {_ok(cget(cid,'clean_cmd'))}", callback_data="p:cleancmd"),
             ],
             [
-                InlineKeyboardButton(f"🧹 Servis sil {_ok(cget(cid,'servis_sil'))}", callback_data="p:servis"),
+                InlineKeyboardButton(f"🧹 Clean Service {_ok(cget(cid,'servis_sil'))}", callback_data="p:servis"),
+                InlineKeyboardButton(f"🔒 Locks", callback_data="p:locks"),
+            ],
+            [
+                InlineKeyboardButton("🚫 Blocklists", callback_data="p:blocklist"),
+                InlineKeyboardButton("⚠ Warns", callback_data="p:uyari"),
+            ],
+            [
+                InlineKeyboardButton("📜 Rules", callback_data="p:kurallar"),
                 InlineKeyboardButton(f"📋 Log {_ok(bool(cget(cid,'log_kanal')))}", callback_data="p:log"),
             ],
             [
-                InlineKeyboardButton(f"🌊 Flood {_ok(cget(cid,'flood'))}", callback_data="p:flood"),
-                InlineKeyboardButton(f"🌙 Gece {_ok(cget(cid,'gece'))}", callback_data="p:gece"),
+                InlineKeyboardButton(f"🌙 Night {_ok(cget(cid,'gece'))}", callback_data="p:gece"),
+                InlineKeyboardButton(f"🔇 Silence {_ok(cget(cid,'sessizlik'))}", callback_data="p:sessiz"),
             ],
             [
-                InlineKeyboardButton(f"🔇 Sessizlik {_ok(cget(cid,'sessizlik'))}", callback_data="p:sessiz"),
-                InlineKeyboardButton("🚫 Engellemeler", callback_data="p:engel"),
+                InlineKeyboardButton("📝 Notes", callback_data="p:notes"),
+                InlineKeyboardButton("📏 Msg length", callback_data="p:uzun"),
             ],
             [
-                InlineKeyboardButton("📏 Mesaj uzunluğu", callback_data="p:uzun"),
-                InlineKeyboardButton("🔧 Mute/Ban yardım", callback_data="p:yardim"),
+                InlineKeyboardButton("🔧 Commands", callback_data="p:yardim"),
+                InlineKeyboardButton("🚫 Bot block", callback_data="p:engel"),
+            ],
+            [
+                InlineKeyboardButton("🔤 Filters", callback_data="p:filters"),
+                InlineKeyboardButton("📌 Pin", callback_data="p:pin"),
+            ],
+            [
+                InlineKeyboardButton("🗑 Purges", callback_data="p:purges"),
+                InlineKeyboardButton("🌐 Federation", callback_data="p:fed"),
+            ],
+            [
+                InlineKeyboardButton("📦 Import/Export", callback_data="p:imex"),
+                InlineKeyboardButton("💬 Topics", callback_data="p:topics"),
             ],
             [InlineKeyboardButton("🔒 Kapat", callback_data="p:kapat")],
         ]
@@ -584,6 +622,42 @@ async def ayarlar_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+async def captcha_buton(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data or not q.data.startswith("cap:"):
+        return
+    parts = q.data.split(":")
+    try:
+        cid, uid = int(parts[1]), int(parts[2])
+        ans = parts[3] if len(parts) > 3 else "ok"
+    except Exception:
+        await q.answer()
+        return
+    if q.from_user.id != uid:
+        await q.answer("Bu buton sana ait değil.", show_alert=True)
+        return
+    expected = pending_captcha.get((cid, uid))
+    if expected is True or expected is None:
+        ok = ans in ("ok",) or ans.isdigit()
+    else:
+        ok = ans.isdigit() and int(ans) == int(expected)
+    if not ok:
+        await q.answer("Yanlış cevap!", show_alert=True)
+        return
+    await q.answer()
+    pending_captcha.pop((cid, uid), None)
+    try:
+        await context.bot.restrict_chat_member(cid, uid, permissions=FULL_PERMS)
+    except Exception as e:
+        log.warning("captcha unmute: %s", e)
+    try:
+        await q.edit_message_text("✅ Doğrulandı, yazabilirsin.")
+        asyncio.create_task(sil_sonra(context.bot, cid, q.message.message_id, 5))
+    except Exception:
+        pass
+
+
 async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data or not q.data.startswith("p:"):
@@ -648,6 +722,146 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "sessiz":
         cset(cid, "sessizlik", not bool(cget(cid, "sessizlik")))
+        await yenile()
+        return
+    if data == "captcha":
+        cset(cid, "captcha", not bool(cget(cid, "captcha")))
+        await yenile()
+        return
+    if data == "approval":
+        cset(cid, "approval", not bool(cget(cid, "approval")))
+        await yenile()
+        return
+    if data == "cleancmd":
+        cset(cid, "clean_cmd", not bool(cget(cid, "clean_cmd")))
+        await yenile()
+        return
+    if data == "antiraid":
+        cset(cid, "antiraid", not bool(cget(cid, "antiraid")))
+        await yenile()
+        return
+    if data == "greet":
+        await q.edit_message_text(
+            f"👋 <b>Greetings</b>\n"
+            f"Hoş geldin: {_ok(cget(cid,'hosgeldin'))}\n"
+            f"Hoşça kal: {_ok(cget(cid,'hoscaakal'))}\n\n"
+            f"/setwelcome metin — karşılama ({{ad}})",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Hoş Geldin {_ok(cget(cid,'hosgeldin'))}", callback_data="p:hg"),
+                 InlineKeyboardButton(f"Hoşçakal {_ok(cget(cid,'hoscaakal'))}", callback_data="p:hc")],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]),
+        )
+        return
+    if data == "locks":
+        await q.edit_message_text(
+            f"🔒 <b>Locks</b>\n"
+            f"Medya: {_ok(cget(cid,'medya_engel'))}\n"
+            f"Link: {_ok(cget(cid,'link_engel'))}\n",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Medya {_ok(cget(cid,'medya_engel'))}", callback_data="p:medya"),
+                 InlineKeyboardButton(f"Link {_ok(cget(cid,'link_engel'))}", callback_data="p:link")],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]),
+        )
+        return
+    if data == "blocklist":
+        bl = cget(cid, "blocklist") or []
+        await q.edit_message_text(
+            f"🚫 <b>Blocklists</b>\n"
+            f"Kelimeler: {', '.join(bl) if bl else 'yok'}\n\n"
+            f"Ekle: <code>/block kelime</code>\n"
+            f"Temizle: <code>/blockclear</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+    if data == "notes":
+        notes = cget(cid, "notes") or {}
+        keys = ", ".join(list(notes.keys())[:15]) or "yok"
+        await q.edit_message_text(
+            f"📝 <b>Notes</b>\nKayıtlı: {html.escape(keys)}\n\n"
+            f"Kaydet: <code>/save isim metin</code>\n"
+            f"Getir: <code>/get isim</code> veya <code>#isim</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+
+
+    if data == "filters":
+        fl = cget(cid, "filters") or {}
+        keys = ", ".join(list(fl.keys())[:12]) or "yok"
+        await q.edit_message_text(
+            f"🔤 <b>Filters</b>\nKayıtlı: {html.escape(keys)}\n\n"
+            f"Ekle: <code>/filter kelime cevap</code>\n"
+            f"Sil: <code>/stop kelime</code>\n"
+            f"Liste: <code>/filters</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+    if data == "pin":
+        await q.edit_message_text(
+            f"📌 <b>Pin</b>\n"
+            f"Mesaja yanıtla: <code>/pin</code>\n"
+            f"Sabiti kaldır: <code>/unpin</code>\n"
+            f"Tüm sabitleri kaldır: <code>/unpinall</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+    if data == "purges":
+        await q.edit_message_text(
+            f"🗑 <b>Purges</b>\n"
+            f"<code>/purge</code> — yanıttan buraya kadar sil\n"
+            f"<code>/del</code> — yanıtlanan mesajı sil\n"
+            f"<code>/purge 20</code> — son 20 mesajı sil (max 100)",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+    if data == "fed":
+        fid = cget(cid, "fed_id")
+        await q.edit_message_text(
+            f"🌐 <b>Federation</b>\n"
+            f"Fed ID: <code>{fid or 'yok'}</code>\n\n"
+            f"<code>/newfed isim</code> — fed oluştur\n"
+            f"<code>/joinfed FED_ID</code> — gruba bağla\n"
+            f"<code>/leavefed</code> — ayrıl\n"
+            f"<code>/fban @user sebep</code> — fed ban\n"
+            f"<code>/funban @user</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+    if data == "imex":
+        await q.edit_message_text(
+            f"📦 <b>Import / Export</b>\n"
+            f"<code>/export</code> — ayarları JSON olarak gönder\n"
+            f"<code>/import</code> — JSON dosyasına yanıtla içe aktar",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+    if data == "topics":
+        tm = bool(cget(cid, "topic_mode"))
+        await q.edit_message_text(
+            f"💬 <b>Topics</b>\n"
+            f"Mod: {_ok(tm)}\n\n"
+            f"Forum gruplarında uyarı/log mesajları genel konuya gider.\n"
+            f"Aç/kapa için aşağıdaki buton.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Topic mode {_ok(tm)}", callback_data="p:topic_tog")],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]),
+        )
+        return
+    if data == "topic_tog":
+        cset(cid, "topic_mode", not bool(cget(cid, "topic_mode")))
         await yenile()
         return
 
@@ -1095,6 +1309,339 @@ async def izinlink_komut(update, context):
     await kisa_cevap(context.bot, chat.id, f"✅ İzinli: {', '.join(lst)}")
 
 
+
+async def block_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/block kelime</code>")
+        return
+    lst = list(cget(chat.id, "blocklist") or [])
+    for a in context.args:
+        a = a.lower().strip()
+        if a and a not in lst:
+            lst.append(a)
+    cset(chat.id, "blocklist", lst)
+    await kisa_cevap(context.bot, chat.id, f"✅ Block: {', '.join(lst)}")
+
+
+async def blockclear_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    cset(chat.id, "blocklist", [])
+    await kisa_cevap(context.bot, chat.id, "✅ Blocklist temiz.")
+
+
+async def save_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    if len(context.args or []) < 2:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/save isim metin</code>")
+        return
+    isim = context.args[0].lower().lstrip("#")
+    metin = " ".join(context.args[1:])
+    notes = dict(cget(chat.id, "notes") or {})
+    notes[isim] = metin
+    cset(chat.id, "notes", notes)
+    await kisa_cevap(context.bot, chat.id, f"✅ Not kaydedildi: #{isim}")
+
+
+async def get_komut(update, context):
+    msg, chat = update.effective_message, update.effective_chat
+    if not msg or not chat or chat.type == ChatType.PRIVATE:
+        return
+    await komut_sil(msg, context.bot)
+    if not context.args:
+        return
+    isim = context.args[0].lower().lstrip("#")
+    notes = cget(chat.id, "notes") or {}
+    if isim in notes:
+        await context.bot.send_message(chat.id, notes[isim])
+
+
+
+async def pin_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    msg, chat, _ = g
+    target = msg.reply_to_message
+    if not target:
+        await kisa_cevap(context.bot, chat.id, "Bir mesaja yanıtla: <code>/pin</code>")
+        return
+    try:
+        await context.bot.pin_chat_message(chat.id, target.message_id, disable_notification=True)
+        await kisa_cevap(context.bot, chat.id, "📌 Sabitlendi.")
+    except Exception as e:
+        await kisa_cevap(context.bot, chat.id, f"❌ {html.escape(str(e))}")
+
+
+async def unpin_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    msg, chat, _ = g
+    try:
+        if msg.reply_to_message:
+            await context.bot.unpin_chat_message(chat.id, msg.reply_to_message.message_id)
+        else:
+            await context.bot.unpin_chat_message(chat.id)
+        await kisa_cevap(context.bot, chat.id, "📌 Sabit kaldırıldı.")
+    except Exception as e:
+        await kisa_cevap(context.bot, chat.id, f"❌ {html.escape(str(e))}")
+
+
+async def unpinall_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    try:
+        await context.bot.unpin_all_chat_messages(chat.id)
+        await kisa_cevap(context.bot, chat.id, "📌 Tüm sabitler kaldırıldı.")
+    except Exception as e:
+        await kisa_cevap(context.bot, chat.id, f"❌ {html.escape(str(e))}")
+
+
+async def del_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    msg, chat, _ = g
+    if not msg.reply_to_message:
+        return
+    try:
+        await msg.reply_to_message.delete()
+    except Exception as e:
+        await kisa_cevap(context.bot, chat.id, f"❌ {html.escape(str(e))}")
+
+
+async def purge_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    msg, chat, _ = g
+    # /purge N  veya yanittan buraya
+    n = None
+    if context.args and context.args[0].isdigit():
+        n = min(int(context.args[0]), 100)
+    if msg.reply_to_message:
+        start_id = msg.reply_to_message.message_id
+        end_id = msg.message_id
+        silinen = 0
+        for mid in range(start_id, end_id + 1):
+            try:
+                await context.bot.delete_message(chat.id, mid)
+                silinen += 1
+            except Exception:
+                pass
+            if silinen >= 100:
+                break
+        await kisa_cevap(context.bot, chat.id, f"🗑 {silinen} mesaj silindi.")
+        return
+    if n:
+        # son N mesaj - telegram API tek tek, sadece bilinen id yok; reply zorunlu uyar
+        await kisa_cevap(context.bot, chat.id, "Yanıtlanan mesajdan buraya kadar silmek için mesaja yanıtla <code>/purge</code>")
+        return
+    await kisa_cevap(context.bot, chat.id, "Kullanım: mesaja yanıtla <code>/purge</code>")
+
+
+async def filter_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    if len(context.args or []) < 2:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/filter kelime cevap metni</code>")
+        return
+    kelime = context.args[0].lower()
+    cevap = " ".join(context.args[1:])
+    fl = dict(cget(chat.id, "filters") or {})
+    fl[kelime] = cevap
+    cset(chat.id, "filters", fl)
+    await kisa_cevap(context.bot, chat.id, f"✅ Filter: <code>{html.escape(kelime)}</code>")
+
+
+async def stop_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args:
+        return
+    kelime = context.args[0].lower()
+    fl = dict(cget(chat.id, "filters") or {})
+    fl.pop(kelime, None)
+    cset(chat.id, "filters", fl)
+    await kisa_cevap(context.bot, chat.id, f"✅ Filter silindi: {html.escape(kelime)}")
+
+
+async def filters_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    fl = cget(chat.id, "filters") or {}
+    if not fl:
+        await kisa_cevap(context.bot, chat.id, "Filter yok.")
+        return
+    txt = "🔤 Filters:\n" + "\n".join(f"• <code>{html.escape(k)}</code>" for k in fl)
+    await kisa_cevap(context.bot, chat.id, txt, 20)
+
+
+async def newfed_komut(update, context):
+    msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
+    if not user or not msg:
+        return
+    await komut_sil(msg, context.bot)
+    if not sahip_mi(user) and chat.type != ChatType.PRIVATE:
+        if not await admin_mi(chat.id, user, context.bot):
+            return
+    isim = " ".join(context.args) if context.args else f"Fed-{user.id}"
+    import uuid
+    fid = str(uuid.uuid4())[:8]
+    feds = durum.setdefault("federations", {})
+    feds[fid] = {"name": isim, "owner": user.id, "chats": []}
+    durum_kaydet()
+    await kisa_cevap(context.bot, chat.id if chat else user.id, f"🌐 Fed oluşturuldu\nID: <code>{fid}</code>\nİsim: {html.escape(isim)}", 20)
+
+
+async def joinfed_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, user = g
+    if not context.args:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/joinfed FED_ID</code>")
+        return
+    fid = context.args[0]
+    feds = durum.get("federations") or {}
+    if fid not in feds:
+        await kisa_cevap(context.bot, chat.id, "❌ Fed bulunamadı.")
+        return
+    if chat.id not in feds[fid]["chats"]:
+        feds[fid]["chats"].append(chat.id)
+    cset(chat.id, "fed_id", fid)
+    durum_kaydet()
+    await kisa_cevap(context.bot, chat.id, f"✅ Fed bağlandı: <code>{fid}</code>")
+
+
+async def leavefed_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    fid = cget(chat.id, "fed_id")
+    if fid and fid in (durum.get("federations") or {}):
+        chats = durum["federations"][fid].get("chats") or []
+        if chat.id in chats:
+            chats.remove(chat.id)
+    cset(chat.id, "fed_id", None)
+    durum_kaydet()
+    await kisa_cevap(context.bot, chat.id, "✅ Fed ayrıldı.")
+
+
+async def fban_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, user = g
+    hedef = await hedef_kullanici(update, context)
+    if not hedef:
+        await kisa_cevap(context.bot, chat.id, "Yanıtla veya /fban @user")
+        return
+    fid = cget(chat.id, "fed_id")
+    if not fid:
+        await kisa_cevap(context.bot, chat.id, "Önce /joinfed ile fed bağla.")
+        return
+    sebep = " ".join(context.args[1:]) if context.args and not update.effective_message.reply_to_message else (" ".join(context.args) if context.args else "fed ban")
+    bans = durum.setdefault("fed_bans", {}).setdefault(fid, {})
+    bans[str(hedef.id)] = {"by": user.id, "reason": sebep, "name": getattr(hedef, "full_name", "")}
+    durum_kaydet()
+    feds = durum.get("federations") or {}
+    chats = (feds.get(fid) or {}).get("chats") or [chat.id]
+    ok = 0
+    for gid in chats:
+        try:
+            await context.bot.ban_chat_member(gid, hedef.id)
+            ok += 1
+        except Exception:
+            pass
+    await kisa_cevap(context.bot, chat.id, f"🌐 FBan {_ad(hedef)} — {ok} grup")
+
+
+async def funban_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    hedef = await hedef_kullanici(update, context)
+    if not hedef:
+        return
+    fid = cget(chat.id, "fed_id")
+    if not fid:
+        return
+    bans = durum.setdefault("fed_bans", {}).setdefault(fid, {})
+    bans.pop(str(hedef.id), None)
+    durum_kaydet()
+    feds = durum.get("federations") or {}
+    chats = (feds.get(fid) or {}).get("chats") or [chat.id]
+    for gid in chats:
+        try:
+            await context.bot.unban_chat_member(gid, hedef.id, only_if_banned=True)
+        except Exception:
+            pass
+    await kisa_cevap(context.bot, chat.id, f"✅ Funban {_ad(hedef)}")
+
+
+async def export_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    data = durum.get("grup", {}).get(str(chat.id), {})
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    from io import BytesIO
+    bio = BytesIO(payload.encode("utf-8"))
+    bio.name = f"settings_{chat.id}.json"
+    try:
+        await context.bot.send_document(chat.id, document=bio, caption="📦 Grup ayarları export")
+    except Exception as e:
+        await kisa_cevap(context.bot, chat.id, f"❌ {html.escape(str(e))}")
+
+
+async def import_komut(update, context):
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    msg, chat, _ = g
+    doc = None
+    if msg.reply_to_message and msg.reply_to_message.document:
+        doc = msg.reply_to_message.document
+    elif msg.document:
+        doc = msg.document
+    if not doc:
+        await kisa_cevap(context.bot, chat.id, "JSON dosyasına yanıtla: <code>/import</code>")
+        return
+    try:
+        f = await context.bot.get_file(doc.file_id)
+        raw = bytes(await f.download_as_bytearray())
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("JSON obje olmalı")
+        durum.setdefault("grup", {})[str(chat.id)] = data
+        durum_kaydet()
+        await kisa_cevap(context.bot, chat.id, f"✅ {len(data)} ayar içe aktarıldı.")
+    except Exception as e:
+        await kisa_cevap(context.bot, chat.id, f"❌ Import: {html.escape(str(e))}")
+
+
 async def rules_komut(update, context):
     msg, chat = update.effective_message, update.effective_chat
     if not msg or not chat:
@@ -1127,29 +1674,78 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
             continue
         uye_kaydi(chat.id, u)
+        # Fed ban kontrol
+        fid = cget(chat.id, "fed_id")
+        if fid:
+            bans = (durum.get("fed_bans") or {}).get(fid) or {}
+            if str(u.id) in bans:
+                try:
+                    await context.bot.ban_chat_member(chat.id, u.id)
+                    await log_gonder(context.bot, chat.id, f"🌐 Fed-ban ile engellendi: {html.escape(u.full_name or str(u.id))}")
+                except Exception:
+                    pass
+                continue
         await log_gonder(
             context.bot, chat.id,
             f"➕ {html.escape(u.full_name or str(u.id))} gruba katıldı <code>{u.id}</code>",
         )
-        if not cget(chat.id, "hosgeldin"):
-            continue
-        metin = (cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"]).replace(
-            "{ad}", html.escape(u.full_name or u.first_name or "üye")
-        )
+        if cget(chat.id, "antiraid"):
+            jt = join_times[chat.id]
+            now = time.time()
+            sn = int(cget(chat.id, "antiraid_sn") or 10)
+            adet = int(cget(chat.id, "antiraid_adet") or 5)
+            while jt and now - jt[0] > sn:
+                jt.popleft()
+            jt.append(now)
+            if len(jt) >= adet:
+                try:
+                    await context.bot.set_chat_permissions(chat.id, MUTE_PERMS)
+                    await kisa_cevap(context.bot, chat.id, "🛡 AntiRaid: grup geçici kilitlendi.", 15)
+                    await log_gonder(context.bot, chat.id, "🛡 AntiRaid tetiklendi")
+                except Exception as e:
+                    log.warning("antiraid: %s", e)
+        need_mute = bool(cget(chat.id, "approval") or cget(chat.id, "captcha"))
         mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
-        if mute_dk > 0:
+        if cget(chat.id, "hosgeldin") and mute_dk > 0:
+            need_mute = True
+        if need_mute:
             try:
-                until = datetime.now(timezone.utc) + timedelta(minutes=mute_dk)
+                md = 120 if (cget(chat.id, "approval") or cget(chat.id, "captcha")) else mute_dk
+                until = datetime.now(timezone.utc) + timedelta(minutes=max(1, md))
                 await context.bot.restrict_chat_member(chat.id, u.id, permissions=MUTE_PERMS, until_date=until)
             except Exception as e:
-                log.warning("hosgeldin mute: %s", e)
-        try:
-            gonder = await context.bot.send_message(chat.id, metin, parse_mode="HTML")
-            sil = int(cget(chat.id, "hosgeldin_sil") or 0)
-            if sil > 0:
-                asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, sil))
-        except Exception as e:
-            log.warning("hosgeldin: %s", e)
+                log.warning("join mute: %s", e)
+        if cget(chat.id, "captcha"):
+            pending_captcha[(chat.id, u.id)] = True
+            if cget(chat.id, "captcha_math"):
+                import random
+                a, b = random.randint(2, 9), random.randint(2, 9)
+                pending_captcha[(chat.id, u.id)] = a + b
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(str(a + b), callback_data=f"cap:{chat.id}:{u.id}:{a+b}"),
+                    InlineKeyboardButton(str(a + b + 2), callback_data=f"cap:{chat.id}:{u.id}:x"),
+                    InlineKeyboardButton(str(max(1, a + b - 3)), callback_data=f"cap:{chat.id}:{u.id}:y"),
+                ]])
+                txt = f"🔐 {html.escape(u.full_name or 'Üye')}, {a}+{b} = ?"
+            else:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ İnsanım", callback_data=f"cap:{chat.id}:{u.id}:ok")]])
+                txt = f"🔐 {html.escape(u.full_name or 'Üye')}, gruba yazmak için butona bas."
+            try:
+                gonder = await context.bot.send_message(chat.id, txt, parse_mode="HTML", reply_markup=kb)
+                asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, 120))
+            except Exception as e:
+                log.warning("captcha: %s", e)
+        elif cget(chat.id, "hosgeldin"):
+            metin = (cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"]).replace(
+                "{ad}", html.escape(u.full_name or u.first_name or "üye")
+            )
+            try:
+                gonder = await context.bot.send_message(chat.id, metin, parse_mode="HTML")
+                sil = int(cget(chat.id, "hosgeldin_sil") or 0)
+                if sil > 0:
+                    asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, sil))
+            except Exception as e:
+                log.warning("hosgeldin: %s", e)
 
 
 async def ayrildi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1314,6 +1910,16 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                     return
+            # blocklist kelime
+            bl = cget(cid, "blocklist") or []
+            if bl and metin:
+                low_m = metin.lower()
+                if any(w in low_m for w in bl if w):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    return
             # mesaj uzunlugu
             mx = int(cget(cid, "mesaj_max") or 0)
             if mx > 0 and metin and len(metin) > mx:
@@ -1338,6 +1944,29 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 durum_kaydet()
                 await msg.reply_text("Talimat kaydedildi.")
                 return
+
+    # filters tetik
+    if not ozel and metin:
+        fl = cget(cid, "filters") or {}
+        low_m = metin.lower()
+        for k, v in fl.items():
+            if k and k in low_m:
+                try:
+                    await msg.reply_text(v)
+                except Exception:
+                    pass
+                break
+
+    # #not tetik
+    if metin.startswith("#") and not ozel:
+        isim = metin[1:].split()[0].lower() if metin[1:] else ""
+        notes = cget(cid, "notes") or {}
+        if isim in notes:
+            try:
+                await msg.reply_text(notes[isim])
+            except Exception:
+                pass
+            return
 
     kt = kisa_token(metin)
     if kt:
@@ -1445,6 +2074,25 @@ def main():
     app.add_handler(CommandHandler("izinlink", izinlink_komut))
     app.add_handler(CommandHandler("rules", rules_komut))
     app.add_handler(CommandHandler("kurallar", rules_komut))
+    app.add_handler(CommandHandler("block", block_komut))
+    app.add_handler(CommandHandler("blockclear", blockclear_komut))
+    app.add_handler(CommandHandler("save", save_komut))
+    app.add_handler(CommandHandler("get", get_komut))
+    app.add_handler(CommandHandler("pin", pin_komut))
+    app.add_handler(CommandHandler("unpin", unpin_komut))
+    app.add_handler(CommandHandler("unpinall", unpinall_komut))
+    app.add_handler(CommandHandler("del", del_komut))
+    app.add_handler(CommandHandler("purge", purge_komut))
+    app.add_handler(CommandHandler("filter", filter_komut))
+    app.add_handler(CommandHandler("stop", stop_komut))
+    app.add_handler(CommandHandler("filters", filters_komut))
+    app.add_handler(CommandHandler("newfed", newfed_komut))
+    app.add_handler(CommandHandler("joinfed", joinfed_komut))
+    app.add_handler(CommandHandler("leavefed", leavefed_komut))
+    app.add_handler(CommandHandler("fban", fban_komut))
+    app.add_handler(CommandHandler("funban", funban_komut))
+    app.add_handler(CommandHandler("export", export_komut))
+    app.add_handler(CommandHandler("import", import_komut))
     # kanal postunda /setlog
     app.add_handler(
         MessageHandler(
@@ -1453,6 +2101,7 @@ def main():
         )
     )
     app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^p:"))
+    app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
     app.add_handler(
