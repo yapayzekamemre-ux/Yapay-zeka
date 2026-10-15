@@ -180,6 +180,9 @@ DEFAULT_G = {
     "auto_pin_welcome": False,
     "fed_id": None,
     "topic_mode": False,
+    "disabled_cmds": [],
+    "privacy_ai": False,
+    "reports": True,
 }
 
 
@@ -296,6 +299,11 @@ async def log_gonder(bot, chat_id, metin):
 
 def _ok(v):
     return "✅" if v else "❌"
+
+
+def komut_kapali(chat_id, isim: str) -> bool:
+    d = cget(chat_id, "disabled_cmds") or []
+    return isim.lower().lstrip("/") in [x.lower().lstrip("/") for x in d]
 
 
 # ---------- AI ----------
@@ -555,6 +563,14 @@ def panel_kb(cid):
             [
                 InlineKeyboardButton("📦 Import/Export", callback_data="p:imex"),
                 InlineKeyboardButton("💬 Topics", callback_data="p:topics"),
+            ],
+            [
+                InlineKeyboardButton("👤 Admin", callback_data="p:admin"),
+                InlineKeyboardButton(f"📣 Reports {_ok(cget(cid,'reports'))}", callback_data="p:reports"),
+            ],
+            [
+                InlineKeyboardButton("🚫 Disabling", callback_data="p:disable"),
+                InlineKeyboardButton(f"🔏 Privacy {_ok(cget(cid,'privacy_ai'))}", callback_data="p:privacy"),
             ],
             [InlineKeyboardButton("🔒 Kapat", callback_data="p:kapat")],
         ]
@@ -865,6 +881,45 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await yenile()
         return
 
+
+    if data == "admin":
+        try:
+            admins = await context.bot.get_chat_administrators(cid)
+            lines = []
+            for a in admins[:25]:
+                u = a.user
+                tag = "👑" if a.status in ("creator", ChatMemberStatus.OWNER) else "🛡"
+                lines.append(f"{tag} {html.escape(u.full_name or str(u.id))} <code>{u.id}</code>")
+            txt = "👤 <b>Admin</b>\n" + ("\n".join(lines) if lines else "Yok")
+            txt += "\n\n<code>/reload</code> — listeyi yenile"
+        except Exception as e:
+            txt = f"❌ {html.escape(str(e))}"
+        await q.edit_message_text(
+            txt, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+    if data == "reports":
+        cset(cid, "reports", not bool(cget(cid, "reports")))
+        await yenile()
+        return
+    if data == "privacy":
+        cset(cid, "privacy_ai", not bool(cget(cid, "privacy_ai")))
+        await yenile()
+        return
+    if data == "disable":
+        d = cget(cid, "disabled_cmds") or []
+        await q.edit_message_text(
+            f"🚫 <b>Disabling</b>\n"
+            f"Kapalı komutlar: {', '.join(d) if d else 'yok'}\n\n"
+            f"<code>/disable ban</code> — komutu kapat\n"
+            f"<code>/enable ban</code> — aç\n"
+            f"<code>/disabled</code> — liste",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
+        )
+        return
+
     if data == "kurallar":
         k = cget(cid, "kurallar") or DEFAULT_G["kurallar"]
         await q.edit_message_text(
@@ -1031,13 +1086,20 @@ def _ad(u):
     return html.escape(getattr(u, "full_name", None) or str(getattr(u, "id", "?")))
 
 
-async def _mod_giris(update, context):
+async def _mod_giris(update, context, cmd_name: str = None):
     msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
     if not msg or not chat or not user:
         return None
     if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
         return None
     await komut_sil(msg, context.bot)
+    # komut adi: parametre veya mesajdan
+    if cmd_name is None and msg.text:
+        part = msg.text.split()[0].lstrip("/").split("@")[0].lower()
+        cmd_name = part
+    if cmd_name and komut_kapali(chat.id, cmd_name):
+        await kisa_cevap(context.bot, chat.id, f"🚫 <code>/{cmd_name}</code> bu grupta kapalı.", 6)
+        return None
     if not await admin_mi(chat.id, user, context.bot):
         await kisa_cevap(context.bot, chat.id, "❌ Sadece yöneticiler.", 5)
         return None
@@ -1642,6 +1704,93 @@ async def import_komut(update, context):
         await kisa_cevap(context.bot, chat.id, f"❌ Import: {html.escape(str(e))}")
 
 
+
+async def report_komut(update, context):
+    msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
+    if not msg or not chat or not user:
+        return
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
+        return
+    await komut_sil(msg, context.bot)
+    if not cget(chat.id, "reports"):
+        await kisa_cevap(context.bot, chat.id, "📣 Rapor sistemi kapalı.", 6)
+        return
+    if komut_kapali(chat.id, "report"):
+        await kisa_cevap(context.bot, chat.id, "🚫 /report kapalı.", 6)
+        return
+    hedef = None
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        hedef = msg.reply_to_message.from_user
+    sebep = " ".join(context.args) if context.args else "sebep belirtilmedi"
+    if not hedef:
+        await kisa_cevap(context.bot, chat.id, "Rapor için mesaja yanıtla: <code>/report sebep</code>")
+        return
+    metin = (
+        f"📣 <b>Rapor</b>\n"
+        f"Şikayetçi: {_ad(user)} <code>{user.id}</code>\n"
+        f"Hedef: {_ad(hedef)} <code>{hedef.id}</code>\n"
+        f"Sebep: {html.escape(sebep)}\n"
+        f"Grup: {html.escape(chat.title or '')} <code>{chat.id}</code>"
+    )
+    await log_gonder(context.bot, chat.id, metin)
+    # adminlere ozelden de dene
+    try:
+        admins = await context.bot.get_chat_administrators(chat.id)
+        for a in admins:
+            if a.user.is_bot:
+                continue
+            try:
+                await context.bot.send_message(a.user.id, metin, parse_mode="HTML")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    await kisa_cevap(context.bot, chat.id, "✅ Rapor iletildi.", 6)
+
+
+async def disable_komut(update, context):
+    g = await _mod_giris(update, context, "disable")
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/disable ban</code>")
+        return
+    isim = context.args[0].lower().lstrip("/")
+    d = list(cget(chat.id, "disabled_cmds") or [])
+    if isim not in d:
+        d.append(isim)
+    cset(chat.id, "disabled_cmds", d)
+    await kisa_cevap(context.bot, chat.id, f"🚫 <code>/{isim}</code> kapatıldı.")
+
+
+async def enable_komut(update, context):
+    g = await _mod_giris(update, context, "enable")
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/enable ban</code>")
+        return
+    isim = context.args[0].lower().lstrip("/")
+    d = [x for x in (cget(chat.id, "disabled_cmds") or []) if x.lower() != isim]
+    cset(chat.id, "disabled_cmds", d)
+    await kisa_cevap(context.bot, chat.id, f"✅ <code>/{isim}</code> açıldı.")
+
+
+async def disabled_komut(update, context):
+    g = await _mod_giris(update, context, "disabled")
+    if not g:
+        return
+    _, chat, _ = g
+    d = cget(chat.id, "disabled_cmds") or []
+    await kisa_cevap(
+        context.bot, chat.id,
+        "Kapalı: " + (", ".join(f"/{x}" for x in d) if d else "yok"),
+        12,
+    )
+
+
 async def rules_komut(update, context):
     msg, chat = update.effective_message, update.effective_chat
     if not msg or not chat:
@@ -1976,14 +2125,24 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     low = kucult(metin)
     cagrildi = ozel
     if not ozel:
-        if "yapay" in low:
-            cagrildi = True
-        elif (
+        reply_bot = (
             msg.reply_to_message
             and msg.reply_to_message.from_user
             and msg.reply_to_message.from_user.id == context.bot.id
-        ):
-            cagrildi = True
+        )
+        mention_bot = False
+        try:
+            me = context.bot.username or ""
+            if me and f"@{me.lower()}" in low:
+                mention_bot = True
+        except Exception:
+            pass
+        if cget(cid, "privacy_ai"):
+            # Privacy acik: sadece yanit veya @bot
+            cagrildi = bool(reply_bot or mention_bot)
+        else:
+            if "yapay" in low or reply_bot or mention_bot:
+                cagrildi = True
     if not cagrildi:
         return
 
@@ -2093,6 +2252,10 @@ def main():
     app.add_handler(CommandHandler("funban", funban_komut))
     app.add_handler(CommandHandler("export", export_komut))
     app.add_handler(CommandHandler("import", import_komut))
+    app.add_handler(CommandHandler("report", report_komut))
+    app.add_handler(CommandHandler("disable", disable_komut))
+    app.add_handler(CommandHandler("enable", enable_komut))
+    app.add_handler(CommandHandler("disabled", disabled_komut))
     # kanal postunda /setlog
     app.add_handler(
         MessageHandler(
