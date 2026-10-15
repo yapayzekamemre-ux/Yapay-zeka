@@ -227,10 +227,10 @@ def _gemini_icerik(m):
 def gemini_sor(m, sistem):
     son = None
     for model in (
-        "gemini-3.8-flash",
         "gemini-3.6-flash",
-        "gemini-3.7-flash",
         "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
         "gemini-flash-latest",
     ):
         try:
@@ -252,7 +252,7 @@ def gemini_sor(m, sistem):
 
 def gemini_arama(m, sistem):
     son = None
-    for model in ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest"):
+    for model in ("gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"):
         try:
             r = gem.models.generate_content(
                 model=model,
