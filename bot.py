@@ -136,24 +136,35 @@ for _k, _v in (("sahip", None), ("talimat", []), ("ayar", {}), ("grup", {})):
 gecmis = {}
 uyarilar = {}  # chat_id -> user_id -> count
 
-# Varsayilan grup ayarlari (GroupHelp / video menuleri)
+# Varsayilan grup ayarlari — GroupHelpBot / video bire bir
 DEFAULT_G = {
+    # Hos geldin / hoscaakal
     "hosgeldin": False,
     "hosgeldin_metin": (
         "⛔ **{ad}** Hoşgeldiniz\n"
         "⚠️ Katıldığı andan itibaren 15 dakika boyunca mesaj gönderemez\n"
         "✅ 15 dakika sonra sohbeti başlatabilirsiniz. 🚀"
     ),
-    "hosgeldin_sil": 15,  # saniye, 0=silme
-    "hosgeldin_mute": 15,  # dakika mute, 0=yok
+    "hosgeldin_sil": 15,
+    "hosgeldin_mute": 15,
+    "hosgeldin_mod": "her",  # her | ilk
     "hoscaakal": False,
     "hoscaakal_metin": "👋 {ad} gruptan ayrıldı.",
     "hoscaakal_sil": 10,
+    "hoscaakal_ozel": False,
+    # Servis
     "servis_sil": True,
+    "servis_katilim": True,
+    "servis_cikis": True,
+    "servis_foto": False,
+    "servis_baslik": False,
+    "servis_pin": False,
+    # Kurallar / uyari
     "kurallar": "Grup kurallarına uyun. Spam, küfür abartısı ve reklam yasak.",
     "warn_limit": 3,
-    "warn_ceza": "mute",  # mute | kick | ban | none
+    "warn_ceza": "mute",
     "warn_mute_dk": 60,
+    # Medya (tur bazli)
     "medya_engel": False,
     "medya_foto": True,
     "medya_video": True,
@@ -161,18 +172,45 @@ DEFAULT_G = {
     "medya_sticker": True,
     "medya_dosya": True,
     "medya_ses": False,
-    "medya_ceza": "sil",  # sil | warn | mute | ban
+    "medya_ceza": "sil",
+    # Link / flood
     "link_engel": False,
     "link_izin": [],
-    "flood_adet": 0,  # 0=kapali
+    "flood_adet": 0,
     "flood_sn": 5,
+    # Log / gece / sessizlik
     "log_kanal": None,
     "gece_mod": False,
+    "gece_bas": 0,
+    "gece_bit": 7,
     "sessizlik": False,
+    # Engellemeler / zorunluluk
     "zorunlu_username": False,
     "zorunlu_foto": False,
-    "mesaj_min": 0,  # 0=kapali
-    "mesaj_max": 0,  # 0=kapali
+    "zorunlu_soyisim": False,
+    "engel_arap": False,
+    "engel_cin": False,
+    "engel_rus": False,
+    "bot_engel": True,
+    # Mesaj uzunlugu
+    "mesaj_min": 0,
+    "mesaj_max": 0,
+    # Alfabeler
+    "alfa_kiril": False,
+    "alfa_cin": False,
+    "alfa_latin": False,
+    "alfa_arap": False,
+    "alfa_hint": False,
+    "alfa_bengali": False,
+    # Diger
+    "yasakli_kelimeler": [],
+    "anti_spam": False,
+    "porno_engel": False,
+    "admin_etiket": True,  # @admin yazinca yoneticilere bildir
+    "grup_link": "",
+    "onay_modu": False,
+    "tekrar_engel": False,
+    "tag_acik": False,
 }
 
 
@@ -690,46 +728,83 @@ def _ok(v):
 
 
 def panel_ana(chat_id, baslik=""):
-    """Ana panel klavyesi — tum GroupHelp tarzi ozellikler."""
+    """Ana panel — GroupHelpBot video bire bir duzen."""
     hg = _ok(cget(chat_id, "hosgeldin"))
     hc = _ok(cget(chat_id, "hoscaakal"))
-    md = _ok(cget(chat_id, "medya_engel"))
-    lk = _ok(cget(chat_id, "link_engel"))
-    sv = _ok(cget(chat_id, "servis_sil"))
-    logk = _ok(cget(chat_id, "log_kanal"))
     fl = _ok(int(cget(chat_id, "flood_adet") or 0) > 0)
+    md = _ok(cget(chat_id, "medya_engel"))
     gm = _ok(cget(chat_id, "gece_mod"))
-    ss = _ok(cget(chat_id, "sessizlik"))
+    po = _ok(cget(chat_id, "porno_engel"))
+    om = _ok(cget(chat_id, "onay_modu"))
     kb = [
         [
-            InlineKeyboardButton(f"👋 Hoş Geldin {hg}", callback_data="p:hg"),
-            InlineKeyboardButton(f"👋 Hoşçakal {hc}", callback_data="p:hc"),
+            InlineKeyboardButton(f"💬 Hoş Geldin {hg}", callback_data="p:hg"),
+            InlineKeyboardButton(f"🌊 Flood {fl}", callback_data="p:flood"),
         ],
         [
-            InlineKeyboardButton("📜 Kurallar", callback_data="p:kurallar"),
-            InlineKeyboardButton("⚠️ Uyarılar", callback_data="p:uyari"),
+            InlineKeyboardButton(f"👋 Hoşçakal {hc}", callback_data="p:hc"),
+            InlineKeyboardButton("🕉 Alfabeler", callback_data="p:alfa"),
+        ],
+        [
+            InlineKeyboardButton("🧠 Doğrulama", callback_data="p:dogrula"),
+            InlineKeyboardButton("🔦 Kontroller", callback_data="p:kontrol"),
+        ],
+        [
+            InlineKeyboardButton("🆘 @admin", callback_data="p:adminet"),
+            InlineKeyboardButton("🔒 Engellemeler", callback_data="p:engel"),
         ],
         [
             InlineKeyboardButton(f"📷 Medya {md}", callback_data="p:medya"),
-            InlineKeyboardButton(f"🔗 Link {lk}", callback_data="p:link"),
+            InlineKeyboardButton(f"🔞 Porno {po}", callback_data="p:porno"),
         ],
         [
-            InlineKeyboardButton(f"🧹 Servis sil {sv}", callback_data="p:servis"),
-            InlineKeyboardButton(f"📋 Log {logk}", callback_data="p:log"),
-        ],
-        [
-            InlineKeyboardButton(f"🌊 Flood {fl}", callback_data="p:flood"),
+            InlineKeyboardButton("⚠️ Uyarılar", callback_data="p:uyari"),
             InlineKeyboardButton(f"🌙 Gece {gm}", callback_data="p:gece"),
         ],
         [
+            InlineKeyboardButton("🔔 Tag", callback_data="p:tag"),
+            InlineKeyboardButton("🔗 Grup Linki", callback_data="p:gruplink"),
+        ],
+        [
+            InlineKeyboardButton(f"📋 Onay Modu {om}", callback_data="p:onay"),
+            InlineKeyboardButton("🗑 Servis/Silme", callback_data="p:servis"),
+        ],
+        [
+            InlineKeyboardButton("▶️ Diğerleri", callback_data="p:diger"),
+            InlineKeyboardButton("✅ Kapat", callback_data="p:kapat"),
+        ],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+def panel_diger(chat_id):
+    """Videodaki 'Diğerleri' alt menusu."""
+    lk = _ok(cget(chat_id, "link_engel"))
+    ss = _ok(cget(chat_id, "sessizlik"))
+    logk = _ok(cget(chat_id, "log_kanal"))
+    as_ = _ok(cget(chat_id, "anti_spam"))
+    kb = [
+        [
+            InlineKeyboardButton("📜 Kurallar", callback_data="p:kurallar"),
+            InlineKeyboardButton(f"🛡 Anti-Spam {as_}", callback_data="p:antispam"),
+        ],
+        [
+            InlineKeyboardButton(f"🔗 Link engeli {lk}", callback_data="p:link"),
             InlineKeyboardButton(f"🔇 Sessizlik {ss}", callback_data="p:sessizlik"),
-            InlineKeyboardButton("🚫 Engellemeler", callback_data="p:engel"),
         ],
         [
             InlineKeyboardButton("📏 Mesaj uzunluğu", callback_data="p:uzunluk"),
+            InlineKeyboardButton("🚫 Yasaklı kelimeler", callback_data="p:yasakli"),
+        ],
+        [
+            InlineKeyboardButton(f"📋 Log {logk}", callback_data="p:log"),
+            InlineKeyboardButton("👥 Üye yönetimi", callback_data="p:uye"),
+        ],
+        [
+            InlineKeyboardButton("🔁 Tekrarlanan mesaj", callback_data="p:tekrar"),
             InlineKeyboardButton("🔧 Mute/Ban yardım", callback_data="p:modhelp"),
         ],
-        [InlineKeyboardButton("🔒 Kapat", callback_data="p:kapat")],
+        [InlineKeyboardButton("« Ana menü", callback_data="p:geri")],
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -1113,28 +1188,53 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Engellemeler ---
+    # --- Engellemeler (video) ---
     if data == "engel":
         kb = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        f"Username zorunlu {_ok(cget(cid, 'zorunlu_username'))}",
+                        f"Username {_ok(cget(cid, 'zorunlu_username'))}",
                         callback_data="p:zu",
-                    )
+                    ),
+                    InlineKeyboardButton(
+                        f"Profil foto {_ok(cget(cid, 'zorunlu_foto'))}",
+                        callback_data="p:zf",
+                    ),
                 ],
                 [
                     InlineKeyboardButton(
-                        f"Profil foto zorunlu {_ok(cget(cid, 'zorunlu_foto'))}",
-                        callback_data="p:zf",
-                    )
+                        f"Soyisim {_ok(cget(cid, 'zorunlu_soyisim'))}",
+                        callback_data="p:zs",
+                    ),
+                    InlineKeyboardButton(
+                        f"Bot engeli {_ok(cget(cid, 'bot_engel'))}",
+                        callback_data="p:be",
+                    ),
                 ],
-                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+                [
+                    InlineKeyboardButton(
+                        f"Arapça isim {_ok(cget(cid, 'engel_arap'))}",
+                        callback_data="p:ea",
+                    ),
+                    InlineKeyboardButton(
+                        f"Çince isim {_ok(cget(cid, 'engel_cin'))}",
+                        callback_data="p:ec",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"Rusça isim {_ok(cget(cid, 'engel_rus'))}",
+                        callback_data="p:er",
+                    ),
+                ],
+                [InlineKeyboardButton("« Ana menü", callback_data="p:geri")],
             ]
         )
         await q.edit_message_text(
-            "🚫 <b>Engellemeler / giriş şartları</b>\n"
-            "Açık olanlar gruba girince kontrol edilir.",
+            "🔒 <b>Engellemeler</b>\n"
+            "Zorunluluklar + isim engelleri.\n"
+            "Açık kurallar gruba girişte / mesajda uygulanır.",
             parse_mode="HTML",
             reply_markup=kb,
         )
@@ -1142,14 +1242,266 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "zu":
         cset(cid, "zorunlu_username", not bool(cget(cid, "zorunlu_username")))
-        await q.answer("Username kuralı güncellendi")
+        await q.answer("Username")
         await yenile(f"Username zorunlu: {_ok(cget(cid, 'zorunlu_username'))}")
         return
-
     if data == "zf":
         cset(cid, "zorunlu_foto", not bool(cget(cid, "zorunlu_foto")))
-        await q.answer("Profil foto kuralı güncellendi")
+        await q.answer("Profil foto")
         await yenile(f"Profil foto zorunlu: {_ok(cget(cid, 'zorunlu_foto'))}")
+        return
+    if data == "zs":
+        cset(cid, "zorunlu_soyisim", not bool(cget(cid, "zorunlu_soyisim")))
+        await q.answer("Soyisim")
+        await yenile(f"Soyisim zorunlu: {_ok(cget(cid, 'zorunlu_soyisim'))}")
+        return
+    if data == "be":
+        cset(cid, "bot_engel", not bool(cget(cid, "bot_engel")))
+        await q.answer("Bot engeli")
+        await yenile(f"Bot engeli: {_ok(cget(cid, 'bot_engel'))}")
+        return
+    if data == "ea":
+        cset(cid, "engel_arap", not bool(cget(cid, "engel_arap")))
+        await q.answer("Arapça isim")
+        await yenile(f"Arapça isim engeli: {_ok(cget(cid, 'engel_arap'))}")
+        return
+    if data == "ec":
+        cset(cid, "engel_cin", not bool(cget(cid, "engel_cin")))
+        await q.answer("Çince isim")
+        await yenile(f"Çince isim engeli: {_ok(cget(cid, 'engel_cin'))}")
+        return
+    if data == "er":
+        cset(cid, "engel_rus", not bool(cget(cid, "engel_rus")))
+        await q.answer("Rusça isim")
+        await yenile(f"Rusça isim engeli: {_ok(cget(cid, 'engel_rus'))}")
+        return
+
+    # --- Alfabeler ---
+    if data == "alfa":
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"Kiril {_ok(cget(cid, 'alfa_kiril'))}", callback_data="p:ak"
+                    ),
+                    InlineKeyboardButton(
+                        f"Çince {_ok(cget(cid, 'alfa_cin'))}", callback_data="p:ac"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"Latince {_ok(cget(cid, 'alfa_latin'))}", callback_data="p:al"
+                    ),
+                    InlineKeyboardButton(
+                        f"Arapça {_ok(cget(cid, 'alfa_arap'))}", callback_data="p:aa"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"Hint {_ok(cget(cid, 'alfa_hint'))}", callback_data="p:ah"
+                    ),
+                    InlineKeyboardButton(
+                        f"Bengali {_ok(cget(cid, 'alfa_bengali'))}", callback_data="p:ab"
+                    ),
+                ],
+                [InlineKeyboardButton("« Ana menü", callback_data="p:geri")],
+            ]
+        )
+        await q.edit_message_text(
+            "🕉 <b>Alfabeler</b>\n"
+            "Açık olan alfabe ile yazılan mesajlar silinir.",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+
+    alfa_map = {
+        "ak": "alfa_kiril",
+        "ac": "alfa_cin",
+        "al": "alfa_latin",
+        "aa": "alfa_arap",
+        "ah": "alfa_hint",
+        "ab": "alfa_bengali",
+    }
+    if data in alfa_map:
+        k = alfa_map[data]
+        cset(cid, k, not bool(cget(cid, k)))
+        await q.answer(k)
+        await yenile(f"{k}: {_ok(cget(cid, k))}")
+        return
+
+    # --- Digerleri ---
+    if data == "diger":
+        await q.edit_message_text(
+            panel_metin(cid, gtitle) + "\n\n<b>Diğer ayarlar</b>",
+            parse_mode="HTML",
+            reply_markup=panel_diger(cid),
+        )
+        return
+
+    # --- Porno ---
+    if data == "porno":
+        cur = bool(cget(cid, "porno_engel"))
+        cset(cid, "porno_engel", not cur)
+        await yenile(
+            f"🔞 Porno engeli: {'AÇIK ✅' if not cur else 'KAPALI ❌'}\n"
+            f"(açıkken NSFW anahtar kelimeli mesajlar silinir)"
+        )
+        return
+
+    # --- @admin ---
+    if data == "adminet":
+        cur = bool(cget(cid, "admin_etiket"))
+        cset(cid, "admin_etiket", not cur)
+        await yenile(
+            f"🆘 @admin etiketi: {'AÇIK ✅' if not cur else 'KAPALI ❌'}\n"
+            f"Üye @admin yazınca yöneticilere özel bildirim gider."
+        )
+        return
+
+    # --- Tag ---
+    if data == "tag":
+        cur = bool(cget(cid, "tag_acik"))
+        cset(cid, "tag_acik", not cur)
+        await yenile(f"🔔 Tag sistemi: {'AÇIK ✅' if not cur else 'KAPALI ❌'}")
+        return
+
+    # --- Grup linki ---
+    if data == "gruplink":
+        link = cget(cid, "grup_link") or "ayarlanmamış"
+        await q.edit_message_text(
+            f"🔗 <b>Grup linki</b>\nŞu an: <code>{html.escape(str(link))}</code>\n\n"
+            f"Ayarlamak için gruba yaz:\n"
+            f"<code>/setlink https://t.me/...</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("« Ana menü", callback_data="p:geri")]]
+            ),
+        )
+        return
+
+    # --- Onay modu ---
+    if data == "onay":
+        cur = bool(cget(cid, "onay_modu"))
+        cset(cid, "onay_modu", not cur)
+        await yenile(
+            f"📋 Onay modu: {'AÇIK ✅' if not cur else 'KAPALI ❌'}\n"
+            f"(açıkken yeni üyeler onaylanana kadar susturulur)"
+        )
+        return
+
+    # --- Dogrulama ---
+    if data == "dogrula":
+        await q.edit_message_text(
+            "🧠 <b>Doğrulama</b>\n"
+            "Basit doğrulama: yeni üye 15 dk mute (Hoş Geldin mute ile aynı).\n"
+            "Gelişmiş captcha için Hoş Geldin + Mute kullan.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("« Ana menü", callback_data="p:geri")]]
+            ),
+        )
+        return
+
+    # --- Kontroller (servis detay) ---
+    if data == "kontrol":
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"Katılım {_ok(cget(cid, 'servis_katilim'))}",
+                        callback_data="p:sk",
+                    ),
+                    InlineKeyboardButton(
+                        f"Çıkış {_ok(cget(cid, 'servis_cikis'))}",
+                        callback_data="p:sc",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"Foto değişti {_ok(cget(cid, 'servis_foto'))}",
+                        callback_data="p:sf",
+                    ),
+                    InlineKeyboardButton(
+                        f"Başlık {_ok(cget(cid, 'servis_baslik'))}",
+                        callback_data="p:sb",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"Pin {_ok(cget(cid, 'servis_pin'))}",
+                        callback_data="p:sp",
+                    ),
+                ],
+                [InlineKeyboardButton("« Ana menü", callback_data="p:geri")],
+            ]
+        )
+        await q.edit_message_text(
+            "🔦 <b>Kontroller / Servis mesajları</b>\n"
+            "Açık olanlar otomatik silinir.",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+
+    servis_map = {
+        "sk": "servis_katilim",
+        "sc": "servis_cikis",
+        "sf": "servis_foto",
+        "sb": "servis_baslik",
+        "sp": "servis_pin",
+    }
+    if data in servis_map:
+        k = servis_map[data]
+        cset(cid, k, not bool(cget(cid, k)))
+        await q.answer(k)
+        await yenile(f"{k}: {_ok(cget(cid, k))}")
+        return
+
+    # --- Anti spam ---
+    if data == "antispam":
+        cur = bool(cget(cid, "anti_spam"))
+        cset(cid, "anti_spam", not cur)
+        await yenile(f"🛡 Anti-Spam: {'AÇIK ✅' if not cur else 'KAPALI ❌'}")
+        return
+
+    # --- Tekrar ---
+    if data == "tekrar":
+        cur = bool(cget(cid, "tekrar_engel"))
+        cset(cid, "tekrar_engel", not cur)
+        await yenile(
+            f"🔁 Tekrarlanan mesaj engeli: {'AÇIK ✅' if not cur else 'KAPALI ❌'}"
+        )
+        return
+
+    # --- Yasakli kelimeler ---
+    if data == "yasakli":
+        lst = cget(cid, "yasakli_kelimeler") or []
+        await q.edit_message_text(
+            f"🚫 <b>Yasaklı kelimeler</b>\n"
+            f"Liste: {html.escape(', '.join(lst) if lst else 'boş')}\n\n"
+            f"Ekle (grupta):\n<code>/yasak kelime1 kelime2</code>\n"
+            f"Temizle: <code>/yasaktemiz</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("« Diğerleri", callback_data="p:diger")]]
+            ),
+        )
+        return
+
+    # --- Uye yonetimi ---
+    if data == "uye":
+        await q.edit_message_text(
+            "👥 <b>Üye yönetimi</b>\n"
+            "Grupta yanıtlayarak kullan:\n"
+            "<code>/mute 30</code> <code>/unmute</code>\n"
+            "<code>/ban</code> <code>/unban</code> <code>/kick</code>\n"
+            "<code>/warn</code> <code>/unwarn</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("« Diğerleri", callback_data="p:diger")]]
+            ),
+        )
         return
 
     # --- Mesaj uzunlugu ---
@@ -1168,7 +1520,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("Max 500", callback_data="p:umax500"),
                     InlineKeyboardButton("Max 1000", callback_data="p:umax1000"),
                 ],
-                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+                [InlineKeyboardButton("« Diğerleri", callback_data="p:diger")],
             ]
         )
         await q.edit_message_text(
@@ -1202,10 +1554,12 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<code>/setwelcome metin</code>\n"
             "<code>/setrules metin</code>\n"
             "<code>/izinlink domain.com</code>\n"
+            "<code>/setlink https://t.me/...</code>\n"
+            "<code>/yasak kelime1 kelime2</code>\n"
             "Komutlar birkaç saniye sonra silinir.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("« Geri", callback_data="p:geri")]]
+                [[InlineKeyboardButton("« Ana menü", callback_data="p:geri")]]
             ),
         )
         return
@@ -1481,27 +1835,140 @@ async def izinlink_komut(update, context):
     asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 10))
 
 
+async def setlink_komut(update, context):
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or chat.type == ChatType.PRIVATE:
+        return
+    await komut_gizle(msg, context.bot)
+    if not await admin_mi(chat.id, user, context.bot):
+        return
+    if not context.args:
+        return
+    cset(chat.id, "grup_link", context.args[0])
+    m = await context.bot.send_message(chat.id, f"✅ Grup linki: {context.args[0]}")
+    asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 8))
+
+
+async def yasak_komut(update, context):
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or chat.type == ChatType.PRIVATE:
+        return
+    await komut_gizle(msg, context.bot)
+    if not await admin_mi(chat.id, user, context.bot):
+        return
+    if not context.args:
+        return
+    lst = list(cget(chat.id, "yasakli_kelimeler") or [])
+    for a in context.args:
+        a = a.strip()
+        if a and a.lower() not in [x.lower() for x in lst]:
+            lst.append(a)
+    cset(chat.id, "yasakli_kelimeler", lst)
+    m = await context.bot.send_message(
+        chat.id, f"✅ Yasaklı: {', '.join(lst)}"
+    )
+    asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 10))
+
+
+async def yasaktemiz_komut(update, context):
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or chat.type == ChatType.PRIVATE:
+        return
+    await komut_gizle(msg, context.bot)
+    if not await admin_mi(chat.id, user, context.bot):
+        return
+    cset(chat.id, "yasakli_kelimeler", [])
+    m = await context.bot.send_message(chat.id, "✅ Yasaklı kelimeler temizlendi")
+    asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 8))
+
+
 # ---------- hosgeldin / ayrildi ----------
 async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     chat = update.effective_chat
     if not msg or not chat or not msg.new_chat_members:
         return
-    if cget(chat.id, "servis_sil"):
+    # servis sil (katilim)
+    if cget(chat.id, "servis_sil") or cget(chat.id, "servis_katilim"):
         try:
             await msg.delete()
         except Exception:
             pass
-    if not cget(chat.id, "hosgeldin"):
-        return
-    metin_sablon = cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"]
-    mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
-    sil_sn = int(cget(chat.id, "hosgeldin_sil") or 0)
+
     for u in msg.new_chat_members:
+        # bot engeli
         if u.is_bot:
+            if cget(chat.id, "bot_engel"):
+                try:
+                    await context.bot.ban_chat_member(chat.id, u.id)
+                    await context.bot.unban_chat_member(chat.id, u.id)
+                except Exception as e:
+                    log.warning("bot engel: %s", e)
             continue
-        uye_kaydi(chat.id, u, say=False)
+
         ad = u.full_name or u.username or str(u.id)
+
+        # isim engelleri
+        if cget(chat.id, "engel_arap") and re.search(r"[\u0600-\u06FF]", ad):
+            try:
+                await context.bot.ban_chat_member(chat.id, u.id)
+                await context.bot.unban_chat_member(chat.id, u.id)
+            except Exception:
+                pass
+            continue
+        if cget(chat.id, "engel_cin") and re.search(r"[\u4e00-\u9fff]", ad):
+            try:
+                await context.bot.ban_chat_member(chat.id, u.id)
+                await context.bot.unban_chat_member(chat.id, u.id)
+            except Exception:
+                pass
+            continue
+        if cget(chat.id, "engel_rus") and re.search(r"[\u0400-\u04FF]", ad):
+            try:
+                await context.bot.ban_chat_member(chat.id, u.id)
+                await context.bot.unban_chat_member(chat.id, u.id)
+            except Exception:
+                pass
+            continue
+
+        # zorunluluklar
+        if cget(chat.id, "zorunlu_username") and not u.username:
+            try:
+                await mute_uye(context.bot, chat.id, u.id, 60)
+            except Exception:
+                pass
+        if cget(chat.id, "zorunlu_soyisim"):
+            parts = (u.full_name or "").split()
+            if len(parts) < 2:
+                try:
+                    await mute_uye(context.bot, chat.id, u.id, 60)
+                except Exception:
+                    pass
+
+        # onay modu -> mute
+        if cget(chat.id, "onay_modu"):
+            try:
+                await mute_uye(context.bot, chat.id, u.id, 24 * 60)
+            except Exception as e:
+                log.warning("onay mute: %s", e)
+
+        uye_kaydi(chat.id, u, say=False)
+
+        if not cget(chat.id, "hosgeldin"):
+            await log_gonder(
+                context.bot, chat.id, f"➕ {html.escape(ad)} gruba katıldı"
+            )
+            continue
+
+        metin_sablon = cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"]
+        mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
+        sil_sn = int(cget(chat.id, "hosgeldin_sil") or 0)
         metin = (
             metin_sablon.replace("{ad}", ad)
             .replace("{KullanıcıAdı}", ad)
@@ -1524,7 +1991,7 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             except Exception as e:
                 log.warning("hosgeldin: %s", e)
-        if mute_dk > 0:
+        if mute_dk > 0 and not cget(chat.id, "onay_modu"):
             try:
                 await mute_uye(context.bot, chat.id, u.id, mute_dk)
             except Exception as e:
@@ -1668,6 +2135,97 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 return
 
+        # alfabe engeli
+        if metin:
+            if cget(cid, "alfa_kiril") and re.search(r"[\u0400-\u04FF]", metin):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+            if cget(cid, "alfa_cin") and re.search(r"[\u4e00-\u9fff]", metin):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+            if cget(cid, "alfa_arap") and re.search(r"[\u0600-\u06FF]", metin):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+            if cget(cid, "alfa_hint") and re.search(r"[\u0900-\u097F]", metin):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+            if cget(cid, "alfa_bengali") and re.search(r"[\u0980-\u09FF]", metin):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+            if cget(cid, "alfa_latin") and re.search(r"[A-Za-z]", metin) and not re.search(
+                r"[çğıöşüÇĞİÖŞÜ]", metin
+            ):
+                # sadece latin harf varsa ve turkce yoksa (kabaca)
+                if not re.search(r"[ğüşıöçĞÜŞİÖÇ]", metin):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    return
+
+        # yasakli kelimeler
+        yk = cget(cid, "yasakli_kelimeler") or []
+        if metin and yk:
+            low = metin.lower()
+            if any(w.lower() in low for w in yk if w):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+
+        # porno engeli (basit anahtar kelime)
+        if metin and cget(cid, "porno_engel"):
+            porno_kw = (
+                "porno", "sex", "xxx", "nsfw", "onlyfans", "nude", "naked",
+                "amcık", "sikiş", "sikis", "orospu",
+            )
+            low = metin.lower()
+            if any(k in low for k in porno_kw):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+
+        # @admin bildirimi
+        if metin and cget(cid, "admin_etiket") and re.search(
+            r"(?i)@admin\b", metin
+        ):
+            try:
+                admins = await context.bot.get_chat_administrators(cid)
+                bildirim = (
+                    f"🆘 <b>@admin çağrısı</b>\n"
+                    f"Grup: {html.escape(chat.title or '')}\n"
+                    f"Kim: {html.escape(user.full_name or str(user.id))}\n"
+                    f"Mesaj: {html.escape(metin[:200])}"
+                )
+                for a in admins:
+                    if a.user and not a.user.is_bot:
+                        try:
+                            await context.bot.send_message(
+                                a.user.id, bildirim, parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+            except Exception as e:
+                log.warning("@admin bildirim: %s", e)
+
     if not metin:
         return
 
@@ -1807,6 +2365,9 @@ app.add_handler(CommandHandler("setrules", setrules_komut))
 app.add_handler(CommandHandler("setlog", setlog_komut))
 app.add_handler(CommandHandler("unsetlog", unsetlog_komut))
 app.add_handler(CommandHandler("izinlink", izinlink_komut))
+app.add_handler(CommandHandler("setlink", setlink_komut))
+app.add_handler(CommandHandler("yasak", yasak_komut))
+app.add_handler(CommandHandler("yasaktemiz", yasaktemiz_komut))
 app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^p:"))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
 app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
