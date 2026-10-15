@@ -136,7 +136,7 @@ for _k, _v in (("sahip", None), ("talimat", []), ("ayar", {}), ("grup", {})):
 gecmis = {}
 uyarilar = {}  # chat_id -> user_id -> count
 
-# Varsayilan grup ayarlari (videodaki menuler)
+# Varsayilan grup ayarlari (GroupHelp / video menuleri)
 DEFAULT_G = {
     "hosgeldin": False,
     "hosgeldin_metin": (
@@ -149,20 +149,30 @@ DEFAULT_G = {
     "hoscaakal": False,
     "hoscaakal_metin": "👋 {ad} gruptan ayrıldı.",
     "hoscaakal_sil": 10,
-    "servis_sil": True,  # katilim/cikis servis mesajlarini sil
+    "servis_sil": True,
     "kurallar": "Grup kurallarına uyun. Spam, küfür abartısı ve reklam yasak.",
     "warn_limit": 3,
     "warn_ceza": "mute",  # mute | kick | ban | none
     "warn_mute_dk": 60,
     "medya_engel": False,
+    "medya_foto": True,
+    "medya_video": True,
+    "medya_gif": True,
+    "medya_sticker": True,
+    "medya_dosya": True,
+    "medya_ses": False,
     "medya_ceza": "sil",  # sil | warn | mute | ban
     "link_engel": False,
-    "link_izin": [],  # serbest domain/link listesi
+    "link_izin": [],
     "flood_adet": 0,  # 0=kapali
     "flood_sn": 5,
     "log_kanal": None,
     "gece_mod": False,
     "sessizlik": False,
+    "zorunlu_username": False,
+    "zorunlu_foto": False,
+    "mesaj_min": 0,  # 0=kapali
+    "mesaj_max": 0,  # 0=kapali
 }
 
 
@@ -674,14 +684,22 @@ async def warn_ekle(bot, chat_id, user, sebep=""):
     return txt
 
 
-# ---------- panel ----------
-def panel_ana(chat_id):
-    hg = "✅" if cget(chat_id, "hosgeldin") else "❌"
-    hc = "✅" if cget(chat_id, "hoscaakal") else "❌"
-    md = "✅" if cget(chat_id, "medya_engel") else "❌"
-    lk = "✅" if cget(chat_id, "link_engel") else "❌"
-    sv = "✅" if cget(chat_id, "servis_sil") else "❌"
-    logk = "✅" if cget(chat_id, "log_kanal") else "❌"
+# ---------- panel (ozel sohbette acilir) ----------
+def _ok(v):
+    return "✅" if v else "❌"
+
+
+def panel_ana(chat_id, baslik=""):
+    """Ana panel klavyesi — tum GroupHelp tarzi ozellikler."""
+    hg = _ok(cget(chat_id, "hosgeldin"))
+    hc = _ok(cget(chat_id, "hoscaakal"))
+    md = _ok(cget(chat_id, "medya_engel"))
+    lk = _ok(cget(chat_id, "link_engel"))
+    sv = _ok(cget(chat_id, "servis_sil"))
+    logk = _ok(cget(chat_id, "log_kanal"))
+    fl = _ok(int(cget(chat_id, "flood_adet") or 0) > 0)
+    gm = _ok(cget(chat_id, "gece_mod"))
+    ss = _ok(cget(chat_id, "sessizlik"))
     kb = [
         [
             InlineKeyboardButton(f"👋 Hoş Geldin {hg}", callback_data="p:hg"),
@@ -700,47 +718,89 @@ def panel_ana(chat_id):
             InlineKeyboardButton(f"📋 Log {logk}", callback_data="p:log"),
         ],
         [
-            InlineKeyboardButton("🔇 Mute / Ban yardım", callback_data="p:modhelp"),
-            InlineKeyboardButton("🔒 Kapat", callback_data="p:kapat"),
+            InlineKeyboardButton(f"🌊 Flood {fl}", callback_data="p:flood"),
+            InlineKeyboardButton(f"🌙 Gece {gm}", callback_data="p:gece"),
         ],
+        [
+            InlineKeyboardButton(f"🔇 Sessizlik {ss}", callback_data="p:sessizlik"),
+            InlineKeyboardButton("🚫 Engellemeler", callback_data="p:engel"),
+        ],
+        [
+            InlineKeyboardButton("📏 Mesaj uzunluğu", callback_data="p:uzunluk"),
+            InlineKeyboardButton("🔧 Mute/Ban yardım", callback_data="p:modhelp"),
+        ],
+        [InlineKeyboardButton("🔒 Kapat", callback_data="p:kapat")],
     ]
     return InlineKeyboardMarkup(kb)
 
 
+def panel_metin(chat_id, baslik=""):
+    title = baslik or f"Grup {chat_id}"
+    return (
+        f"⚙️ <b>Ayarlar</b>\n"
+        f"Grup: <b>{html.escape(str(title))}</b>\n"
+        f"Değiştirmek istediğin ayarı seç.\n"
+        f"<i>Panel sadece sana özel açılır.</i>"
+    )
+
+
 async def ayarlar_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/panel /ayarlar — grupta yazilir, panel OZEL sohbette acilir."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
-    if not msg or not chat:
+    if not msg or not chat or not user:
         return
-    # komutu sil (gizli)
     try:
         await msg.delete()
     except Exception:
         pass
+
+    # Ozel sohbette: son secilen grubu goster veya bilgi ver
     if chat.type == ChatType.PRIVATE:
-        # ozelde: global sahip paneli veya bilgi
-        if not sahip_mi(user):
+        gid = context.user_data.get("panel_gid")
+        gtitle = context.user_data.get("panel_gtitle") or ""
+        if gid and await admin_mi(gid, user, context.bot):
+            text = panel_metin(gid, gtitle)
+            await context.bot.send_message(
+                user.id, text, parse_mode="HTML", reply_markup=panel_ana(gid, gtitle)
+            )
             return
-        text = (
-            "⚙️ <b>Yönetim</b>\n"
-            "Grupta /ayarlar yazarak o grubun panelini aç.\n"
-            "Özelde sadece sahip ayarları geçerlidir."
+        await context.bot.send_message(
+            user.id,
+            "⚙️ <b>Yönetim paneli</b>\n\n"
+            "Bir gruba git → <code>/panel</code> veya <code>/ayarlar</code> yaz.\n"
+            "Panel burada (özel sohbette) açılır.\n"
+            "Botu özelde en az bir kez <code>/start</code> ile başlatmış olmalısın.",
+            parse_mode="HTML",
         )
-        m = await context.bot.send_message(chat.id, text, parse_mode="HTML")
-        asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 12))
         return
+
+    # Grupta: admin kontrol + ozel sohbete panel gonder
     if not await admin_mi(chat.id, user, context.bot):
         return
-    text = (
-        f"⚙️ <b>Ayarlar</b>\n"
-        f"Grup: {html.escape(chat.title or '')}\n"
-        f"Değiştirmek istediğin ayarı seç."
-    )
-    m = await context.bot.send_message(
-        chat.id, text, parse_mode="HTML", reply_markup=panel_ana(chat.id)
-    )
-    asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 120))
+
+    context.user_data["panel_gid"] = chat.id
+    context.user_data["panel_gtitle"] = chat.title or str(chat.id)
+    text = panel_metin(chat.id, chat.title)
+
+    try:
+        await context.bot.send_message(
+            user.id,
+            text,
+            parse_mode="HTML",
+            reply_markup=panel_ana(chat.id, chat.title),
+        )
+    except Exception as e:
+        # Bot ozelde yazamiyorsa gruba kisa uyari
+        log.warning("panel ozel gonderilemedi: %s", e)
+        m = await context.bot.send_message(
+            chat.id,
+            f"{user.mention_html()}, paneli açmak için bota özelden <code>/start</code> yaz, "
+            f"sonra gruba tekrar <code>/panel</code> yaz.",
+            parse_mode="HTML",
+        )
+        asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 12))
 
 
 async def rules_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -754,7 +814,9 @@ async def rules_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     kurallar = cget(chat.id, "kurallar") or DEFAULT_G["kurallar"]
     m = await context.bot.send_message(
-        chat.id, f"📜 <b>Grup Kuralları</b>\n\n{html.escape(str(kurallar))}", parse_mode="HTML"
+        chat.id,
+        f"📜 <b>Grup Kuralları</b>\n\n{html.escape(str(kurallar))}",
+        parse_mode="HTML",
     )
     asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 60))
 
@@ -763,16 +825,33 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data or not q.data.startswith("p:"):
         return
-    await q.answer()
-    chat = q.message.chat if q.message else None
     user = q.from_user
-    if not chat or chat.type == ChatType.PRIVATE:
+    if not user:
         return
-    if not await admin_mi(chat.id, user, context.bot):
+
+    # Panel ozel sohbette; grup id user_data'dan
+    cid = context.user_data.get("panel_gid")
+    gtitle = context.user_data.get("panel_gtitle") or ""
+    if not cid:
+        await q.answer("Önce grupta /panel yaz", show_alert=True)
+        return
+    if not await admin_mi(cid, user, context.bot):
         await q.answer("Yetkin yok", show_alert=True)
         return
+
+    await q.answer()
     data = q.data[2:]
-    cid = chat.id
+
+    async def yenile(ek=""):
+        t = panel_metin(cid, gtitle)
+        if ek:
+            t = ek + "\n\n" + t
+        try:
+            await q.edit_message_text(
+                t, parse_mode="HTML", reply_markup=panel_ana(cid, gtitle)
+            )
+        except Exception:
+            pass
 
     if data == "kapat":
         try:
@@ -781,66 +860,137 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
+    if data == "geri":
+        await yenile()
+        return
+
+    # --- Hos geldin ---
     if data == "hg":
         cur = bool(cget(cid, "hosgeldin"))
         cset(cid, "hosgeldin", not cur)
         durum = "AÇIK ✅" if not cur else "KAPALI ❌"
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Sil: 5sn", callback_data="p:hgs5"),
+                    InlineKeyboardButton("Sil: 15sn", callback_data="p:hgs15"),
+                    InlineKeyboardButton("Sil: 30sn", callback_data="p:hgs30"),
+                ],
+                [
+                    InlineKeyboardButton("Mute: 0", callback_data="p:hgm0"),
+                    InlineKeyboardButton("Mute: 15dk", callback_data="p:hgm15"),
+                    InlineKeyboardButton("Mute: 60dk", callback_data="p:hgm60"),
+                ],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]
+        )
         await q.edit_message_text(
-            f"👋 Hoş geldin mesajı: <b>{durum}</b>\n"
-            f"Süre (sil): {cget(cid, 'hosgeldin_sil')} sn\n"
-            f"Mute: {cget(cid, 'hosgeldin_mute')} dk\n\n"
-            f"Metni değiştirmek için gruba yaz:\n"
-            f"<code>/setwelcome metin { '{ad}' } ...</code>",
+            f"👋 Hoş geldin: <b>{durum}</b>\n"
+            f"Silme: {cget(cid, 'hosgeldin_sil')} sn | Mute: {cget(cid, 'hosgeldin_mute')} dk\n\n"
+            f"Metin değiştir (grupta):\n"
+            f"<code>/setwelcome metin {{ad}} ...</code>",
             parse_mode="HTML",
-            reply_markup=panel_ana(cid),
+            reply_markup=kb,
         )
         return
 
+    if data.startswith("hgs"):
+        cset(cid, "hosgeldin_sil", int(data[3:]))
+        await q.answer(f"Silme {data[3:]} sn")
+        await yenile(f"✅ Hoş geldin silme: {data[3:]} sn")
+        return
+
+    if data.startswith("hgm"):
+        cset(cid, "hosgeldin_mute", int(data[3:]))
+        await q.answer(f"Mute {data[3:]} dk")
+        await yenile(f"✅ Hoş geldin mute: {data[3:]} dk")
+        return
+
+    # --- Hoscaakal ---
     if data == "hc":
         cur = bool(cget(cid, "hoscaakal"))
         cset(cid, "hoscaakal", not cur)
-        durum = "AÇIK ✅" if not cur else "KAPALI ❌"
-        await q.edit_message_text(
-            f"👋 Hoşçakal: <b>{durum}</b>",
-            parse_mode="HTML",
-            reply_markup=panel_ana(cid),
-        )
+        await yenile(f"👋 Hoşçakal: {'AÇIK ✅' if not cur else 'KAPALI ❌'}")
         return
 
+    # --- Servis ---
     if data == "servis":
         cur = bool(cget(cid, "servis_sil"))
         cset(cid, "servis_sil", not cur)
-        durum = "AÇIK ✅" if not cur else "KAPALI ❌"
-        await q.edit_message_text(
-            f"🧹 Servis mesajı silme: <b>{durum}</b>",
-            parse_mode="HTML",
-            reply_markup=panel_ana(cid),
-        )
+        await yenile(f"🧹 Servis sil: {'AÇIK ✅' if not cur else 'KAPALI ❌'}")
         return
 
+    # --- Medya (genel + alt turler) ---
     if data == "medya":
         cur = bool(cget(cid, "medya_engel"))
         cset(cid, "medya_engel", not cur)
-        durum = "AÇIK ✅" if not cur else "KAPALI ❌"
+        acik = not cur
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"Foto {_ok(cget(cid, 'medya_foto'))}", callback_data="p:mf"
+                    ),
+                    InlineKeyboardButton(
+                        f"Video {_ok(cget(cid, 'medya_video'))}", callback_data="p:mv"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"GIF {_ok(cget(cid, 'medya_gif'))}", callback_data="p:mg"
+                    ),
+                    InlineKeyboardButton(
+                        f"Sticker {_ok(cget(cid, 'medya_sticker'))}", callback_data="p:ms"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"Dosya {_ok(cget(cid, 'medya_dosya'))}", callback_data="p:md"
+                    ),
+                    InlineKeyboardButton(
+                        f"Ses {_ok(cget(cid, 'medya_ses'))}", callback_data="p:me"
+                    ),
+                ],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]
+        )
         await q.edit_message_text(
-            f"📷 Medya engeli: <b>{durum}</b>\n(açıkken normal üyelerin foto/video/sticker silinir)",
+            f"📷 Medya engeli: <b>{'AÇIK ✅' if acik else 'KAPALI ❌'}</b>\n"
+            f"Açıkken seçili türler normal üyelerde silinir.",
             parse_mode="HTML",
-            reply_markup=panel_ana(cid),
+            reply_markup=kb,
         )
         return
 
+    medya_map = {
+        "mf": "medya_foto",
+        "mv": "medya_video",
+        "mg": "medya_gif",
+        "ms": "medya_sticker",
+        "md": "medya_dosya",
+        "me": "medya_ses",
+    }
+    if data in medya_map:
+        k = medya_map[data]
+        cset(cid, k, not bool(cget(cid, k)))
+        await q.answer(f"{k}: {_ok(cget(cid, k))}")
+        # alt menuyu yenile
+        q.data = "p:medya"
+        # basit yenileme
+        await yenile(f"📷 {k} = {_ok(cget(cid, k))}")
+        return
+
+    # --- Link ---
     if data == "link":
         cur = bool(cget(cid, "link_engel"))
         cset(cid, "link_engel", not cur)
-        durum = "AÇIK ✅" if not cur else "KAPALI ❌"
-        await q.edit_message_text(
-            f"🔗 Link engeli: <b>{durum}</b>\n"
-            f"İzinli link ekle: <code>/izinlink ornek.com</code>",
-            parse_mode="HTML",
-            reply_markup=panel_ana(cid),
+        await yenile(
+            f"🔗 Link engeli: {'AÇIK ✅' if not cur else 'KAPALI ❌'}\n"
+            f"İzinli ekle (grupta): <code>/izinlink ornek.com</code>"
         )
         return
 
+    # --- Uyari ---
     if data == "uyari":
         limit = cget(cid, "warn_limit")
         ceza = cget(cid, "warn_ceza")
@@ -860,8 +1010,8 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         )
         await q.edit_message_text(
-            f"⚠️ <b>Uyarılar</b>\nLimit: {limit}\nCeza: {ceza}\n"
-            f"Kullanım: birine yanıtla <code>/warn sebep</code>",
+            f"⚠️ <b>Uyarılar</b>\nLimit: {limit} | Ceza: {ceza}\n"
+            f"Grupta yanıtla: <code>/warn sebep</code>",
             parse_mode="HTML",
             reply_markup=kb,
         )
@@ -870,20 +1020,21 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("wl"):
         cset(cid, "warn_limit", int(data[2:]))
         await q.answer(f"Limit {data[2:]}")
-        await q.edit_message_reply_markup(reply_markup=panel_ana(cid))
+        await yenile(f"⚠️ Uyarı limiti: {data[2:]}")
         return
 
     if data.startswith("wc_"):
         cset(cid, "warn_ceza", data[3:])
         await q.answer(f"Ceza: {data[3:]}")
-        await q.edit_message_reply_markup(reply_markup=panel_ana(cid))
+        await yenile(f"⚠️ Uyarı cezası: {data[3:]}")
         return
 
+    # --- Kurallar ---
     if data == "kurallar":
         kurallar = cget(cid, "kurallar") or DEFAULT_G["kurallar"]
         await q.edit_message_text(
             f"📜 <b>Kurallar</b>\n\n{html.escape(str(kurallar))}\n\n"
-            f"Değiştir: <code>/setrules metin...</code>",
+            f"Değiştir (grupta): <code>/setrules metin...</code>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("« Geri", callback_data="p:geri")]]
@@ -891,12 +1042,15 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # --- Log ---
     if data == "log":
+        mevcut = cget(cid, "log_kanal")
         await q.edit_message_text(
-            "📋 Log kanalı ayarla:\n"
-            "1) Botu log kanalına admin ekle\n"
-            "2) Kanalda <code>/setlog</code> yaz\n"
-            "Kaldır: <code>/unsetlog</code>",
+            f"📋 <b>Log kanalı</b>\n"
+            f"Şu an: <code>{mevcut or 'yok'}</code>\n\n"
+            f"1) Botu log kanalına admin ekle\n"
+            f"2) O kanalda <code>/setlog {cid}</code> yaz\n"
+            f"Kaldır: grupta <code>/unsetlog</code>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("« Geri", callback_data="p:geri")]]
@@ -904,29 +1058,155 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # --- Flood ---
+    if data == "flood":
+        adet = int(cget(cid, "flood_adet") or 0)
+        sn = int(cget(cid, "flood_sn") or 5)
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Kapalı", callback_data="p:fl0"),
+                    InlineKeyboardButton("5 / 5sn", callback_data="p:fl5"),
+                    InlineKeyboardButton("8 / 5sn", callback_data="p:fl8"),
+                ],
+                [
+                    InlineKeyboardButton("10 / 10sn", callback_data="p:fl10"),
+                    InlineKeyboardButton("« Geri", callback_data="p:geri"),
+                ],
+            ]
+        )
+        await q.edit_message_text(
+            f"🌊 <b>Flood önleyici</b>\n"
+            f"Şu an: {adet or 'kapalı'} mesaj / {sn} sn\n"
+            f"Aşınca mesaj silinir + uyarı.",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+
+    if data.startswith("fl"):
+        n = int(data[2:])
+        cset(cid, "flood_adet", n)
+        if n > 0:
+            cset(cid, "flood_sn", 5 if n < 10 else 10)
+        await q.answer(f"Flood: {n or 'kapalı'}")
+        await yenile(f"🌊 Flood: {n or 'kapalı'}")
+        return
+
+    # --- Gece mod ---
+    if data == "gece":
+        cur = bool(cget(cid, "gece_mod"))
+        cset(cid, "gece_mod", not cur)
+        await yenile(
+            f"🌙 Gece modu: {'AÇIK ✅' if not cur else 'KAPALI ❌'}\n"
+            f"(00:00–07:00 sadece admin yazabilir — ileride aktif)"
+        )
+        return
+
+    # --- Sessizlik ---
+    if data == "sessizlik":
+        cur = bool(cget(cid, "sessizlik"))
+        cset(cid, "sessizlik", not cur)
+        await yenile(
+            f"🔇 Sessizlik: {'AÇIK ✅' if not cur else 'KAPALI ❌'}\n"
+            f"(açıkken normal üyeler yazamaz)"
+        )
+        return
+
+    # --- Engellemeler ---
+    if data == "engel":
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"Username zorunlu {_ok(cget(cid, 'zorunlu_username'))}",
+                        callback_data="p:zu",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"Profil foto zorunlu {_ok(cget(cid, 'zorunlu_foto'))}",
+                        callback_data="p:zf",
+                    )
+                ],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]
+        )
+        await q.edit_message_text(
+            "🚫 <b>Engellemeler / giriş şartları</b>\n"
+            "Açık olanlar gruba girince kontrol edilir.",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+
+    if data == "zu":
+        cset(cid, "zorunlu_username", not bool(cget(cid, "zorunlu_username")))
+        await q.answer("Username kuralı güncellendi")
+        await yenile(f"Username zorunlu: {_ok(cget(cid, 'zorunlu_username'))}")
+        return
+
+    if data == "zf":
+        cset(cid, "zorunlu_foto", not bool(cget(cid, "zorunlu_foto")))
+        await q.answer("Profil foto kuralı güncellendi")
+        await yenile(f"Profil foto zorunlu: {_ok(cget(cid, 'zorunlu_foto'))}")
+        return
+
+    # --- Mesaj uzunlugu ---
+    if data == "uzunluk":
+        mn = int(cget(cid, "mesaj_min") or 0)
+        mx = int(cget(cid, "mesaj_max") or 0)
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Min kapalı", callback_data="p:umin0"),
+                    InlineKeyboardButton("Min 5", callback_data="p:umin5"),
+                    InlineKeyboardButton("Min 10", callback_data="p:umin10"),
+                ],
+                [
+                    InlineKeyboardButton("Max kapalı", callback_data="p:umax0"),
+                    InlineKeyboardButton("Max 500", callback_data="p:umax500"),
+                    InlineKeyboardButton("Max 1000", callback_data="p:umax1000"),
+                ],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]
+        )
+        await q.edit_message_text(
+            f"📏 <b>Mesaj uzunluğu</b>\nMin: {mn or 'kapalı'} | Max: {mx or 'kapalı'}",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+
+    if data.startswith("umin"):
+        cset(cid, "mesaj_min", int(data[4:]))
+        await q.answer(f"Min {data[4:]}")
+        await yenile(f"📏 Min uzunluk: {data[4:] or 'kapalı'}")
+        return
+
+    if data.startswith("umax"):
+        cset(cid, "mesaj_max", int(data[4:]))
+        await q.answer(f"Max {data[4:]}")
+        await yenile(f"📏 Max uzunluk: {data[4:] or 'kapalı'}")
+        return
+
+    # --- Mod yardim ---
     if data == "modhelp":
         await q.edit_message_text(
-            "🔇 <b>Moderasyon komutları</b> (yanıtla veya id)\n"
+            "🔧 <b>Moderasyon komutları</b> (grupta, yanıtla)\n"
             "<code>/mute 30</code> — 30 dk sustur\n"
             "<code>/unmute</code>\n"
-            "<code>/ban</code>\n"
-            "<code>/unban</code>\n"
+            "<code>/ban</code> / <code>/unban</code>\n"
             "<code>/kick</code>\n"
-            "<code>/warn sebep</code>\n"
-            "<code>/unwarn</code>\n"
-            "Komutlar 8 sn sonra silinir.",
+            "<code>/warn sebep</code> / <code>/unwarn</code>\n"
+            "<code>/setwelcome metin</code>\n"
+            "<code>/setrules metin</code>\n"
+            "<code>/izinlink domain.com</code>\n"
+            "Komutlar birkaç saniye sonra silinir.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("« Geri", callback_data="p:geri")]]
             ),
-        )
-        return
-
-    if data == "geri":
-        await q.edit_message_text(
-            f"⚙️ <b>Ayarlar</b>\nGrup: {html.escape(chat.title or '')}",
-            parse_mode="HTML",
-            reply_markup=panel_ana(cid),
         )
         return
 
@@ -1302,6 +1582,7 @@ async def sahip_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 LINK_RE = re.compile(r"(https?://|t\.me/|telegram\.me/|www\.)", re.I)
+_flood_sayac = {}  # (chat_id, user_id) -> [timestamps]
 
 
 async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1316,32 +1597,71 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ozel = chat.type == ChatType.PRIVATE
     metin = (msg.text or msg.caption or "").strip()
 
-    # medya engeli
-    if (
-        not ozel
-        and cget(cid, "medya_engel")
-        and user
-        and not await admin_mi(cid, user, context.bot)
-    ):
-        if msg.photo or msg.video or msg.animation or msg.sticker or msg.document:
+    # grup kurallari (admin haric)
+    if not ozel and user and not await admin_mi(cid, user, context.bot):
+        # sessizlik: normal uye yazamaz
+        if cget(cid, "sessizlik"):
             try:
                 await msg.delete()
             except Exception:
                 pass
             return
 
-    # link engeli
-    if (
-        not ozel
-        and cget(cid, "link_engel")
-        and metin
-        and user
-        and not await admin_mi(cid, user, context.bot)
-    ):
-        if LINK_RE.search(metin):
+        # medya engeli (tur bazli)
+        if cget(cid, "medya_engel"):
+            sil = False
+            if msg.photo and cget(cid, "medya_foto"):
+                sil = True
+            elif msg.video and cget(cid, "medya_video"):
+                sil = True
+            elif msg.animation and cget(cid, "medya_gif"):
+                sil = True
+            elif msg.sticker and cget(cid, "medya_sticker"):
+                sil = True
+            elif msg.document and cget(cid, "medya_dosya"):
+                sil = True
+            elif (msg.voice or msg.audio) and cget(cid, "medya_ses"):
+                sil = True
+            if sil:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+
+        # link engeli
+        if cget(cid, "link_engel") and metin and LINK_RE.search(metin):
             izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
             ok = any(x in metin.lower() for x in izin) if izin else False
             if not ok:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+
+        # mesaj uzunlugu
+        if metin:
+            mn = int(cget(cid, "mesaj_min") or 0)
+            mx = int(cget(cid, "mesaj_max") or 0)
+            if (mn and len(metin) < mn) or (mx and len(metin) > mx):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
+
+        # flood
+        adet = int(cget(cid, "flood_adet") or 0)
+        if adet > 0:
+            sn = int(cget(cid, "flood_sn") or 5)
+            key = (cid, user.id)
+            now = time.time()
+            lst = _flood_sayac.get(key, [])
+            lst = [t for t in lst if now - t < sn]
+            lst.append(now)
+            _flood_sayac[key] = lst
+            if len(lst) > adet:
                 try:
                     await msg.delete()
                 except Exception:
@@ -1472,6 +1792,7 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
 app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
 app.add_handler(CommandHandler("ayarlar", ayarlar_komut))
 app.add_handler(CommandHandler("settings", ayarlar_komut))
+app.add_handler(CommandHandler("panel", ayarlar_komut))
 app.add_handler(CommandHandler("rules", rules_komut))
 app.add_handler(CommandHandler("kurallar", rules_komut))
 app.add_handler(CommandHandler("mute", mute_komut))
