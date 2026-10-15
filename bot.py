@@ -1121,14 +1121,18 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "log":
         mevcut = cget(cid, "log_kanal")
         await q.edit_message_text(
-            f"📋 <b>Log kanalı</b>\n"
+            f"📋 <b>Log / Rapor kanalı</b>\n"
             f"Şu an: <code>{mevcut or 'yok'}</code>\n\n"
-            f"1) Botu log kanalına admin ekle\n"
-            f"2) O kanalda <code>/setlog {cid}</code> yaz\n"
-            f"Kaldır: grupta <code>/unsetlog</code>",
+            f"<b>Nasıl ayarlanır?</b>\n"
+            f"1) Botu rapor kanalına <b>admin</b> ekle\n"
+            f"2) Gruba <code>/id</code> yaz, grup ID kopyala\n"
+            f"3) <b>Rapor kanalında</b> yaz:\n"
+            f"<code>/setlog {cid}</code>\n\n"
+            f"Rapor: <code>/report @kullanici sebep</code>\n"
+            f"Kaldır: <code>/unsetlog</code>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("« Geri", callback_data="p:geri")]]
+                [[InlineKeyboardButton("« Ana menü", callback_data="p:geri")]]
             ),
         )
         return
@@ -1780,24 +1784,131 @@ async def setrules_komut(update, context):
 
 
 async def setlog_komut(update, context):
+    """Log kanali ayarla.
+    Kullanim:
+      1) Rapor kanalinda: /setlog <GRUP_ID>
+      2) Grupta kanal mesajini iletip: /setlog
+      3) Grupta: /setlog -100xxxx  (kanal id)
+    """
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
-    if not chat:
+    if not chat or not msg:
         return
-    await komut_gizle(msg, context.bot)
-    if not await admin_mi(chat.id, user, context.bot) and not sahip_mi(user):
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    # yetki: grup/kanal admin veya sahip
+    yetkili = sahip_mi(user)
+    if not yetkili:
+        try:
+            m = await context.bot.get_chat_member(chat.id, user.id)
+            yetkili = m.status in (
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.OWNER,
+                "administrator",
+                "creator",
+            )
+        except Exception:
+            yetkili = False
+    if not yetkili:
         return
-    # log kanali: komutun yazildigi chat
-    # grup icin log ayarlamak: hedef grup id arguman veya yanit
-    hedef = chat.id
-    if context.args and context.args[0].lstrip("-").isdigit():
-        hedef = int(context.args[0])
-    cset(hedef, "log_kanal", chat.id)
-    m = await context.bot.send_message(
-        chat.id, f"✅ Log kanalı ayarlandı (grup {hedef} → bu chat)"
-    )
-    asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 10))
+
+    grup_id = None
+    kanal_id = None
+
+    # iletilmis mesajdan kanal id al
+    if msg.forward_from_chat and msg.forward_from_chat.type in (
+        ChatType.CHANNEL,
+        "channel",
+    ):
+        kanal_id = msg.forward_from_chat.id
+
+    # args (CommandHandler veya kanal postundan elle parse)
+    arg_id = None
+    args = list(context.args) if context.args else []
+    if not args and msg.text:
+        parts = msg.text.split()
+        # /setlog veya /setlog@bot ...
+        if len(parts) >= 2:
+            args = parts[1:]
+    if args and args[0].lstrip("-").isdigit():
+        arg_id = int(args[0])
+
+    if chat.type in (ChatType.CHANNEL, "channel"):
+        # komut rapor kanalinda yazildi
+        kanal_id = chat.id
+        if arg_id:
+            grup_id = arg_id
+        else:
+            # panel_gid veya son bilinen grup
+            pass
+    elif chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
+        grup_id = chat.id
+        if arg_id:
+            kanal_id = arg_id
+        # forward yoksa ve arg yoksa hata
+    elif chat.type == ChatType.PRIVATE:
+        if arg_id and kanal_id:
+            grup_id = arg_id
+        elif arg_id:
+            # sadece bir id var — belirsiz
+            pass
+
+    # ozelde panel_gid varsa grup olarak kullan
+    if not grup_id and update.effective_user:
+        # context user_data yok burada her zaman; durumdan bakma
+        pass
+
+    if not grup_id or not kanal_id:
+        yardim = (
+            "📋 <b>Log kanalı nasıl ayarlanır?</b>\n\n"
+            "1️⃣ Botu <b>rapor kanalına</b> admin ekle\n"
+            "2️⃣ Grubun ID’sini öğren (gruba <code>/id</code> yaz)\n"
+            "3️⃣ <b>Rapor kanalında</b> yaz:\n"
+            "<code>/setlog GRUP_ID</code>\n"
+            "Örnek: <code>/setlog -1001234567890</code>\n\n"
+            "Veya grupta kanal mesajını iletip <code>/setlog</code> yaz."
+        )
+        try:
+            m = await context.bot.send_message(chat.id, yardim, parse_mode="HTML")
+            asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 20))
+        except Exception:
+            pass
+        return
+
+    # log kanalini gruba bagla (asla grubu kendi log'u yapma)
+    if kanal_id == grup_id:
+        try:
+            m = await context.bot.send_message(
+                chat.id, "❌ Log kanalı grup olamaz. Ayrı bir kanal kullan."
+            )
+            asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 10))
+        except Exception:
+            pass
+        return
+
+    cset(grup_id, "log_kanal", kanal_id)
+    try:
+        m = await context.bot.send_message(
+            chat.id,
+            f"✅ Log ayarlandı\nGrup: <code>{grup_id}</code>\nKanal: <code>{kanal_id}</code>",
+            parse_mode="HTML",
+        )
+        asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 12))
+    except Exception:
+        pass
+    # kanala da teyit
+    try:
+        await context.bot.send_message(
+            kanal_id,
+            f"✅ Bu kanal artık log kanalı.\nGrup: <code>{grup_id}</code>",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        log.warning("setlog kanal teyit: %s", e)
 
 
 async def unsetlog_komut(update, context):
@@ -1812,6 +1923,124 @@ async def unsetlog_komut(update, context):
     cset(chat.id, "log_kanal", None)
     m = await context.bot.send_message(chat.id, "✅ Log kaldırıldı")
     asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 8))
+
+
+async def report_komut(update, context):
+    """/report @user sebep  veya mesaja yanitla /report sebep"""
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not chat or not user:
+        return
+    if chat.type == ChatType.PRIVATE:
+        return
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    hedef = None
+    sebep = "Sebep belirtilmedi"
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        hedef = msg.reply_to_message.from_user
+        if context.args:
+            sebep = " ".join(context.args)
+    elif context.args:
+        # /report @user sebep
+        a0 = context.args[0].lstrip("@")
+        rest = context.args[1:]
+        if rest:
+            sebep = " ".join(rest)
+        # username ile ara
+        if a0.isdigit():
+            class U:
+                id = int(a0)
+                full_name = a0
+                username = ""
+            hedef = U()
+        else:
+            # uyeler.json'dan bul
+            k = uyeler.get(str(chat.id), {})
+            for uid, bil in k.items():
+                if (bil.get("kullanici") or "").lower() == a0.lower():
+                    class U:
+                        id = int(uid)
+                        full_name = bil.get("ad") or a0
+                        username = a0
+                    hedef = U()
+                    break
+            if not hedef:
+                class U:
+                    id = 0
+                    full_name = a0
+                    username = a0
+                hedef = U()
+    if not hedef:
+        m = await context.bot.send_message(
+            chat.id, "Kullanım: birine yanıtla <code>/report sebep</code>", parse_mode="HTML"
+        )
+        asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 8))
+        return
+
+    rapor = (
+        f"🚨 <b>RAPOR</b>\n"
+        f"Grup: {html.escape(chat.title or str(chat.id))}\n"
+        f"Raporlayan: {html.escape(user.full_name or '')} "
+        f"(@{user.username or '—'}) <code>{user.id}</code>\n"
+        f"Hedef: {html.escape(getattr(hedef, 'full_name', '') or '')} "
+        f"(@{getattr(hedef, 'username', '') or '—'}) "
+        f"<code>{getattr(hedef, 'id', '')}</code>\n"
+        f"Sebep: {html.escape(sebep)}"
+    )
+    kid = cget(chat.id, "log_kanal")
+    if kid:
+        try:
+            await context.bot.send_message(int(kid), rapor, parse_mode="HTML")
+            m = await context.bot.send_message(chat.id, "✅ Rapor iletildi")
+            asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 6))
+        except Exception as e:
+            log.warning("report: %s", e)
+            m = await context.bot.send_message(
+                chat.id, "❌ Rapor kanalına gönderilemedi. /setlog kontrol et."
+            )
+            asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 8))
+    else:
+        m = await context.bot.send_message(
+            chat.id,
+            "❌ Log kanalı yok. Önce rapor kanalında:\n"
+            f"<code>/setlog {chat.id}</code>",
+            parse_mode="HTML",
+        )
+        asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 12))
+
+
+async def id_komut(update, context):
+    """Gruba /id — chat id goster (setlog icin)."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not chat:
+        return
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    if chat.type != ChatType.PRIVATE and not await admin_mi(chat.id, user, context.bot):
+        if not sahip_mi(user):
+            return
+    text = (
+        f"🆔 <b>Chat bilgisi</b>\n"
+        f"Başlık: {html.escape(chat.title or chat.full_name or '—')}\n"
+        f"ID: <code>{chat.id}</code>\n"
+        f"Tür: {chat.type}"
+    )
+    if user:
+        text += f"\nSenin ID: <code>{user.id}</code>"
+    try:
+        m = await context.bot.send_message(chat.id, text, parse_mode="HTML")
+        asyncio.create_task(sil_sonra(context.bot, chat.id, m.message_id, 15))
+    except Exception:
+        pass
 
 
 async def izinlink_komut(update, context):
@@ -2008,7 +2237,8 @@ async def ayrildi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if not msg or not chat or not msg.left_chat_member:
         return
-    if cget(chat.id, "servis_sil"):
+    # Telegram cikis servis mesajini sil
+    if cget(chat.id, "servis_sil") or cget(chat.id, "servis_cikis"):
         try:
             await msg.delete()
         except Exception:
@@ -2017,6 +2247,7 @@ async def ayrildi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.is_bot:
         return
     ad = u.full_name or u.username or str(u.id)
+    # SADECE log kanalina — gruba yazma
     await log_gonder(
         context.bot, chat.id, f"➖ {html.escape(ad)} gruptan ayrıldı"
     )
@@ -2033,6 +2264,31 @@ async def ayrildi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         log.warning("hoscaakal: %s", e)
+
+
+async def servis_mesaj_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pin, baslik, foto vb. servis mesajlarini sil."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat or chat.type == ChatType.PRIVATE:
+        return
+    sil = False
+    if msg.pinned_message and (
+        cget(chat.id, "servis_sil") or cget(chat.id, "servis_pin")
+    ):
+        sil = True
+    if msg.new_chat_title and (
+        cget(chat.id, "servis_sil") or cget(chat.id, "servis_baslik")
+    ):
+        sil = True
+    if msg.new_chat_photo or msg.delete_chat_photo:
+        if cget(chat.id, "servis_sil") or cget(chat.id, "servis_foto"):
+            sil = True
+    if sil:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
 
 # ---------- sahip yakala + mesaj ----------
@@ -2364,6 +2620,21 @@ app.add_handler(CommandHandler("setwelcome", setwelcome_komut))
 app.add_handler(CommandHandler("setrules", setrules_komut))
 app.add_handler(CommandHandler("setlog", setlog_komut))
 app.add_handler(CommandHandler("unsetlog", unsetlog_komut))
+app.add_handler(CommandHandler("report", report_komut))
+app.add_handler(CommandHandler("id", id_komut))
+# kanal postlarinda /setlog ve /id
+app.add_handler(
+    MessageHandler(
+        filters.UpdateType.CHANNEL_POST & filters.Regex(r"(?i)^/setlog(@\w+)?(\s|$)"),
+        setlog_komut,
+    )
+)
+app.add_handler(
+    MessageHandler(
+        filters.UpdateType.CHANNEL_POST & filters.Regex(r"(?i)^/id(@\w+)?(\s|$)"),
+        id_komut,
+    )
+)
 app.add_handler(CommandHandler("izinlink", izinlink_komut))
 app.add_handler(CommandHandler("setlink", setlink_komut))
 app.add_handler(CommandHandler("yasak", yasak_komut))
@@ -2371,6 +2642,15 @@ app.add_handler(CommandHandler("yasaktemiz", yasaktemiz_komut))
 app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^p:"))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
 app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
+app.add_handler(
+    MessageHandler(
+        filters.StatusUpdate.NEW_CHAT_TITLE
+        | filters.StatusUpdate.NEW_CHAT_PHOTO
+        | filters.StatusUpdate.DELETE_CHAT_PHOTO
+        | filters.StatusUpdate.PINNED_MESSAGE,
+        servis_mesaj_sil,
+    )
+)
 app.add_handler(
     MessageHandler(
         (filters.TEXT | filters.CAPTION)
