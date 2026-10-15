@@ -217,25 +217,53 @@ def _gemini_icerik(m):
 
 
 def gemini_sor(m, sistem):
-    r = gem.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=_gemini_icerik(m),
-        config={"system_instruction": sistem, "max_output_tokens": 180},
-    )
-    return r.text
+    son = None
+    for model in (
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-flash-latest",
+    ):
+        try:
+            r = gem.models.generate_content(
+                model=model,
+                contents=_gemini_icerik(m),
+                config={"system_instruction": sistem, "max_output_tokens": 180},
+            )
+            txt = getattr(r, "text", None)
+            if txt:
+                return txt
+        except Exception as e:
+            son = e
+            log.warning("Gemini %s: %s", model, e)
+    if son:
+        raise son
+    return None
 
 
 def gemini_arama(m, sistem):
-    r = gem.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=_gemini_icerik(m),
-        config=types.GenerateContentConfig(
-            system_instruction=sistem,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            max_output_tokens=180,
-        ),
-    )
-    return r.text
+    son = None
+    for model in ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"):
+        try:
+            r = gem.models.generate_content(
+                model=model,
+                contents=_gemini_icerik(m),
+                config=types.GenerateContentConfig(
+                    system_instruction=sistem,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    max_output_tokens=180,
+                ),
+            )
+            txt = getattr(r, "text", None)
+            if txt:
+                return txt
+        except Exception as e:
+            son = e
+            log.warning("Gemini arama %s: %s", model, e)
+    if son:
+        raise son
+    return None
 
 
 def deepseek_sor(m, sistem):
@@ -327,6 +355,8 @@ def sor(mesajlar, ek="", arama=False):
                 return cevap
         except Exception as e:
             log.warning("%s coktu: %s", ad, e)
+            log.warning("%s detay: %s", ad, str(e)[:400])
+    log.error("Tum AI saglayicilar basarisiz — GROQ_KEY / GEMINI_KEY kontrol et")
     return None
 
 
