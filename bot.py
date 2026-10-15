@@ -92,12 +92,13 @@ gem = genai.Client(api_key=GEMINI_KEY)
 
 SISTEM = (
     "Sen grubun samimi, esprili asistanısın. Adın Yapay. Türkçe konuş. "
-    "CEVAPLAR ÇOK KISA: en fazla 1-2 kısa cümle, 150 karakteri geçme. Uzun paragraf YASAK. "
+    "Cevaplar KISA olsun: 1-2 tam cümle, en fazla 200 karakter. "
+    "Cümleyi YARIDA BIRAKMA; nokta ile bitir. "
     "Samimi ol, gerekirse hafif küfür (amk, lan) ama abartma. "
+    "Anlamsız/yazım hatalı mesajlara kısa ve net cevap ver, uydurma hikaye yazma. "
     "Önceki konuşmayı unutma, konu dışına çıkma. "
     "Kişiye SADECE verilen ismiyle hitap et. Asla 'Telegram' diye hitap etme. "
-    "Model/şirket adı söyleme. Yatırım/siyaset yok. Bilmediğini uydurma. "
-    "Sahip talimatlarına uy."
+    "Model/şirket adı söyleme. Yatırım/siyaset yok. Bilmediğini uydurma."
 )
 
 DOSYA = "uyeler.json"
@@ -199,7 +200,7 @@ def groq_sor(m, sistem):
             r = groq.chat.completions.create(
                 model=model,
                 messages=[{"role": "system", "content": sistem}] + m,
-                max_tokens=180,
+                max_tokens=220,
                 temperature=0.7,
             )
             c = r.choices[0].message.content
@@ -237,7 +238,7 @@ def gemini_sor(m, sistem):
             r = gem.models.generate_content(
                 model=model,
                 contents=_gemini_icerik(m),
-                config={"system_instruction": sistem, "max_output_tokens": 180},
+                config={"system_instruction": sistem, "max_output_tokens": 220},
             )
             txt = getattr(r, "text", None)
             if txt:
@@ -260,7 +261,7 @@ def gemini_arama(m, sistem):
                 config=types.GenerateContentConfig(
                     system_instruction=sistem,
                     tools=[types.Tool(google_search=types.GoogleSearch())],
-                    max_output_tokens=180,
+                    max_output_tokens=220,
                 ),
             )
             txt = getattr(r, "text", None)
@@ -358,8 +359,18 @@ def sor(mesajlar, ek="", arama=False):
                     "",
                     cevap,
                 ).strip()
-                if len(cevap.split()) > 55:
-                    cevap = " ".join(cevap.split()[:45]) + "..."
+                # sadece cok uzunsa kisalt, cumleyi bozma
+                if len(cevap) > 280:
+                    kes = cevap[:260]
+                    for sep in (". ", "! ", "? ", "\n"):
+                        i = kes.rfind(sep)
+                        if i > 80:
+                            kes = kes[: i + 1]
+                            break
+                    else:
+                        if " " in kes:
+                            kes = kes.rsplit(" ", 1)[0]
+                    cevap = kes.strip()
                 return cevap
         except Exception as e:
             log.warning("%s coktu: %s", ad, e)
@@ -633,11 +644,17 @@ async def mesaj(update, ctx):
         yanit = "Bir saniye, tekrar dene"
     else:
         yanit = yanit.strip()
-        if len(yanit) > 200:
-            kes = yanit[:200]
-            if " " in kes:
-                kes = kes.rsplit(" ", 1)[0]
-            yanit = kes + "..."
+        if len(yanit) > 280:
+            kes = yanit[:260]
+            for sep in (". ", "! ", "? "):
+                i = kes.rfind(sep)
+                if i > 80:
+                    kes = kes[: i + 1]
+                    break
+            else:
+                if " " in kes:
+                    kes = kes.rsplit(" ", 1)[0]
+            yanit = kes.strip()
         h.append({"role": "assistant", "content": yanit})
     gecmis[anahtar] = h[-30:]
 
