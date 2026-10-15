@@ -285,7 +285,7 @@ def _ok(v):
 def groq_sor(m, sistem):
     if not groq:
         return None
-    for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+    for model in ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
         try:
             r = groq.chat.completions.create(
                 model=model,
@@ -297,7 +297,7 @@ def groq_sor(m, sistem):
             if t:
                 return t
         except Exception as e:
-            log.warning("Groq: %s", e)
+            log.warning("Groq %s: %s", model, e)
     return None
 
 
@@ -314,7 +314,12 @@ def _gem_parts(m):
 def gemini_sor(m, sistem):
     if not gem:
         return None
-    for model in ("gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"):
+    for model in (
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+    ):
         try:
             r = gem.models.generate_content(
                 model=model,
@@ -327,7 +332,7 @@ def gemini_sor(m, sistem):
             if t:
                 return t
         except Exception as e:
-            log.warning("Gemini: %s", e)
+            log.warning("Gemini %s: %s", model, e)
     return None
 
 
