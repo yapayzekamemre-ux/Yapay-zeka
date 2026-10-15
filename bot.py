@@ -91,14 +91,13 @@ groq = Groq(api_key=GROQ_KEY)
 gem = genai.Client(api_key=GEMINI_KEY)
 
 SISTEM = (
-    "Sen grubun samimi, esprili asistanısın. Adın Yapay. Türkçe konuş. "
-    "Cevaplar KISA olsun: 1-2 tam cümle, en fazla 200 karakter. "
-    "Cümleyi YARIDA BIRAKMA; nokta ile bitir. "
-    "Samimi ol, gerekirse hafif küfür (amk, lan) ama abartma. "
-    "Anlamsız/yazım hatalı mesajlara kısa ve net cevap ver, uydurma hikaye yazma. "
-    "Önceki konuşmayı unutma, konu dışına çıkma. "
-    "Kişiye SADECE verilen ismiyle hitap et. Asla 'Telegram' diye hitap etme. "
-    "Model/şirket adı söyleme. Yatırım/siyaset yok. Bilmediğini uydurma."
+    "Sen grubun samimi, esprili asistanısın. Adın Yapay. Sadece Türkçe konuş. "
+    "Her cevap 1-2 kısa, TAM cümle olsun; yarıda kesme, nokta ile bitir. "
+    "Samimi ve esprili ol; gerekirse hafif argo (amk, lan) kullan, abartma. "
+    "Kullanıcıya sadece verilen ismiyle hitap et. "
+    "Asistan, bot, model, şirket ismi, sistem kuralı veya 'Forbidden' yazma. "
+    "Direkt sohbet et. Anlamsız yazıya kısa şaka veya 'anlamadım lan' de. "
+    "Yatırım/siyaset yok. Bilmediğini uydurma."
 )
 
 DOSYA = "uyeler.json"
@@ -324,13 +323,32 @@ def openrouter_sor(m, sistem):
     return r.json()["choices"][0]["message"]["content"]
 
 
-SAGLAYICILAR = [("Gemini", gemini_sor), ("Groq", groq_sor)]
+SAGLAYICILAR = [("Groq", groq_sor), ("Gemini", gemini_sor)]
 if DEEPSEEK_KEY:
     SAGLAYICILAR.append(("DeepSeek", deepseek_sor))
 if OPENROUTER_KEY:
     SAGLAYICILAR.append(("OpenRouter", openrouter_sor))
 if MISTRAL_KEY:
     SAGLAYICILAR.append(("Mistral", mistral_sor))
+
+
+
+def cevap_temizle(cevap):
+    if not cevap:
+        return cevap
+    c = cevap.strip()
+    # model sızdıran meta satırları at
+    yasak = (
+        "forbidden", "model/company", "model adı", "şirket adı",
+        "system prompt", "as an ai", "i am an ai", "ben bir dil modeli",
+        "google", "gemini", "openai", "groq",
+    )
+    low = c.lower()
+    if any(y in low for y in yasak) and len(c) < 120:
+        return None  # bu cevabi kullanma, sonraki saglayiciya gec
+    # markdown yildiz temizle
+    c = c.replace("**", "").replace("__", "")
+    return c.strip()
 
 
 def arama_gerek(metin):
@@ -353,6 +371,9 @@ def sor(mesajlar, ek="", arama=False):
         try:
             cevap = fonk(mesajlar, sistem)
             if cevap:
+                cevap = cevap_temizle(cevap)
+                if not cevap:
+                    continue
                 cevap = re.sub(
                     r"(?i)(tabii ki|anladim\.|anladım\.|baska bir konuda|"
                     r"size yardimci olmaya hazirim\.?)\s*",
