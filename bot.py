@@ -187,7 +187,14 @@ def tanidiklar(chat_id):
 
 def groq_sor(m, sistem):
     son = None
-    for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+    # 2026: llama self-serve kalkti; gpt-oss / qwen aktif
+    for model in (
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.6-27b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+    ):
         try:
             r = groq.chat.completions.create(
                 model=model,
@@ -197,6 +204,7 @@ def groq_sor(m, sistem):
             )
             c = r.choices[0].message.content
             if c:
+                log.info("Groq OK: %s", model)
                 return c
         except Exception as e:
             son = e
@@ -219,10 +227,10 @@ def _gemini_icerik(m):
 def gemini_sor(m, sistem):
     son = None
     for model in (
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-001",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash-lite",
         "gemini-flash-latest",
     ):
         try:
@@ -244,7 +252,7 @@ def gemini_sor(m, sistem):
 
 def gemini_arama(m, sistem):
     son = None
-    for model in ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"):
+    for model in ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest"):
         try:
             r = gem.models.generate_content(
                 model=model,
@@ -315,7 +323,7 @@ def openrouter_sor(m, sistem):
     return r.json()["choices"][0]["message"]["content"]
 
 
-SAGLAYICILAR = [("Groq", groq_sor), ("Gemini", gemini_sor)]
+SAGLAYICILAR = [("Gemini", gemini_sor), ("Groq", groq_sor)]
 if DEEPSEEK_KEY:
     SAGLAYICILAR.append(("DeepSeek", deepseek_sor))
 if OPENROUTER_KEY:
