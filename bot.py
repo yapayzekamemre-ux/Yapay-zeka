@@ -183,6 +183,10 @@ DEFAULT_G = {
     "disabled_cmds": [],
     "privacy_ai": False,
     "reports": True,
+    "duyuru_kanal": None,
+    "duyuru_aktif": False,
+    "duyuru_saat": 2,
+    "duyuru_posts": [],
 }
 
 
@@ -398,21 +402,30 @@ def mistral_sor(m, sistem):
 def openrouter_sor(m, sistem):
     if not OPENROUTER_KEY:
         return None
-    try:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_KEY}"},
-            json={
-                "model": "meta-llama/llama-3.3-70b-instruct:free",
-                "messages": [{"role": "system", "content": sistem}] + m,
-                "max_tokens": 200,
-            },
-            timeout=30,
-        )
-        if r.ok:
-            return (r.json()["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        log.warning("OpenRouter: %s", e)
+    for model in (
+        "google/gemini-2.0-flash-exp:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "qwen/qwen-2.5-7b-instruct:free",
+    ):
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_KEY}"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "system", "content": sistem}] + m,
+                    "max_tokens": 200,
+                },
+                timeout=30,
+            )
+            if r.ok:
+                t = (r.json()["choices"][0]["message"]["content"] or "").strip()
+                if t:
+                    return t
+            else:
+                log.warning("OpenRouter %s: %s", model, r.status_code)
+        except Exception as e:
+            log.warning("OpenRouter %s: %s", model, e)
     return None
 
 
@@ -567,6 +580,9 @@ def panel_kb(cid):
             [
                 InlineKeyboardButton("👤 Admin", callback_data="p:admin"),
                 InlineKeyboardButton(f"📣 Reports {_ok(cget(cid,'reports'))}", callback_data="p:reports"),
+            ],
+            [
+                InlineKeyboardButton(f"📢 Duyuru {_ok(cget(cid,'duyuru_aktif'))}", callback_data="p:duyuru"),
             ],
             [
                 InlineKeyboardButton("🚫 Disabling", callback_data="p:disable"),
@@ -918,6 +934,44 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Geri", callback_data="p:geri")]]),
         )
+        return
+
+
+    if data == "duyuru":
+        aktif = bool(cget(cid, "duyuru_aktif"))
+        kid = cget(cid, "duyuru_kanal")
+        saat = int(cget(cid, "duyuru_saat") or 2)
+        n = len(cget(cid, "duyuru_posts") or [])
+        await q.edit_message_text(
+            f"📢 <b>Günlük Duyurular</b>\n"
+            f"Durum: {_ok(aktif)}\n"
+            f"Kanal: <code>{kid or 'yok'}</code>\n"
+            f"Aralık: her {saat} saat\n"
+            f"Kayıtlı post: {n}\n\n"
+            f"1) Botu duyuru kanalına admin ekle\n"
+            f"2) Kanalda: <code>/setduyuru {cid}</code>\n"
+            f"3) Panelden aç veya <code>/duyuruac</code>\n"
+            f"Aralık: <code>/duyurusaat 2</code>\n"
+            f"Şimdi gönder: <code>/duyuru</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Aktif {_ok(aktif)}", callback_data="p:duyuru_tog")],
+                [
+                    InlineKeyboardButton("1s", callback_data="p:duys1"),
+                    InlineKeyboardButton("2s", callback_data="p:duys2"),
+                    InlineKeyboardButton("3s", callback_data="p:duys3"),
+                ],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]),
+        )
+        return
+    if data == "duyuru_tog":
+        cset(cid, "duyuru_aktif", not bool(cget(cid, "duyuru_aktif")))
+        await yenile()
+        return
+    if data in ("duys1", "duys2", "duys3"):
+        cset(cid, "duyuru_saat", int(data[-1]))
+        await yenile()
         return
 
     if data == "kurallar":
@@ -1791,6 +1845,211 @@ async def disabled_komut(update, context):
     )
 
 
+
+def _duyuru_baslik(msg) -> str:
+    t = (msg.text or msg.caption or "").strip()
+    if not t:
+        if msg.photo:
+            return "📷 Fotoğraf"
+        if msg.video:
+            return "🎬 Video"
+        if msg.document:
+            return "📎 Dosya"
+        return "Duyuru"
+    line = t.split("\n")[0].strip()
+    if len(line) > 60:
+        line = line[:57] + "..."
+    return line
+
+
+def _duyuru_link(chat, msg_id: int) -> str:
+    # public username
+    un = getattr(chat, "username", None)
+    if un:
+        return f"https://t.me/{un}/{msg_id}"
+    # private channel: t.me/c/ID/msg without -100
+    cid = str(chat.id)
+    if cid.startswith("-100"):
+        cid = cid[4:]
+    return f"https://t.me/c/{cid}/{msg_id}"
+
+
+def duyuru_liste_metni(chat_id) -> str:
+    posts = list(cget(chat_id, "duyuru_posts") or [])
+    bugun = datetime.now(TR).strftime("%Y-%m-%d")
+    bugunku = [p for p in posts if p.get("date") == bugun]
+    if not bugunku:
+        return "📣 <b>Bugünkü Duyurular</b>\n\nHenüz duyuru yok."
+    lines = ["📣 <b>Bugünkü Duyurular</b>", ""]
+    for i, p in enumerate(bugunku[-20:], 1):
+        title = html.escape(p.get("title") or "Duyuru")
+        link = p.get("link") or ""
+        if link:
+            lines.append(f"{i}. <a href=\"{html.escape(link)}\">{title}</a>")
+        else:
+            lines.append(f"{i}. {title}")
+    return "\n".join(lines)
+
+
+async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kanal postlarini ilgili gruba kaydet."""
+    msg = update.effective_message or update.channel_post
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+    if chat.type not in (ChatType.CHANNEL, "channel"):
+        return
+    # hangi gruplar bu kanali dinliyor?
+    for gid_s, conf in (durum.get("grup") or {}).items():
+        if not isinstance(conf, dict):
+            continue
+        if conf.get("duyuru_kanal") != chat.id:
+            continue
+        posts = list(conf.get("duyuru_posts") or [])
+        bugun = datetime.now(TR).strftime("%Y-%m-%d")
+        entry = {
+            "id": msg.message_id,
+            "title": _duyuru_baslik(msg),
+            "date": bugun,
+            "link": _duyuru_link(chat, msg.message_id),
+        }
+        # ayni id varsa guncelle
+        posts = [p for p in posts if p.get("id") != msg.message_id]
+        posts.append(entry)
+        # sadece son 3 gun
+        keep = []
+        for p in posts:
+            try:
+                d = datetime.strptime(p.get("date", bugun), "%Y-%m-%d").date()
+                if (datetime.now(TR).date() - d).days <= 3:
+                    keep.append(p)
+            except Exception:
+                keep.append(p)
+        conf["duyuru_posts"] = keep[-40:]
+        durum_kaydet()
+        log.info("duyuru kayit grup=%s post=%s", gid_s, entry["title"][:40])
+
+
+async def duyuru_gonder_grup(bot, chat_id):
+    text = duyuru_liste_metni(chat_id)
+    try:
+        await bot.send_message(
+            chat_id, text, parse_mode="HTML", disable_web_page_preview=True
+        )
+    except Exception as e:
+        log.warning("duyuru gonder: %s", e)
+
+
+async def setduyuru_komut(update, context):
+    msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
+    if not msg or not chat or not user:
+        return
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    yetkili = sahip_mi(user)
+    if not yetkili:
+        try:
+            m = await context.bot.get_chat_member(chat.id, user.id)
+            yetkili = m.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, "administrator", "creator")
+        except Exception:
+            pass
+    if not yetkili:
+        return
+    args = list(context.args or [])
+    if not args and msg.text:
+        parts = msg.text.split()
+        if len(parts) >= 2:
+            args = parts[1:]
+    grup_id = None
+    kanal_id = None
+    if chat.type in (ChatType.CHANNEL, "channel"):
+        kanal_id = chat.id
+        if args and args[0].lstrip("-").isdigit():
+            grup_id = int(args[0])
+    elif chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
+        grup_id = chat.id
+        if args and args[0].lstrip("-").isdigit():
+            kanal_id = int(args[0])
+    if not grup_id or not kanal_id:
+        await kisa_cevap(
+            context.bot, chat.id,
+            "📢 Kanalda yaz:\n<code>/setduyuru GRUP_ID</code>\n"
+            "Grup ID: gruba /id",
+            15,
+        )
+        return
+    cset(grup_id, "duyuru_kanal", kanal_id)
+    cset(grup_id, "duyuru_aktif", True)
+    await kisa_cevap(
+        context.bot, chat.id,
+        f"✅ Duyuru kanalı bağlandı\nGrup: <code>{grup_id}</code>\nKanal: <code>{kanal_id}</code>",
+        12,
+    )
+
+
+async def duyuru_komut(update, context):
+    g = await _mod_giris(update, context, "duyuru")
+    if not g:
+        return
+    _, chat, _ = g
+    await duyuru_gonder_grup(context.bot, chat.id)
+
+
+async def duyuruac_komut(update, context):
+    g = await _mod_giris(update, context, "duyuruac")
+    if not g:
+        return
+    _, chat, _ = g
+    cset(chat.id, "duyuru_aktif", True)
+    await kisa_cevap(context.bot, chat.id, "📢 Duyuru listesi açıldı.")
+
+
+async def duyurukapat_komut(update, context):
+    g = await _mod_giris(update, context, "duyurukapat")
+    if not g:
+        return
+    _, chat, _ = g
+    cset(chat.id, "duyuru_aktif", False)
+    await kisa_cevap(context.bot, chat.id, "📢 Duyuru listesi kapatıldı.")
+
+
+async def duyurusaat_komut(update, context):
+    g = await _mod_giris(update, context, "duyurusaat")
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args or not context.args[0].isdigit():
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/duyurusaat 2</code>")
+        return
+    s = max(1, min(int(context.args[0]), 24))
+    cset(chat.id, "duyuru_saat", s)
+    await kisa_cevap(context.bot, chat.id, f"✅ Her {s} saatte bir gönderilecek.")
+
+
+async def duyuru_periyodik(context: ContextTypes.DEFAULT_TYPE):
+    """JobQueue: aktif gruplara bugunku listeyi at."""
+    bot = context.bot
+    now = time.time()
+    for gid_s, conf in list((durum.get("grup") or {}).items()):
+        if not isinstance(conf, dict) or not conf.get("duyuru_aktif"):
+            continue
+        if not conf.get("duyuru_kanal"):
+            continue
+        saat = int(conf.get("duyuru_saat") or 2)
+        last = float(conf.get("duyuru_last") or 0)
+        if now - last < saat * 3600 - 30:
+            continue
+        try:
+            gid = int(gid_s)
+            await duyuru_gonder_grup(bot, gid)
+            conf["duyuru_last"] = now
+            durum_kaydet()
+        except Exception as e:
+            log.warning("duyuru job %s: %s", gid_s, e)
+
+
 async def rules_komut(update, context):
     msg, chat = update.effective_message, update.effective_chat
     if not msg or not chat:
@@ -2186,10 +2445,24 @@ async def hata(update, ctx):
 async def baslat(app):
     me = await app.bot.get_me()
     log.info("Bot hazir @%s", me.username)
+    log.info(
+        "AI keys: groq=%s gemini=%s deepseek=%s mistral=%s openrouter=%s",
+        bool(GROQ_KEY), bool(GEMINI_KEY), bool(DEEPSEEK_KEY),
+        bool(MISTRAL_KEY), bool(OPENROUTER_KEY),
+    )
     try:
         await app.bot.delete_webhook(drop_pending_updates=True)
     except Exception:
         pass
+    # duyuru job: her 10 dk kontrol (aralik gruba gore)
+    try:
+        if app.job_queue:
+            app.job_queue.run_repeating(duyuru_periyodik, interval=600, first=60)
+            log.info("Duyuru job aktif (10dk)")
+        else:
+            log.warning("JobQueue yok — pip install python-telegram-bot[job-queue]")
+    except Exception as e:
+        log.warning("JobQueue: %s", e)
     try:
         await app.bot.set_my_commands(
             [
@@ -2252,6 +2525,19 @@ def main():
     app.add_handler(CommandHandler("funban", funban_komut))
     app.add_handler(CommandHandler("export", export_komut))
     app.add_handler(CommandHandler("import", import_komut))
+    app.add_handler(CommandHandler("setduyuru", setduyuru_komut))
+    app.add_handler(CommandHandler("duyuru", duyuru_komut))
+    app.add_handler(CommandHandler("duyuruac", duyuruac_komut))
+    app.add_handler(CommandHandler("duyurukapat", duyurukapat_komut))
+    app.add_handler(CommandHandler("duyurusaat", duyurusaat_komut))
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, kanal_duyuru_yakala))
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"(?i)^/setduyuru(@\w+)?(\s|$)"),
+            setduyuru_komut,
+        ),
+        group=-1,
+    )
     app.add_handler(CommandHandler("report", report_komut))
     app.add_handler(CommandHandler("disable", disable_komut))
     app.add_handler(CommandHandler("enable", enable_komut))
