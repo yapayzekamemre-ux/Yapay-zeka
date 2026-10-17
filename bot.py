@@ -27,6 +27,7 @@ from telegram import (
     InlineKeyboardMarkup,
 )
 from telegram.ext import (
+    ApplicationHandlerStop,
     ApplicationBuilder,
     MessageHandler,
     CommandHandler,
@@ -46,9 +47,17 @@ GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 MISTRAL_KEY = os.environ.get("MISTRAL_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_KEY", "")
+# --- KILIT: sadece sahip ---
+SAHIP_ID = 8992444484
 SAHIP_KULLANICI = (
-    os.environ.get("SAHIP_KULLANICI") or os.environ.get("SAHIP_USERNAME") or ""
+    os.environ.get("SAHIP_KULLANICI") or os.environ.get("SAHIP_USERNAME") or "Turkpronim"
 ).lower().lstrip("@")
+KILIT_MESAJ = (
+    "🔒 Bu bot kilitlidir.\n"
+    "Kullanmak için sahip ile iletişime geç:\n"
+    "👉 @Turkpronim"
+)
+_sahip_grup_cache = {}  # chat_id -> (ok:bool, ts)
 
 TR = timezone(timedelta(hours=3))
 
@@ -116,10 +125,13 @@ groq = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
 gem = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 SISTEM = (
-    "Sen grubun samimi, esprili asistanısın. Adın Yapay. Sadece Türkçe konuş. "
-    "Her cevap 1-2 kısa, TAM cümle olsun. Samimi ol. "
-    "Kullanıcıya sadece verilen ismiyle hitap et. Bot/model ismi yazma. "
-    "Yatırım tavsiyesi verme. Bilmediğini uydurma."
+    "Adın Yapay. Grubun asistanısın. Sadece Türkçe konuş. "
+    "Olgun ve net konuş: en fazla 1-2 kısa cümle. Sulu/flörtöz olma. "
+    "Birisi seninle dalga geçerse veya takılırsa aynı tonda, zekice ve kısa karşılık ver; "
+    "ezilme, küfür yağdırma, ama lazımsa iğneleyici ol. "
+    "Birinin adını söyleyerek şaka yapılıyorsa duruma uygun, adil cevap ver. "
+    "Grup üyelerini tanı; isimleriyle hitap et. "
+    "Bot/model ismi yazma. Yatırım tavsiyesi verme. Bilmediğini uydurma."
 )
 
 DOSYA, DURUM = "uyeler.json", "durum.json"
@@ -141,6 +153,7 @@ uyarilar = {}
 flood_buf = defaultdict(lambda: deque())  # (chat,uid) -> timestamps
 join_times = defaultdict(lambda: deque())  # chat_id -> join timestamps
 pending_captcha = {}  # (chat_id, user_id) -> True
+ceza_oylari = {}  # mid -> {chat, hedef, baslatan, evet:set, hayir:set, bitis}
 
 DEFAULT_G = {
     "hosgeldin": False,
@@ -242,13 +255,41 @@ def kucult(t):
 
 
 def sahip_mi(user):
+    """Sadece Turkpronim (8992444484)."""
     if not user:
         return False
+    if user.id == SAHIP_ID:
+        return True
     if durum.get("sahip") and user.id == durum["sahip"]:
         return True
     if SAHIP_KULLANICI and user.username and user.username.lower() == SAHIP_KULLANICI:
         return True
     return False
+
+
+async def sahip_grupta_mi(bot, chat_id) -> bool:
+    """Bot sadece sahibin yonetici oldugu gruplarda calisir."""
+    now = time.time()
+    cached = _sahip_grup_cache.get(chat_id)
+    if cached and now - cached[1] < 300:
+        return cached[0]
+    ok = False
+    try:
+        m = await bot.get_chat_member(chat_id, SAHIP_ID)
+        ok = m.status in (
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+            "administrator",
+            "creator",
+            "member",
+        )
+        # uye de olsa grupta varsa calissin; tercihen admin
+        # kullanici: nereye koyarsam calissin -> member yeterli
+        ok = m.status not in ("left", "kicked", ChatMemberStatus.LEFT, ChatMemberStatus.BANNED)
+    except Exception:
+        ok = False
+    _sahip_grup_cache[chat_id] = (ok, now)
+    return ok
 
 
 async def admin_mi(chat_id, user, bot) -> bool:
@@ -339,7 +380,7 @@ def groq_sor(m, sistem):
                 model=model,
                 messages=[{"role": "system", "content": sistem}] + m,
                 temperature=0.7,
-                max_tokens=200,
+                max_tokens=120,
             )
             t = (r.choices[0].message.content or "").strip()
             if t:
@@ -373,7 +414,7 @@ def gemini_sor(m, sistem):
                 model=model,
                 contents=_gem_parts(m),
                 config=types.GenerateContentConfig(
-                    system_instruction=sistem, temperature=0.7, max_output_tokens=200
+                    system_instruction=sistem, temperature=0.7, max_output_tokens=120
                 ),
             )
             t = (getattr(r, "text", None) or "").strip()
@@ -467,12 +508,28 @@ def sor(mesajlar, ek=""):
 
 
 # ---------- fiyat ----------
+# Hizli bilinen semboller (Binance + CG id)
 ANA = {
     "btc": "BTC", "bitcoin": "BTC", "eth": "ETH", "ethereum": "ETH",
-    "sol": "SOL", "bnb": "BNB", "xrp": "XRP", "ton": "TON", "doge": "DOGE",
-    "ada": "ADA", "avax": "AVAX", "dot": "DOT", "link": "LINK", "matic": "MATIC",
+    "sol": "SOL", "solana": "SOL", "bnb": "BNB", "xrp": "XRP", "ton": "TON",
+    "doge": "DOGE", "dogecoin": "DOGE", "ada": "ADA", "avax": "AVAX",
+    "dot": "DOT", "link": "LINK", "matic": "MATIC", "polygon": "MATIC",
     "shib": "SHIB", "pepe": "PEPE", "sui": "SUI", "near": "NEAR", "ltc": "LTC",
-    "uni": "UNI", "trx": "TRX", "gram": "GRAM", "pengu": "PENGU", "wif": "WIF", "bonk": "BONK",
+    "uni": "UNI", "trx": "TRX", "gram": "GRAM", "pengu": "PENGU",
+    "wif": "WIF", "bonk": "BONK", "apt": "APT", "arb": "ARB", "op": "OP",
+    "atom": "ATOM", "fil": "FIL", "icp": "ICP", "inj": "INJ", "sei": "SEI",
+    "tia": "TIA", "jup": "JUP", "render": "RENDER", "fet": "FET",
+}
+BINANCE_SYM = {
+    "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "BNB": "BNBUSDT",
+    "XRP": "XRPUSDT", "TON": "TONUSDT", "DOGE": "DOGEUSDT", "ADA": "ADAUSDT",
+    "AVAX": "AVAXUSDT", "DOT": "DOTUSDT", "LINK": "LINKUSDT", "MATIC": "MATICUSDT",
+    "SHIB": "SHIBUSDT", "PEPE": "PEPEUSDT", "SUI": "SUIUSDT", "NEAR": "NEARUSDT",
+    "LTC": "LTCUSDT", "UNI": "UNIUSDT", "TRX": "TRXUSDT", "APT": "APTUSDT",
+    "ARB": "ARBUSDT", "OP": "OPUSDT", "ATOM": "ATOMUSDT", "FIL": "FILUSDT",
+    "ICP": "ICPUSDT", "INJ": "INJUSDT", "SEI": "SEIUSDT", "TIA": "TIAUSDT",
+    "JUP": "JUPUSDT", "RENDER": "RENDERUSDT", "FET": "FETUSDT", "WIF": "WIFUSDT",
+    "BONK": "BONKUSDT", "PENGU": "PENGUUSDT",
 }
 CG = {
     "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "binancecoin",
@@ -480,13 +537,43 @@ CG = {
     "AVAX": "avalanche-2", "DOT": "polkadot", "LINK": "chainlink", "MATIC": "matic-network",
     "SHIB": "shiba-inu", "PEPE": "pepe", "SUI": "sui", "NEAR": "near", "LTC": "litecoin",
     "UNI": "uniswap", "TRX": "tron", "GRAM": "gram-2", "PENGU": "pudgy-penguins",
-    "WIF": "dogwifcoin", "BONK": "bonk",
+    "WIF": "dogwifcoin", "BONK": "bonk", "APT": "aptos", "ARB": "arbitrum",
+    "OP": "optimism", "ATOM": "cosmos", "FIL": "filecoin", "ICP": "internet-computer",
+    "INJ": "injective-protocol", "SEI": "sei-network", "TIA": "celestia",
+    "JUP": "jupiter-exchange-solana", "RENDER": "render-token", "FET": "fetch-ai",
 }
-KISA = re.compile(r"^\s*(?:(\d+(?:[.,]\d+)?)\s+)?([a-zA-Z][a-zA-Z0-9]{1,12})\s*$", re.I)
+# Yahoo Finance: doviz, altin, turk hisseleri
+YAHOO = {
+    "usd": "USDTRY=X", "dolar": "USDTRY=X", "usdt": "USDTRY=X",
+    "eur": "EURTRY=X", "euro": "EURTRY=X",
+    "gbp": "GBPTRY=X", "sterlin": "GBPTRY=X",
+    "altin": "GC=F", "gold": "GC=F", "ons": "GC=F",
+    "gumus": "SI=F", "silver": "SI=F",
+    "btc-usd": "BTC-USD", "eth-usd": "ETH-USD",
+    # BIST ornekleri
+    "thyao": "THYAO.IS", "garan": "GARAN.IS", "akbnk": "AKBNK.IS",
+    "eregl": "EREGL.IS", "asele": "ASELS.IS", "sahol": "SAHOL.IS",
+    "bim as": "BIMAS.IS", "bimas": "BIMAS.IS", "kozaa": "KOZAA.IS",
+    "sise": "SISE.IS", "tcell": "TCELL.IS", "froto": "FROTO.IS",
+}
+SAYI_KELIME = {
+    "tl", "try", "usd", "eur", "gbp", "gb", "mb", "kg", "tane", "adet",
+    "saat", "gun", "dk", "sn", "lira", "dolar", "euro", "fiyat", "price",
+}
+KISA = re.compile(
+    r"(?i)^\s*(?:(\d+(?:[.,]\d+)?)\s+)?"
+    r"(?:\$|fiyat\s+|price\s+)?"
+    r"([a-zA-ZğüşıöçĞÜŞİÖÇ][a-zA-Z0-9ğüşıöçĞÜŞİÖÇ.\-]{0,15})"
+    r"(?:\s+(?:fiyat|price|ne kadar|kaç|kac))?$"
+)
+_cg_id_cache = {}
 
 
 def kisa_token(metin):
-    m = KISA.match((metin or "").strip())
+    t = (metin or "").strip()
+    if not t or len(t) > 40:
+        return None
+    m = KISA.match(t)
     if not m:
         return None
     miktar = 1.0
@@ -495,52 +582,322 @@ def kisa_token(metin):
             miktar = float(m.group(1).replace(",", "."))
         except Exception:
             pass
-    s = m.group(2).lower()
-    return (miktar, s) if s in ANA else None
-
-
-def fiyat_cek(sembol):
-    sym = ANA.get(sembol.lower(), sembol.upper())
-    cid = CG.get(sym)
-    if not cid:
+    s = m.group(2).lower().strip(".")
+    if s in SAYI_KELIME:
         return None
+    return (miktar, s)
+
+
+def _binance_fiyat(sym: str):
+    pair = BINANCE_SYM.get(sym)
+    if not pair:
+        return None
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    bases = (
+        "https://data-api.binance.vision/api/v3/ticker/24hr",
+        "https://api.binance.us/api/v3/ticker/24hr",
+        "https://api.binance.com/api/v3/ticker/24hr",
+    )
+    for base in bases:
+        try:
+            r = requests.get(base, params={"symbol": pair}, timeout=10, headers=headers)
+            if not r.ok:
+                continue
+            d = r.json()
+            usd = float(d.get("lastPrice") or d.get("price") or 0)
+            if usd <= 0:
+                continue
+            ch = d.get("priceChangePercent")
+            ch = float(ch) if ch is not None else None
+            return {"s": sym, "usd": usd, "try": None, "ch": ch, "src": "binance"}
+        except Exception as e:
+            log.warning("binance %s: %s", base, e)
+    return None
+
+
+def _cg_search_id(query: str):
+    """CoinGecko search — tum coinler."""
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+    if q in _cg_id_cache:
+        return _cg_id_cache[q]
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/search",
+            params={"query": q},
+            timeout=12,
+            headers={"Accept": "application/json", "User-Agent": "TurkPronimBot/1.0"},
+        )
+        if not r.ok:
+            return None
+        coins = (r.json() or {}).get("coins") or []
+        if not coins:
+            return None
+        # tam sembol eslesmesi oncelikli
+        pick = None
+        for c in coins[:15]:
+            if (c.get("symbol") or "").lower() == q:
+                pick = c
+                break
+        if not pick:
+            for c in coins[:15]:
+                if (c.get("id") or "").lower() == q or (c.get("name") or "").lower() == q:
+                    pick = c
+                    break
+        if not pick:
+            pick = coins[0]
+        cid = pick.get("id")
+        sym = (pick.get("symbol") or q).upper()
+        _cg_id_cache[q] = (cid, sym)
+        return cid, sym
+    except Exception as e:
+        log.warning("cg search: %s", e)
+        return None
+
+
+def _coingecko_by_id(cid: str, sym: str):
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price",
             params={"ids": cid, "vs_currencies": "usd,try", "include_24hr_change": "true"},
             timeout=12,
+            headers={"Accept": "application/json", "User-Agent": "TurkPronimBot/1.0"},
         )
         if not r.ok:
+            log.warning("coingecko status %s", r.status_code)
             return None
         d = r.json().get(cid) or {}
         if d.get("usd") is None:
             return None
-        return {"s": sym, "usd": d["usd"], "try": d.get("try"), "ch": d.get("usd_24h_change")}
+        return {
+            "s": sym,
+            "usd": float(d["usd"]),
+            "try": d.get("try"),
+            "ch": d.get("usd_24h_change"),
+            "src": "coingecko",
+        }
     except Exception as e:
-        log.warning("fiyat: %s", e)
+        log.warning("coingecko: %s", e)
         return None
+
+
+def _coingecko_fiyat(sym_or_q: str):
+    """Once sabit map, yoksa search."""
+    key = sym_or_q.lower()
+    if key in ANA:
+        sym = ANA[key]
+        cid = CG.get(sym)
+        if cid:
+            bil = _coingecko_by_id(cid, sym)
+            if bil:
+                return bil
+    found = _cg_search_id(key)
+    if not found:
+        return None
+    cid, sym = found
+    return _coingecko_by_id(cid, sym)
+
+
+def _yahoo_fiyat(query: str):
+    """Yahoo Finance chart API — doviz / hisse / emtia."""
+    q = (query or "").strip().lower()
+    ticker = YAHOO.get(q)
+    if not ticker:
+        # kullanici THYAO.IS veya AAPL yazmis olabilir
+        raw = query.strip().upper()
+        if "." in raw or raw.isalpha() and 1 < len(raw) <= 6:
+            ticker = raw if "." in raw else raw
+            # turk hissesi gibi duruyorsa .IS dene
+            if ticker.isalpha() and len(ticker) <= 6 and ticker.lower() not in ANA:
+                # once bilinen yahoo map yoksa .IS dene
+                if ticker.lower() not in ("btc", "eth", "usd", "eur"):
+                    pass
+        if q not in YAHOO and not (query.strip()):
+            return None
+    if not ticker:
+        # BIST kisa kod: thyao -> THYAO.IS
+        if q.isalpha() and 3 <= len(q) <= 6 and q not in ANA:
+            ticker = q.upper() + ".IS"
+        else:
+            return None
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        r = requests.get(
+            url,
+            params={"range": "2d", "interval": "1d"},
+            timeout=12,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if not r.ok:
+            # .IS dene
+            if not ticker.endswith(".IS") and q.isalpha():
+                return _yahoo_fiyat_ticker(q.upper() + ".IS", q.upper())
+            return None
+        return _yahoo_parse(r.json(), ticker)
+    except Exception as e:
+        log.warning("yahoo: %s", e)
+        return None
+
+
+def _yahoo_fiyat_ticker(ticker: str, label: str):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        r = requests.get(
+            url,
+            params={"range": "2d", "interval": "1d"},
+            timeout=12,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if not r.ok:
+            return None
+        return _yahoo_parse(r.json(), label or ticker)
+    except Exception as e:
+        log.warning("yahoo ticker: %s", e)
+        return None
+
+
+def _yahoo_parse(data, label: str):
+    try:
+        result = (data.get("chart") or {}).get("result") or []
+        if not result:
+            return None
+        meta = result[0].get("meta") or {}
+        price = meta.get("regularMarketPrice") or meta.get("previousClose")
+        if price is None:
+            return None
+        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+        ch = None
+        if prev:
+            ch = ((float(price) - float(prev)) / float(prev)) * 100
+        currency = (meta.get("currency") or "").upper()
+        price = float(price)
+        out = {"s": label.upper(), "ch": ch, "src": "yahoo", "cur": currency}
+        if currency in ("TRY", "TL"):
+            out["usd"] = None
+            out["try"] = price
+        elif currency == "USD":
+            out["usd"] = price
+            out["try"] = None
+        else:
+            out["usd"] = price
+            out["try"] = None
+        return out
+    except Exception as e:
+        log.warning("yahoo parse: %s", e)
+        return None
+
+
+def fiyat_cek(sembol: str):
+    q = (sembol or "").strip().lower()
+    if not q:
+        return None
+
+    # 1) Yahoo mi? (dolar, euro, altin, hisse)
+    if q in YAHOO or q in ("dolar", "euro", "sterlin", "altin", "gumus", "ons", "gold", "silver"):
+        bil = _yahoo_fiyat(q)
+        if bil:
+            return bil
+
+    # 2) Bilinen crypto: Binance hizli + CG TRY
+    if q in ANA:
+        sym = ANA[q]
+        bil = _binance_fiyat(sym)
+        cg = _coingecko_fiyat(q)
+        if bil and cg:
+            bil["try"] = cg.get("try")
+            if bil.get("ch") is None:
+                bil["ch"] = cg.get("ch")
+            return bil
+        if bil or cg:
+            return bil or cg
+
+    # 3) Tum coinler: CoinGecko search
+    cg = _coingecko_fiyat(q)
+    if cg:
+        return cg
+
+    # 4) Yahoo hisse dene (BIST / US)
+    bil = _yahoo_fiyat(q)
+    if bil:
+        return bil
+    return None
 
 
 async def fiyat_gonder(update, miktar, sembol):
     bil = fiyat_cek(sembol)
     if not bil:
-        return False
-    usd = bil["usd"] * miktar
-    try_p = (bil["try"] or 0) * miktar if bil.get("try") else None
+        try:
+            await update.effective_message.reply_text(
+                f"❌ <b>{html.escape(str(sembol).upper())}</b> bulunamadı.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return True
+
+    import random
     ch = bil.get("ch")
-    ok = "📈" if ch is not None and ch >= 0 else "📉"
-    ch_s = f"{ch:+.2f}%" if ch is not None else "—"
-    adet = f"{miktar:g} " if miktar != 1 else ""
-    fmt = f"{usd:,.4f}" if usd < 1 else f"{usd:,.2f}"
-    text = f"{ok} <b>{adet}{bil['s']}</b>\n💵 ${fmt}"
-    if try_p:
-        text += f"\n🇹🇷 ₺{try_p:,.2f}"
-    text += f"\n24s: {ch_s}"
+    name = str(bil.get("s") or sembol).upper()
+    adet = f"{miktar:g} " if miktar != 1 else "1 "
+    usd = bil.get("usd")
+    try_p = bil.get("try")
+
+    if usd is not None:
+        u = float(usd) * miktar
+        if u < 0.0001:
+            fiyat_satir = f"${u:.8f}"
+        elif u < 1:
+            fiyat_satir = f"${u:.4f}"
+        else:
+            fiyat_satir = f"${u:,.2f}"
+    elif try_p is not None:
+        fiyat_satir = f"₺{float(try_p) * miktar:,.2f}"
+    else:
+        fiyat_satir = "—"
+
+    try_ek = ""
+    if usd is not None and try_p is not None:
+        try_ek = f"\n🇹🇷 ₺{float(try_p) * miktar:,.2f}"
+
+    if ch is not None and ch >= 0.3:
+        ikon = "📈"
+        espriler = [
+            f"%{ch:.2f} yükseldi {name} {fiyat_satir}'ye çıktı, cüzdana bak lan!",
+            f"+%{ch:.2f} — {name} hafif bir hop aldı, lan!",
+            f"%{ch:.2f} yeşilde {name}; boğalar uyanmış gibi.",
+            f"{name} %{ch:.2f} artmış, küçük sevinç paketi.",
+        ]
+    elif ch is not None and ch <= -0.3:
+        ikon = "📉"
+        espriler = [
+            f"%{abs(ch):.2f} düştü {name}, sakin ol panik yok.",
+            f"%{ch:.2f} kırmızıda {name}; dip mi dip.",
+            f"{name} %{ch:.2f} — cüzdan biraz üşüdü lan.",
+            f"−%{abs(ch):.2f} {name}; nefes al, sonra bak.",
+        ]
+    else:
+        ikon = "💬"
+        ch_s = f"{ch:+.2f}" if ch is not None else "0.00"
+        espriler = [
+            f"{name} yatay ({ch_s}%); sıkıntı yok, izle.",
+            f"%{ch_s} — {name} şimdilik sessiz, lan.",
+            f"{name} neredeyse yerinde sayıyor.",
+        ]
+
+    espri = random.choice(espriler)
+    text = (
+        f"⚠️ <b>{adet}{html.escape(name)}:</b>\n"
+        f"✅ {fiyat_satir}{try_ek}\n"
+        f"{ikon} {html.escape(espri)}"
+    )
     try:
         await update.effective_message.reply_text(text, parse_mode="HTML")
         return True
-    except Exception:
+    except Exception as e:
+        log.warning("fiyat_gonder: %s", e)
         return False
+
 
 
 # ---------- panel ----------
@@ -629,6 +986,9 @@ async def ayarlar_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not msg or not chat or not user:
         return
+    if chat.type == ChatType.PRIVATE and not sahip_mi(user):
+        await msg.reply_text(KILIT_MESAJ)
+        return
 
     # grupta: komutu sil, paneli ozelde ac
     if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
@@ -672,6 +1032,128 @@ async def ayarlar_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
         reply_markup=panel_kb(gid),
     )
+
+
+
+
+async def ceza_baslat(update, context, hedef, baslatan):
+    """Yapay ceza oylamasi — 5 dk mute, min 6 evet."""
+    chat = update.effective_chat
+    msg = update.effective_message
+    if not chat or not hedef or hedef.is_bot:
+        return
+    if await admin_mi(chat.id, hedef, context.bot):
+        await msg.reply_text("🔆 Yöneticilere ceza açılamaz.")
+        return
+    had = html.escape(hedef.full_name or str(hedef.id))
+    huser = f"@{hedef.username}" if hedef.username else had
+    bad = html.escape(baslatan.full_name or str(baslatan.id))
+    buser = f"@{baslatan.username}" if baslatan.username else bad
+    text = (
+        f"⚠️ <b>Ceza</b> {huser}\n"
+        f"🚫 <b>Başlatan</b> {buser}\n\n"
+        f"✅ Evet çoğunluk → <b>5 Dk</b> mesaj atmasını kapat\n"
+        f"• Min <b>6 Oy</b>"
+    )
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Evet (0)", callback_data=f"cz:e:0"),
+        InlineKeyboardButton("❌ Hayır (0)", callback_data=f"cz:h:0"),
+    ]])
+    try:
+        gonder = await msg.reply_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        log.warning("ceza_baslat: %s", e)
+        return
+    ceza_oylari[gonder.message_id] = {
+        "chat": chat.id,
+        "hedef": hedef.id,
+        "hedef_ad": hedef.full_name or str(hedef.id),
+        "baslatan": baslatan.id,
+        "evet": set(),
+        "hayir": set(),
+        "bitis": False,
+    }
+    # 3 dk oy suresi sonra kapanir
+    asyncio.create_task(ceza_zamanasimi(context.bot, chat.id, gonder.message_id))
+
+
+async def ceza_zamanasimi(bot, chat_id, mid):
+    await asyncio.sleep(180)
+    data = ceza_oylari.get(mid)
+    if not data or data.get("bitis"):
+        return
+    data["bitis"] = True
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=mid,
+            text=f"⏱ Oylama bitti.\n✅ {len(data['evet'])} · ❌ {len(data['hayir'])}\nYetersiz oy, ceza uygulanmadı.",
+        )
+    except Exception:
+        pass
+    asyncio.create_task(sil_sonra(bot, chat_id, mid, 8))
+    ceza_oylari.pop(mid, None)
+
+
+async def ceza_oy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data or not q.data.startswith("cz:"):
+        return
+    mid = q.message.message_id if q.message else None
+    data = ceza_oylari.get(mid)
+    if not data or data.get("bitis"):
+        await q.answer("Oylama bitti.", show_alert=True)
+        return
+    uid = q.from_user.id
+    if uid == data["hedef"]:
+        await q.answer("Kendine oy veremezsin.", show_alert=True)
+        return
+    taraf = q.data.split(":")[1]  # e veya h
+    data["evet"].discard(uid)
+    data["hayir"].discard(uid)
+    if taraf == "e":
+        data["evet"].add(uid)
+    else:
+        data["hayir"].add(uid)
+    ne = len(data["evet"])
+    nh = len(data["hayir"])
+    await q.answer(f"Oyun kaydedildi ({'Evet' if taraf=='e' else 'Hayır'})")
+    # min 6 evet ve evet > hayir
+    if ne >= 6 and ne > nh:
+        data["bitis"] = True
+        hedef_id = data["hedef"]
+        chat_id = data["chat"]
+        ad = html.escape(data.get("hedef_ad") or str(hedef_id))
+        try:
+            until = datetime.now(timezone.utc) + timedelta(minutes=5)
+            await context.bot.restrict_chat_member(
+                chat_id, hedef_id, permissions=MUTE_PERMS, until_date=until
+            )
+            txt = (
+                f"✅ Ceza onaylandı\n"
+                f"🔇 {ad} → <b>5 dk</b> mesaj atamaz\n"
+                f"Oy: ✅{ne} ❌{nh}"
+            )
+        except Exception as e:
+            txt = f"❌ Mute başarısız: {html.escape(str(e))}"
+        try:
+            await q.edit_message_text(txt, parse_mode="HTML")
+        except Exception:
+            pass
+        asyncio.create_task(sil_sonra(context.bot, chat_id, mid, 8))
+        ceza_oylari.pop(mid, None)
+        await log_gonder(context.bot, chat_id, f"⚖️ Ceza oylaması: {ad} 5dk mute (✅{ne})")
+        return
+    # butonlari guncelle
+    try:
+        await q.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"✅ Evet ({ne})", callback_data="cz:e:0"),
+                InlineKeyboardButton(f"❌ Hayır ({nh})", callback_data="cz:h:0"),
+            ]])
+        )
+    except Exception:
+        pass
 
 
 
@@ -2368,6 +2850,33 @@ async def sahip_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE):
         durum_kaydet()
 
 
+
+async def kilit_engel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ozelde sahibinden baskasini engelle."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+    if chat.type != ChatType.PRIVATE:
+        return
+    if sahip_mi(user):
+        durum["sahip"] = user.id
+        return
+    if update.callback_query:
+        try:
+            await update.callback_query.answer("🔒 Kilitli — @Turkpronim", show_alert=True)
+        except Exception:
+            pass
+        raise ApplicationHandlerStop
+    msg = update.effective_message
+    if msg:
+        try:
+            await msg.reply_text(KILIT_MESAJ)
+        except Exception:
+            pass
+    raise ApplicationHandlerStop
+
+
 async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     chat = update.effective_chat
@@ -2379,6 +2888,22 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     metin = (msg.text or msg.caption or "").strip()
     ozel = chat.type == ChatType.PRIVATE
     cid = chat.id
+
+    # --- KILIT ---
+    if ozel:
+        if not sahip_mi(user):
+            if metin:
+                try:
+                    await msg.reply_text(KILIT_MESAJ)
+                except Exception:
+                    pass
+            return
+        durum["sahip"] = user.id
+        durum_kaydet()
+    else:
+        # grup: sadece sahip bu grubun uyesi/yoneticisiyse calis
+        if not await sahip_grupta_mi(context.bot, cid):
+            return
 
     if not ozel:
         # admin degilse filtreler
@@ -2526,6 +3051,37 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
+    # yapay ceza oylamasi
+    if not ozel and metin:
+        low_c = kucult(metin)
+        if "yapay" in low_c and "ceza" in low_c:
+            hedef = None
+            if msg.reply_to_message and msg.reply_to_message.from_user:
+                hedef = msg.reply_to_message.from_user
+            if not hedef and msg.entities:
+                for ent in msg.entities:
+                    if ent.type == "mention" and msg.text:
+                        uname = msg.text[ent.offset + 1 : ent.offset + ent.length]
+                        # uyelerden bul
+                        for uid, bil in (uyeler.get(str(cid)) or {}).items():
+                            if (bil.get("kullanici") or "") == uname.lower():
+                                hedef = _FakeUser(uid, bil.get("ad") or uname, uname)
+                                break
+                    elif ent.type == "text_mention" and ent.user:
+                        hedef = ent.user
+            if not hedef:
+                try:
+                    await msg.reply_text(
+                        "🔆 Ceza için birine <b>yanıtla</b> veya @kullanıcı etiketle:\n"
+                        "<code>yapay ceza</code>",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                return
+            await ceza_baslat(update, context, hedef, user)
+            return
+
     kt = kisa_token(metin)
     if kt:
         if await fiyat_gonder(update, kt[0], kt[1]):
@@ -2557,13 +3113,39 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     soru = re.sub(r"(?i)\byapay\b", "", metin).strip() or metin
     ad = (user.first_name or user.full_name or "dostum").split()[0]
+    # yanitlanan kisi varsa baglama ekle
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        ry = msg.reply_to_message.from_user
+        ry_ad = (ry.first_name or ry.full_name or "?").split()[0]
+        ry_txt = (msg.reply_to_message.text or msg.reply_to_message.caption or "")[:120]
+        if ry.id == context.bot.id:
+            soru = f"(Yapay'a yanıt) {soru}"
+        else:
+            soru = f"({ry_ad} adlı kişiye yanıt, onun mesajı: «{ry_txt}») {soru}"
     key = f"{cid}:{user.id}"
     hist = gecmis.setdefault(key, [])
     hist.append({"role": "user", "content": f"{ad}: {soru}"})
-    hist[:] = hist[-10:]
-    ek = ""
+    hist[:] = hist[-12:]
+    # grup uyelerini hatirlat
+    ek_parts = []
+    if not ozel:
+        uy = uyeler.get(str(cid)) or {}
+        # en aktif / son kayitli uyeler
+        isimler = []
+        for uid, bil in list(uy.items())[:40]:
+            isim = (bil.get("ad") or bil.get("kullanici") or "").strip()
+            if isim:
+                isimler.append(isim.split()[0] if isim else "")
+        isimler = [x for x in isimler if x][:25]
+        if isimler:
+            ek_parts.append(
+                "Bu gruptaki bazı üyeler (unutma, isimleriyle tanı): "
+                + ", ".join(isimler)
+            )
+        ek_parts.append(f"Şu an konuşan: {ad}")
     if durum.get("talimat"):
-        ek = "Ek talimatlar: " + " | ".join(x["t"] for x in durum["talimat"][-5:])
+        ek_parts.append("Ek talimatlar: " + " | ".join(x["t"] for x in durum["talimat"][-5:]))
+    ek = "\n".join(ek_parts)
     try:
         await context.bot.send_chat_action(cid, "typing")
     except Exception:
@@ -2571,15 +3153,21 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     yanit = sor(hist, ek=ek)
     if not yanit or "Forbidden" in yanit[:30]:
         yanit = "Anlamadım, tekrar söyler misin?"
-    if len(yanit) > 350:
-        kes = yanit[:350]
+    # kisa tut
+    if len(yanit) > 220:
+        kes = yanit[:220]
         yanit = (kes.rsplit(".", 1)[0] + ".") if "." in kes else kes.rsplit(" ", 1)[0] + "..."
+    yanit = yanit.strip()
+    if yanit.startswith("🔆"):
+        goster = yanit
+    else:
+        goster = f"🔆 {yanit}"
     hist.append({"role": "assistant", "content": yanit})
     try:
-        await msg.reply_text(yanit)
+        await msg.reply_text(goster)
     except Exception:
         try:
-            await context.bot.send_message(cid, yanit)
+            await context.bot.send_message(cid, goster)
         except Exception as e:
             log.warning("AI: %s", e)
 
@@ -2594,7 +3182,7 @@ async def hata(update, ctx):
 
 async def baslat(app):
     me = await app.bot.get_me()
-    log.info("Bot hazir @%s", me.username)
+    log.info("Bot hazir @%s | kilit sahip=%s @%s", me.username, SAHIP_ID, SAHIP_KULLANICI)
     log.info(
         "AI keys: groq=%s gemini=%s deepseek=%s mistral=%s openrouter=%s",
         bool(GROQ_KEY), bool(GEMINI_KEY), bool(DEEPSEEK_KEY),
@@ -2637,6 +3225,8 @@ async def baslat(app):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
     app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, kilit_engel), group=-3)
+    app.add_handler(CallbackQueryHandler(kilit_engel), group=-3)
     app.add_handler(CommandHandler("panel", ayarlar_komut))
     app.add_handler(CommandHandler("ayarlar", ayarlar_komut))
     app.add_handler(CommandHandler("settings", ayarlar_komut))
@@ -2707,6 +3297,7 @@ def main():
     )
     app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^p:"))
     app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
+    app.add_handler(CallbackQueryHandler(ceza_oy_callback, pattern=r"^cz:"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
     app.add_handler(
