@@ -504,39 +504,19 @@ def sor(mesajlar, ek=""):
 
 
 # ---------- fiyat ----------
-ANA = {
-    "btc": "BTC", "bitcoin": "BTC", "eth": "ETH", "ethereum": "ETH",
-    "sol": "SOL", "solana": "SOL", "bnb": "BNB", "xrp": "XRP", "ton": "TON",
-    "doge": "DOGE", "dogecoin": "DOGE", "ada": "ADA", "avax": "AVAX",
-    "dot": "DOT", "link": "LINK", "matic": "MATIC", "polygon": "MATIC",
-    "shib": "SHIB", "pepe": "PEPE", "sui": "SUI", "near": "NEAR", "ltc": "LTC",
-    "uni": "UNI", "trx": "TRX", "gram": "GRAM", "pengu": "PENGU",
-    "wif": "WIF", "bonk": "BONK", "apt": "APT", "arb": "ARB", "op": "OP",
-    "atom": "ATOM", "fil": "FIL", "icp": "ICP", "inj": "INJ", "sei": "SEI",
-    "tia": "TIA", "jup": "JUP", "render": "RENDER", "fet": "FET",
+# Sabit coin / doviz sozlugu YOK. Her sey canli aranir:
+#   coin               -> CoinGecko (/search ile bulunur)
+#   hisse, doviz, emtia -> Yahoo Finance (ticker canli denenir)
+#
+# Yahoo ticker'i dogrudan yazabilirsin:  gc=f  si=f  usdtry=x  thyao.is  aapl
+# Tek istisna: altin/gumus icin kucuk takma ad (CoinGecko'da "gold" adli
+# rastgele bir token yanlis fiyat gostermesin diye). Istemezsen EMTIA'yi sil.
+EMTIA = {
+    "altin": "gc=f", "gold": "gc=f", "ons": "gc=f",
+    "gumus": "si=f", "silver": "si=f",
 }
-CG = {
-    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "binancecoin",
-    "XRP": "ripple", "TON": "the-open-network", "DOGE": "dogecoin", "ADA": "cardano",
-    "AVAX": "avalanche-2", "DOT": "polkadot", "LINK": "chainlink", "MATIC": "matic-network",
-    "SHIB": "shiba-inu", "PEPE": "pepe", "SUI": "sui", "NEAR": "near", "LTC": "litecoin",
-    "UNI": "uniswap", "TRX": "tron", "GRAM": "gram-2", "PENGU": "pudgy-penguins",
-    "WIF": "dogwifcoin", "BONK": "bonk", "APT": "aptos", "ARB": "arbitrum",
-    "OP": "optimism", "ATOM": "cosmos", "FIL": "filecoin", "ICP": "internet-computer",
-    "INJ": "injective-protocol", "SEI": "sei-network", "TIA": "celestia",
-    "JUP": "jupiter-exchange-solana", "RENDER": "render-token", "FET": "fetch-ai",
-}
-YAHOO = {
-    "usd": "USDTRY=X", "dolar": "USDTRY=X", "usdt": "USDTRY=X",
-    "eur": "EURTRY=X", "euro": "EURTRY=X",
-    "gbp": "GBPTRY=X", "sterlin": "GBPTRY=X",
-    "altin": "GC=F", "gold": "GC=F", "ons": "GC=F",
-    "gumus": "SI=F", "silver": "SI=F",
-    "thyao": "THYAO.IS", "garan": "GARAN.IS", "akbnk": "AKBNK.IS",
-    "eregl": "EREGL.IS", "asele": "ASELS.IS", "sahol": "SAHOL.IS",
-    "bimas": "BIMAS.IS", "kozaa": "KOZAA.IS", "sise": "SISE.IS",
-    "tcell": "TCELL.IS", "froto": "FROTO.IS",
-}
+_TR_CEV = str.maketrans("ığüşöç", "igusoc")
+
 SAYI_KELIME = {
     "tl", "try", "usd", "eur", "gbp", "gb", "mb", "kg", "tane", "adet",
     "saat", "gun", "dk", "sn", "lira", "dolar", "euro", "fiyat", "price",
@@ -544,13 +524,18 @@ SAYI_KELIME = {
 KISA = re.compile(
     r"(?i)^\s*(?:(\d+(?:[.,]\d+)?)\s+)?"
     r"(?:\$|fiyat\s+|price\s+)?"
-    r"([a-zA-ZğüşıöçĞÜŞİÖÇ][a-zA-Z0-9ğüşıöçĞÜŞİÖÇ.\-]{1,20})"
+    r"([a-zA-ZğüşıöçĞÜŞİÖÇ][a-zA-Z0-9ğüşıöçĞÜŞİÖÇ.\-=]{1,20})"
     r"(?:\s+(?:fiyat|price|ne kadar|kaç|kac))?$"
 )
-_cg_id_cache = {}
-_cg_symbol_map = {}  # symbol -> [(id, name)]
-_cg_list_ts = 0
-CG_LIST_FILE = "cg_coins.json"
+# "5 btc", "$btc", "fiyat btc", "btc fiyat" gibi acik fiyat istekleri
+_ACIK_RE = re.compile(r"(?i)(^\s*\$|^\s*\d|\b(fiyat|price|ne kadar|kaç|kac)\b)")
+
+_CG_HATA = object()   # CoinGecko gecici hata (429/ag) — "yok" diye cache'lenmez
+_cg_id_cache = {}     # sorgu -> (coingecko_id, SEMBOL)
+_fiyat_cache = {}     # sorgu -> (zaman, bilgi)
+_yok_cache = {}       # sorgu -> bulunamadi zamani
+FIYAT_TTL = 20        # sn: ayni fiyati tekrar cekme
+YOK_TTL = 3600        # sn: bulunamayan kelimeyi 1 saat tekrar arama
 
 
 def kisa_token(metin):
@@ -573,7 +558,7 @@ def kisa_token(metin):
 
 
 def _http_get(url, params=None, timeout=15):
-    headers = {"Accept": "application/json", "User-Agent": "TurkPronimBot/1.1"}
+    headers = {"Accept": "application/json", "User-Agent": "TurkPronimBot/1.2"}
     last = None
     for i in range(3):
         try:
@@ -591,125 +576,44 @@ def _http_get(url, params=None, timeout=15):
     return None
 
 
-def _cg_load_list(force=False):
-    """CoinGecko /coins/list — tum coin id+symbol disk cache."""
-    global _cg_symbol_map, _cg_list_ts
-    now = time.time()
-    if not force and _cg_symbol_map and now - _cg_list_ts < 86400:
-        return True
-    # disk
-    if not force and not _cg_symbol_map:
-        try:
-            with open(CG_LIST_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict) and raw.get("map") and now - float(raw.get("ts") or 0) < 86400 * 3:
-                _cg_symbol_map = {k: [tuple(x) for x in v] for k, v in raw["map"].items()}
-                _cg_list_ts = float(raw.get("ts") or now)
-                log.info("CG list disk: %s sembol", len(_cg_symbol_map))
-                return True
-        except Exception:
-            pass
-    r = _http_get("https://api.coingecko.com/api/v3/coins/list", timeout=60)
-    if not r or not getattr(r, "ok", False):
-        log.warning("CG coins/list fail: %s", getattr(r, "status_code", r))
-        return bool(_cg_symbol_map)
-    mp = {}
-    try:
-        for c in r.json():
-            sym = (c.get("symbol") or "").lower()
-            cid = c.get("id") or ""
-            name = c.get("name") or ""
-            if not sym or not cid:
-                continue
-            mp.setdefault(sym, []).append((cid, name))
-    except Exception as e:
-        log.warning("CG list parse: %s", e)
-        return bool(_cg_symbol_map)
-    _cg_symbol_map = mp
-    _cg_list_ts = now
-    try:
-        with open(CG_LIST_FILE, "w", encoding="utf-8") as f:
-            json.dump({"ts": now, "map": mp}, f, ensure_ascii=False)
-    except Exception:
-        pass
-    log.info("CG list yuklendi: %s sembol", len(mp))
-    return True
-
-
+# ----- CoinGecko -----
 def _cg_resolve(query: str):
-    """Sembol veya isimden CoinGecko id + symbol."""
+    """
+    Sembol / isim / id ile CoinGecko'da canli ara.
+    Birden fazla ayni sembol varsa market cap sirasi en iyi olani secer.
+    Doner: (id, SEMBOL) | None (yok) | _CG_HATA (gecici hata)
+    """
     q = (query or "").strip().lower()
     if not q:
         return None
     if q in _cg_id_cache:
         return _cg_id_cache[q]
-    # sabit map
-    if q in ANA:
-        sym = ANA[q]
-        cid = CG.get(sym)
-        if cid:
-            _cg_id_cache[q] = (cid, sym)
-            return cid, sym
-    _cg_load_list()
-    prefer_ids = set(CG.values())
-
-    def _pick_from_search():
-        r = _http_get("https://api.coingecko.com/api/v3/search", params={"query": q})
-        if not r or not getattr(r, "ok", False):
-            return None
-        try:
-            coins = (r.json() or {}).get("coins") or []
-        except Exception:
-            return None
-        if not coins:
-            return None
-        # 1) tam sembol + market_cap_rank
-        same = [c for c in coins if (c.get("symbol") or "").lower() == q]
-        if same:
-            ranked = [c for c in same if c.get("market_cap_rank")]
-            pick = sorted(ranked, key=lambda x: x["market_cap_rank"])[0] if ranked else same[0]
-        else:
-            ranked = [c for c in coins if c.get("market_cap_rank")]
-            pick = sorted(ranked, key=lambda x: x["market_cap_rank"])[0] if ranked else coins[0]
-        cid = pick.get("id")
-        sym = (pick.get("symbol") or q).upper()
-        return (cid, sym) if cid else None
-
-    # tam sembol listede
-    cands = _cg_symbol_map.get(q) or []
-    if cands:
-        prefer = None
-        if q in ANA and CG.get(ANA[q]):
-            want = CG[ANA[q]]
-            for cid, name in cands:
-                if cid == want:
-                    prefer = (cid, ANA[q])
-                    break
-        if not prefer:
-            for cid, name in cands:
-                if cid in prefer_ids:
-                    prefer = (cid, q.upper())
-                    break
-        if not prefer and len(cands) == 1:
-            prefer = (cands[0][0], q.upper())
-        if not prefer:
-            # birden fazla eslesme: search rank
-            prefer = _pick_from_search()
-        if prefer:
-            _cg_id_cache[q] = prefer
-            return prefer
-    # id / isim
-    for sym, lst in _cg_symbol_map.items():
-        for cid, name in lst:
-            if cid == q or name.lower() == q:
-                got = (cid, sym.upper())
-                _cg_id_cache[q] = got
-                return got
-    got = _pick_from_search()
-    if got:
-        _cg_id_cache[q] = got
-        return got
-    return None
+    r = _http_get("https://api.coingecko.com/api/v3/search", params={"query": q})
+    if not r or not getattr(r, "ok", False):
+        log.warning("CG search fail %s: %s", q, getattr(r, "status_code", r))
+        return _CG_HATA
+    try:
+        coins = (r.json() or {}).get("coins") or []
+    except Exception:
+        return _CG_HATA
+    ayni = [
+        c for c in coins
+        if q in (
+            (c.get("symbol") or "").lower(),
+            (c.get("id") or "").lower(),
+            (c.get("name") or "").lower(),
+        )
+    ]
+    if not ayni:
+        return None
+    ayni.sort(key=lambda c: c.get("market_cap_rank") or 10 ** 9)
+    pick = ayni[0]
+    cid = pick.get("id")
+    if not cid:
+        return None
+    got = (cid, (pick.get("symbol") or q).upper())
+    _cg_id_cache[q] = got
+    return got
 
 
 def _coingecko_by_id(cid: str, sym: str):
@@ -735,25 +639,7 @@ def _coingecko_by_id(cid: str, sym: str):
     }
 
 
-def _coingecko_fiyat(sym_or_q: str):
-    resolved = _cg_resolve(sym_or_q)
-    if not resolved:
-        return None
-    cid, sym = resolved
-    return _coingecko_by_id(cid, sym)
-
-
-def _yahoo_fiyat(query: str):
-    q = (query or "").strip().lower()
-    ticker = YAHOO.get(q)
-    if not ticker:
-        if q.isalpha() and 3 <= len(q) <= 6 and q not in ANA and q not in (_cg_symbol_map or {}):
-            ticker = q.upper() + ".IS"
-        else:
-            return None
-    return _yahoo_fiyat_ticker(ticker, q.upper())
-
-
+# ----- Yahoo Finance -----
 def _yahoo_fiyat_ticker(ticker: str, label: str):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -799,29 +685,80 @@ def _yahoo_parse(data, label: str):
         return None
 
 
+# ----- birlesik arama -----
+def _fiyat_ara(q: str):
+    """Doner: (bilgi | None, gecici_hata_var_mi)"""
+    hata = False
+
+    # 1) altin / gumus takma adi -> Yahoo
+    ek = EMTIA.get(q.translate(_TR_CEV))
+    if ek:
+        bil = _yahoo_fiyat_ticker(ek.upper(), ek.upper())
+        return bil, bil is None
+
+    # 2) acik Yahoo ticker: gc=f, thyao.is, usdtry=x
+    if "=" in q or "." in q:
+        bil = _yahoo_fiyat_ticker(q.upper(), q.upper())
+        return bil, bil is None
+
+    # 3) CoinGecko (tum coinler)
+    res = _cg_resolve(q)
+    if res is _CG_HATA:
+        hata = True
+    elif res:
+        bil = _coingecko_by_id(res[0], res[1])
+        if bil:
+            return bil, False
+        hata = True
+
+    # 4) Yahoo: once BIST hissesi (.IS), sonra global ticker
+    if q.isalpha() and 2 <= len(q) <= 6:
+        for t in (q.upper() + ".IS", q.upper()):
+            bil = _yahoo_fiyat_ticker(t, q.upper())
+            if bil:
+                return bil, False
+
+    return None, hata
+
+
 def fiyat_cek(sembol: str):
     q = (sembol or "").strip().lower()
     if not q:
         return None
-    # 1) doviz / hisse (Yahoo)
-    if q in YAHOO:
-        bil = _yahoo_fiyat(q)
-        if bil:
-            return bil
-    # 2) tum coinler (CoinGecko)
-    cg = _coingecko_fiyat(q)
-    if cg:
-        return cg
-    return None
+    now = time.time()
+    c = _fiyat_cache.get(q)
+    if c and now - c[0] < FIYAT_TTL:
+        return c[1]
+    if now - _yok_cache.get(q, 0) < YOK_TTL:
+        return None
+    bil, hata = _fiyat_ara(q)
+    if bil:
+        _fiyat_cache[q] = (now, bil)
+    elif not hata:
+        _yok_cache[q] = now
+    # cache sisip sismesin
+    if len(_yok_cache) > 2000:
+        _yok_cache.clear()
+    if len(_fiyat_cache) > 500:
+        _fiyat_cache.clear()
+    return bil
 
 
 async def fiyat_gonder(update, miktar, sembol):
-    bil = fiyat_cek(sembol)
+    msg = update.effective_message
+    metin = ((msg.text or msg.caption or "") if msg else "")
+    acik = bool(_ACIK_RE.search(metin))
+
+    # requests bloklayici: event loop'u kilitlemesin diye thread'de calistir
+    bil = await asyncio.to_thread(fiyat_cek, sembol)
     if not bil:
+        if not acik:
+            # duz bir kelime (selam, tamam...) -> sessiz gec
+            return False
         try:
-            await update.effective_message.reply_text(
+            await msg.reply_text(
                 f"❌ <b>{html.escape(str(sembol).upper())}</b> bulunamadı.\n"
-                f"CoinGecko sembolü dene: <code>btc</code> <code>eth</code> <code>pengu</code>",
+                f"CoinGecko / Yahoo Finance'te yok. Örnek: <code>btc</code> <code>pengu</code> <code>thyao</code> <code>gc=f</code>",
                 parse_mode="HTML",
             )
         except Exception:
@@ -884,7 +821,7 @@ async def fiyat_gonder(update, miktar, sembol):
         f"{ikon} {html.escape(espri)}"
     )
     try:
-        await update.effective_message.reply_text(text, parse_mode="HTML")
+        await msg.reply_text(text, parse_mode="HTML")
         return True
     except Exception as e:
         log.warning("fiyat_gonder: %s", e)
