@@ -525,16 +525,21 @@ def sor(mesajlar, ek=""):
     return "Biraz yoğunum, sonra tekrar dene."
 
 
-# ---------- fiyat (CoinGecko + Yahoo) ----------
+# ---------- fiyat (CoinGecko API + Yahoo) ----------
+# Veri: https://api.coingecko.com (tum coin listesi + markets + search)
 CG_LIST_FILE = "cg_coins.json"
+CG_MARKETS_FILE = "cg_markets.json"
 _cg_id_cache = {}
-_cg_symbol_map = {}
+_cg_symbol_map = {}   # symbol -> [id, ...]
+_cg_markets = {}      # symbol -> (id, symbol_upper, name)
 _cg_list_ts = 0
+_cg_markets_ts = 0
+_cg_price_cache = {}
 
 KISA = re.compile(
     r"(?i)^\s*(?:(\d+(?:[.,]\d+)?)\s+)?"
     r"(?:\$|fiyat\s+|price\s+)?"
-    r"([a-zA-Z][a-zA-Z0-9]{1,12})"
+    r"([a-zA-Z][a-zA-Z0-9]{1,15})"
     r"(?:\s+(?:fiyat|price|ne kadar|kaç|kac))?$"
 )
 _ATLA = {
@@ -565,26 +570,96 @@ def kisa_token(metin):
         except Exception:
             pass
     s = m.group(2).lower().strip(".")
-    if s in _ATLA or any(c in s for c in "ğüşıöç") or len(s) > 12:
+    if s in _ATLA or any(c in s for c in "ğüşıöç") or len(s) > 15:
         return None
     return (miktar, s)
 
 
-def _http_get(url, params=None, timeout=15):
-    headers = {"Accept": "application/json", "User-Agent": "TurkPronimBot/1.2"}
+def _http_get(url, params=None, timeout=25):
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; TurkPronimBot/1.4)",
+    }
     last = None
-    for i in range(3):
+    for i in range(5):
         try:
             r = requests.get(url, params=params, timeout=timeout, headers=headers)
             if r.status_code == 429:
-                time.sleep(1.5 * (i + 1))
+                time.sleep(2.5 * (i + 1))
                 last = r
                 continue
             return r
         except Exception as e:
             last = e
-            time.sleep(0.6)
+            time.sleep(1.0)
     return last if hasattr(last, "status_code") else None
+
+
+def _cg_load_markets(force=False):
+    """Top market cap coinler — sembol -> id (CG all-cryptocurrencies esdegeri)."""
+    global _cg_markets, _cg_markets_ts
+    now = time.time()
+    if not force and _cg_markets and now - _cg_markets_ts < 3600:
+        return True
+    if not force and not _cg_markets:
+        try:
+            with open(CG_MARKETS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict) and raw.get("map") and now - float(raw.get("ts") or 0) < 7200:
+                _cg_markets = raw["map"]
+                _cg_markets_ts = float(raw.get("ts") or now)
+                log.info("CG markets disk: %s", len(_cg_markets))
+                return True
+        except Exception:
+            pass
+    mp = {}
+    # 4 sayfa x 250 = 1000 coin (sitedeki liste gibi)
+    for page in range(1, 5):
+        r = _http_get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": 250,
+                "page": page,
+                "sparkline": "false",
+                "price_change_percentage": "24h",
+            },
+            timeout=40,
+        )
+        if not r or not getattr(r, "ok", False):
+            log.warning("CG markets page %s fail %s", page, getattr(r, "status_code", r))
+            break
+        try:
+            arr = r.json() or []
+        except Exception:
+            break
+        if not arr:
+            break
+        for c in arr:
+            sym = (c.get("symbol") or "").lower()
+            cid = c.get("id") or ""
+            if not sym or not cid:
+                continue
+            # ayni sembolde ilk (daha yuksek market cap) kalsin
+            if sym not in mp:
+                mp[sym] = {
+                    "id": cid,
+                    "s": (c.get("symbol") or sym).upper(),
+                    "name": c.get("name") or "",
+                }
+        time.sleep(1.2)
+    if mp:
+        _cg_markets = mp
+        _cg_markets_ts = now
+        try:
+            with open(CG_MARKETS_FILE, "w", encoding="utf-8") as f:
+                json.dump({"ts": now, "map": mp}, f)
+        except Exception:
+            pass
+        log.info("CG markets yuklendi: %s sembol", len(mp))
+        return True
+    return bool(_cg_markets)
 
 
 def _cg_load_list(force=False):
@@ -599,13 +674,11 @@ def _cg_load_list(force=False):
             if isinstance(raw, dict) and raw.get("map") and now - float(raw.get("ts") or 0) < 86400 * 3:
                 _cg_symbol_map = {k: list(v) for k, v in raw["map"].items()}
                 _cg_list_ts = float(raw.get("ts") or now)
-                log.info("CG list disk: %s", len(_cg_symbol_map))
                 return True
         except Exception:
             pass
     r = _http_get("https://api.coingecko.com/api/v3/coins/list", timeout=90)
     if not r or not getattr(r, "ok", False):
-        log.warning("CG list fail %s", getattr(r, "status_code", r))
         return bool(_cg_symbol_map)
     mp = {}
     try:
@@ -615,7 +688,7 @@ def _cg_load_list(force=False):
             if sym and cid:
                 mp.setdefault(sym, []).append(cid)
     except Exception as e:
-        log.warning("CG list parse: %s", e)
+        log.warning("CG list: %s", e)
         return bool(_cg_symbol_map)
     _cg_symbol_map = mp
     _cg_list_ts = now
@@ -628,10 +701,38 @@ def _cg_load_list(force=False):
     return True
 
 
+def _cg_score(c, q: str) -> float:
+    sym = (c.get("symbol") or "").lower()
+    cid = (c.get("id") or "").lower()
+    name = (c.get("name") or "").lower()
+    rank = c.get("market_cap_rank")
+    rank = int(rank) if rank else 99999
+    s = 0.0
+    if sym == q:
+        s += 1000
+    if cid == q:
+        s += 900
+    if name == q:
+        s += 800
+    if q in cid.replace("-", " ").split() or q in cid.split("-"):
+        s += 350
+    if q in re.split(r"[\s\(\)\./\-]+", name):
+        s += 300
+    if q in name:
+        s += 80
+    if q in cid:
+        s += 60
+    if rank < 99999:
+        s += max(0, 400 - min(rank, 400))
+    if sym == q and rank > 300:
+        s -= 400
+    return s
+
+
 def _cg_search(q: str):
-    """CoinGecko search — sembol eslesmesi + market_cap_rank."""
-    r = _http_get("https://api.coingecko.com/api/v3/search", params={"query": q}, timeout=20)
+    r = _http_get("https://api.coingecko.com/api/v3/search", params={"query": q}, timeout=25)
     if not r or not getattr(r, "ok", False):
+        log.warning("CG search fail %s %s", q, getattr(r, "status_code", r))
         return None
     try:
         coins = (r.json() or {}).get("coins") or []
@@ -639,15 +740,11 @@ def _cg_search(q: str):
         return None
     if not coins:
         return None
-    same = [c for c in coins if (c.get("symbol") or "").lower() == q]
-    pool = same if same else coins
-    ranked = [c for c in pool if c.get("market_cap_rank")]
-    if ranked:
-        pick = sorted(ranked, key=lambda x: x["market_cap_rank"])[0]
-    else:
-        pick = pool[0]
-    cid = pick.get("id")
-    sym = (pick.get("symbol") or q).upper()
+    best = max(coins, key=lambda c: _cg_score(c, q))
+    if _cg_score(best, q) < 40:
+        return None
+    cid = best.get("id")
+    sym = (best.get("symbol") or q).upper()
     return (cid, sym) if cid else None
 
 
@@ -657,13 +754,22 @@ def _cg_resolve(query: str):
         return None
     if q in _cg_id_cache:
         return _cg_id_cache[q]
-    # search once (en guvenilir)
+
+    # 1) markets cache (top ~1000 — sitedeki liste)
+    _cg_load_markets()
+    if q in _cg_markets:
+        info = _cg_markets[q]
+        got = (info["id"], info.get("s") or q.upper())
+        _cg_id_cache[q] = got
+        return got
+
+    # 2) search API
     got = _cg_search(q)
     if got:
         _cg_id_cache[q] = got
         return got
 
-    # list fallback
+    # 3) full coins/list
     _cg_load_list()
     ids = _cg_symbol_map.get(q) or []
     if len(ids) == 1:
@@ -671,7 +777,26 @@ def _cg_resolve(query: str):
         _cg_id_cache[q] = got
         return got
     if ids:
-        # search zaten basarisizdi; ilk id
+        try:
+            r = _http_get(
+                "https://api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "ids": ",".join(ids[:40]),
+                    "order": "market_cap_desc",
+                    "per_page": 40,
+                    "page": 1,
+                },
+                timeout=30,
+            )
+            if r and getattr(r, "ok", False):
+                arr = r.json() or []
+                if arr:
+                    got = (arr[0]["id"], (arr[0].get("symbol") or q).upper())
+                    _cg_id_cache[q] = got
+                    return got
+        except Exception as e:
+            log.warning("CG markets by ids: %s", e)
         got = (ids[0], q.upper())
         _cg_id_cache[q] = got
         return got
@@ -679,10 +804,14 @@ def _cg_resolve(query: str):
 
 
 def _coingecko_by_id(cid: str, sym: str):
+    now = time.time()
+    cached = _cg_price_cache.get(cid)
+    if cached and now - cached[0] < 60:
+        return cached[1]
     r = _http_get(
         "https://api.coingecko.com/api/v3/simple/price",
         params={"ids": cid, "vs_currencies": "usd,try", "include_24hr_change": "true"},
-        timeout=20,
+        timeout=25,
     )
     if not r or not getattr(r, "ok", False):
         log.warning("CG price %s %s", cid, getattr(r, "status_code", None))
@@ -693,7 +822,7 @@ def _coingecko_by_id(cid: str, sym: str):
         return None
     if d.get("usd") is None:
         return None
-    return {
+    bil = {
         "s": sym,
         "usd": float(d["usd"]),
         "try": d.get("try"),
@@ -702,11 +831,14 @@ def _coingecko_by_id(cid: str, sym: str):
         "id": cid,
         "link": f"https://www.coingecko.com/en/coins/{cid}",
     }
+    _cg_price_cache[cid] = (now, bil)
+    return bil
 
 
 def _coingecko_fiyat(q: str):
     resolved = _cg_resolve(q)
     if not resolved:
+        log.info("CG resolve yok: %s", q)
         return None
     return _coingecko_by_id(resolved[0], resolved[1])
 
@@ -777,16 +909,13 @@ def fiyat_cek(sembol: str):
     q = (sembol or "").strip().lower()
     if not q:
         return None
-    # doviz once
     if q in ("usd", "dolar", "usdt", "eur", "euro", "gbp", "sterlin", "altin", "gold", "ons", "gumus", "silver"):
         bil = _yahoo_fiyat(q)
         if bil:
             return bil
-    # coin
     bil = _coingecko_fiyat(q)
     if bil:
         return bil
-    # BIST hisse denemesi
     if q.isalpha() and 3 <= len(q) <= 6:
         bil = _yahoo_fiyat(q)
         if bil:
@@ -799,7 +928,8 @@ async def fiyat_gonder(update, miktar, sembol):
     if not bil:
         try:
             await update.effective_message.reply_text(
-                f"❌ <b>{html.escape(str(sembol).upper())}</b> bulunamadı.",
+                f"❌ <b>{html.escape(str(sembol).upper())}</b> bulunamadı.\n"
+                f"<i>CoinGecko API — biraz sonra tekrar dene.</i>",
                 parse_mode="HTML",
             )
         except Exception:
@@ -826,7 +956,7 @@ async def fiyat_gonder(update, miktar, sembol):
         fiyat_satir = "—"
     try_ek = ""
     if usd is not None and try_p is not None:
-        try_ek = "\n🇹🇷 ₺{:,.2f}".format(float(try_p) * miktar)
+        try_ek = "\\n🇹🇷 ₺{:,.2f}".format(float(try_p) * miktar)
     if ch is not None and ch >= 0.3:
         ikon = "📈"
         espriler = [
@@ -850,8 +980,8 @@ async def fiyat_gonder(update, miktar, sembol):
     else:
         baslik = f"<b>{adet}{html.escape(name)}</b>"
     text = (
-        f"⚠️ {baslik}:\n"
-        f"✅ {fiyat_satir}{try_ek}\n"
+        f"⚠️ {baslik}:\\n"
+        f"✅ {fiyat_satir}{try_ek}\\n"
         f"{ikon} {html.escape(random.choice(espriler))}"
     )
     try:
@@ -3384,6 +3514,15 @@ def main():
     )
     app.add_error_handler(hata)
     log.info("Bot basliyor...")
+    # CoinGecko markets on yukle (arka plan)
+    def _preload_cg():
+        try:
+            _cg_load_markets(force=True)
+            log.info("CG markets hazir: %s", len(_cg_markets))
+        except Exception as e:
+            log.warning("CG preload: %s", e)
+    threading.Thread(target=_preload_cg, daemon=True).start()
+
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
