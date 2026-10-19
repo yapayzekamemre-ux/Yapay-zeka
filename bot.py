@@ -834,9 +834,8 @@ async def fiyat_gonder(update, miktar, sembol):
     import random
     ch = bil.get("ch")
     name = str(bil.get("s") or sembol).upper()
-    full = bil.get("name") or ""
     link = bil.get("link") or ""
-    adet = f"{miktar:g} " if miktar != 1 else "1 "
+    adet = f"{miktar:g} " if miktar != 1 else ""
     usd = bil.get("usd")
     try_p = bil.get("try")
     if usd is not None:
@@ -851,9 +850,9 @@ async def fiyat_gonder(update, miktar, sembol):
         fiyat_satir = f"₺{float(try_p) * miktar:,.2f}"
     else:
         fiyat_satir = "—"
-    try_ek = ""
+    try_line = ""
     if usd is not None and try_p is not None:
-        try_ek = "\n🇹🇷 ₺{:,.2f}".format(float(try_p) * miktar)
+        try_line = f"\n🇹🇷 ₺{float(try_p) * miktar:,.2f}"
     if ch is not None and float(ch) >= 0.3:
         ikon = "📈"
         espriler = [
@@ -872,16 +871,17 @@ async def fiyat_gonder(update, miktar, sembol):
         ikon = "💬"
         ch_s = f"{float(ch):+.2f}" if ch is not None else "0.00"
         espriler = [f"yatay ({ch_s}%).", "şimdilik sessiz, lan."]
-    title = html.escape(name)
-    if full and full.upper() != name:
-        title = f"{html.escape(full)} ({title})"
+    # kisa baslik: sadece sembol (uzun isim yok)
     if link:
-        baslik = f'<a href="{html.escape(link)}"><b>{adet}{title}</b></a>'
+        baslik = f'<a href="{html.escape(link)}"><b>{adet}{html.escape(name)}</b></a>'
     else:
-        baslik = f"<b>{adet}{title}</b>"
+        baslik = f"<b>{adet}{html.escape(name)}</b>"
+    # isim / fiyat / espri arasinda bos satir
     text = (
-        f"⚠️ {baslik}:\n"
-        f"✅ {fiyat_satir}{try_ek}\n"
+        f"⚠️ {baslik}\n"
+        f"\n"
+        f"✅ {fiyat_satir}{try_line}\n"
+        f"\n"
         f"{ikon} {html.escape(random.choice(espriler))}"
     )
     try:
