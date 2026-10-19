@@ -853,7 +853,7 @@ async def fiyat_gonder(update, miktar, sembol):
         fiyat_satir = "—"
     try_ek = ""
     if usd is not None and try_p is not None:
-        try_ek = "\\n🇹🇷 ₺{:,.2f}".format(float(try_p) * miktar)
+        try_ek = "\n🇹🇷 ₺{:,.2f}".format(float(try_p) * miktar)
     if ch is not None and float(ch) >= 0.3:
         ikon = "📈"
         espriler = [
@@ -880,8 +880,8 @@ async def fiyat_gonder(update, miktar, sembol):
     else:
         baslik = f"<b>{adet}{title}</b>"
     text = (
-        f"⚠️ {baslik}:\\n"
-        f"✅ {fiyat_satir}{try_ek}\\n"
+        f"⚠️ {baslik}:\n"
+        f"✅ {fiyat_satir}{try_ek}\n"
         f"{ikon} {html.escape(random.choice(espriler))}"
     )
     try:
