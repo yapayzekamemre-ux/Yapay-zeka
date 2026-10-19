@@ -537,25 +537,47 @@ YAHOO = {
     "bimas": "BIMAS.IS", "kozaa": "KOZAA.IS", "sise": "SISE.IS",
     "tcell": "TCELL.IS", "froto": "FROTO.IS",
 }
-SAYI_KELIME = {
-    "tl", "try", "usd", "eur", "gbp", "gb", "mb", "kg", "tane", "adet",
-    "saat", "gun", "dk", "sn", "lira", "dolar", "euro", "fiyat", "price",
+_ATLA = {
+    "tl", "try", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn",
+    "lira", "fiyat", "price", "yapay", "ne", "naber", "merhaba", "selam", "sa",
+    "as", "nbr", "iyi", "iyiyim", "nasilsin", "nasılsın", "tamam", "ok", "okay",
+    "evet", "hayir", "hayır", "yok", "var", "lan", "kardes", "kardeş", "abi",
+    "abla", "knk", "kanka", "bro", "hocam", "reis", "baba", "anne",
+    "anlamadim", "anlamadım", "anlamadin", "anlamadın", "etmiyorum", "etmiyor",
+    "belki", "galiba", "sanki", "bence", "sence", "lutfen", "lütfen",
+    "tesekkur", "teşekkür", "sagol", "sağol", "eyvallah", "hadi", "haydi",
+    "gel", "git", "bak", "dur", "bekle", "simdi", "şimdi", "sonra", "once", "önce",
+    "bugun", "bugün", "yarin", "yarın", "dun", "dün", "ben", "sen", "biz", "siz",
+    "onlar", "bu", "su", "şu", "kim", "neden", "nasil", "nasıl", "nerede", "nereye",
+    "hangi", "kac", "kaç", "mi", "mı", "mu", "mü", "de", "da", "ki", "ile", "ve",
+    "veya", "ama", "fakat", "cunku", "çünkü", "icin", "için", "gibi", "kadar",
+    "daha", "en", "cok", "çok", "az", "pek", "ceza", "mute", "ban", "kick", "warn",
+    "help", "yardim", "yardım", "admin", "bot", "telegram", "grup", "kanal",
+    "mesaj", "chat", "sohbet", "duyuru", "link", "url", "http", "https",
+    "sikerim", "siktir", "amk", "aq", "mk", "yavsak", "yavşak", "belani", "belanı",
+    "yapiyorum", "yapıyorum", "yapiyorsun", "yapıyorsun", "nediyor", "nedi",
+    "naptı", "napti", "soyle", "söyle", "anlat", "dinle", "konus", "konuş",
+    "cevap", "yanit", "yanıt", "soru", "etmiyorum", "ediyorum",
 }
+
 KISA = re.compile(
     r"(?i)^\s*(?:(\d+(?:[.,]\d+)?)\s+)?"
     r"(?:\$|fiyat\s+|price\s+)?"
-    r"([a-zA-ZğüşıöçĞÜŞİÖÇ][a-zA-Z0-9ğüşıöçĞÜŞİÖÇ.\-]{1,20})"
+    r"([a-zA-Z][a-zA-Z0-9]{1,12})"
     r"(?:\s+(?:fiyat|price|ne kadar|kaç|kac))?$"
 )
 _cg_id_cache = {}
-_cg_symbol_map = {}  # symbol -> [(id, name)]
+_cg_symbol_map = {}
 _cg_list_ts = 0
 CG_LIST_FILE = "cg_coins.json"
 
 
 def kisa_token(metin):
+    """Sadece ticker gibi kisa ASCII semboller. Turkce sohbet kelimesi degil."""
     t = (metin or "").strip()
-    if not t or len(t) > 50:
+    if not t or len(t) > 40:
+        return None
+    if len(t.split()) > 3:
         return None
     m = KISA.match(t)
     if not m:
@@ -567,7 +589,11 @@ def kisa_token(metin):
         except Exception:
             pass
     s = m.group(2).lower().strip(".")
-    if s in SAYI_KELIME:
+    if s in _ATLA:
+        return None
+    if any(c in s for c in "ğüşıöç"):
+        return None
+    if len(s) > 12:
         return None
     return (miktar, s)
 
@@ -818,15 +844,8 @@ def fiyat_cek(sembol: str):
 async def fiyat_gonder(update, miktar, sembol):
     bil = fiyat_cek(sembol)
     if not bil:
-        try:
-            await update.effective_message.reply_text(
-                f"❌ <b>{html.escape(str(sembol).upper())}</b> bulunamadı.\n"
-                f"CoinGecko sembolü dene: <code>btc</code> <code>eth</code> <code>pengu</code>",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-        return True
+        # bulunamadi -> sohbet/AI devam etsin
+        return False
 
     import random
     ch = bil.get("ch")
@@ -3086,20 +3105,16 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await ceza_baslat(update, context, hedef, user)
             return
 
-    kt = kisa_token(metin)
-    if kt:
-        if await fiyat_gonder(update, kt[0], kt[1]):
-            return
-
     low = kucult(metin)
     cagrildi = ozel
+    reply_bot = False
+    mention_bot = False
     if not ozel:
-        reply_bot = (
+        reply_bot = bool(
             msg.reply_to_message
             and msg.reply_to_message.from_user
             and msg.reply_to_message.from_user.id == context.bot.id
         )
-        mention_bot = False
         try:
             me = context.bot.username or ""
             if me and f"@{me.lower()}" in low:
@@ -3107,11 +3122,18 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         if cget(cid, "privacy_ai"):
-            # Privacy acik: sadece yanit veya @bot
             cagrildi = bool(reply_bot or mention_bot)
         else:
             if "yapay" in low or reply_bot or mention_bot:
                 cagrildi = True
+
+    # Fiyat sadece AI cagrilmadiysa (yapay / yanit / @bot degilse)
+    if not cagrildi and not reply_bot and not mention_bot and "yapay" not in low:
+        kt = kisa_token(metin)
+        if kt:
+            if await fiyat_gonder(update, kt[0], kt[1]):
+                return
+
     if not cagrildi:
         return
 
