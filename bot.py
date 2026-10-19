@@ -63,17 +63,38 @@ TR = timezone(timedelta(hours=3))
 
 # Hazir egitici / uyari mesajlari (arkadas botu tarzi)
 DEFAULT_IPUCU = [
-    "💡 <b>Yatırım sistemleri risklidir.</b>\nÖn satışlar ya da ödeme yaparak katıldığınız airdroplar her zaman kazanç sağlamayabilir. Bu bilinçte katılım sağlayın.",
-    "💡 <b>Vote escrow nedir?</b>\nTokenlerin uzun süre kilitlenmesi karşılığında oy ağırlığının arttığı ve uzun vadeli bağlılığı ödüllendiren mekanizmadır.",
-    "💡 <b>DYOR</b> — Do Your Own Research.\nBir projeye girmeden whitepaper, ekip, tokenomics ve kontrat adresini kontrol et.",
-    "💡 <b>Seed phrase / private key</b> asla kimseyle paylaşma. Destek ekibi diye yazanlar dolandırıcı olabilir.",
-    "💡 <b>Rugpull:</b> Likiditenin çekilip projenin terk edilmesi. Audit ve kilitli likiditeye bak.",
-    "💡 <b>Airdrop avcılığı:</b> Birden fazla cüzdan = ban riski. Kuralları oku, Sybil kontrolüne dikkat.",
-    "💡 <b>Slippage</b> yüksek pairlerde alım satımda fiyat kayması yaşanır. Büyük işlemde parçala.",
-    "💡 <b>Phishing:</b> Sahte siteler seed ister. Adresi her zaman resmi kaynaktan kopyala.",
-    "💡 <b>Gas wage:</b> Yoğun saatlerde ücret artar. Acil değilse sakin saatleri bekle.",
-    "💡 <b>FOMO</b> ile alım çoğu zaman zarardır. Planın yoksa işlem açma.",
+    "💡 <b>Yatırım risklidir.</b> Ön satış / ödeme ile airdrop her zaman kazanç getirmez.",
+    "💡 <b>DYOR:</b> Whitepaper, ekip, tokenomics ve kontrat adresini kontrol et.",
+    "💡 <b>Seed / private key</b> asla paylaşma. “Destek ekibi” yazanlar dolandırıcı olabilir.",
+    "💡 <b>Phishing:</b> Sahte site seed ister. Adresi hep resmi kaynaktan kopyala.",
+    "💡 <b>Rugpull:</b> Likidite çekilip proje terk edilir. Audit ve kilitli likiditeye bak.",
+    "💡 <b>Sybil:</b> Çok cüzdan = ban riski. Airdrop kurallarını oku.",
+    "💡 <b>Slippage:</b> Büyük işlemde fiyat kayar. Parçala, limit kullan.",
+    "💡 <b>FOMO</b> ile alım çoğu zaman zarardır. Plansız işlem açma.",
+    "💡 <b>Gas:</b> Yoğun saatte ücret artar. Acil değilse sakin saat bekle.",
+    "💡 <b>Vote escrow:</b> Uzun kilit = daha fazla oy / ödül. Erken çıkış cezası olabilir.",
+    "💡 <b>2FA</b> borsa ve e-postada açık tut. SIM swap’a karşı dikkat.",
+    "💡 <b>Revoke:</b> Kullanmadığın dApp izinlerini periyodik iptal et.",
+    "💡 <b>Cold wallet:</b> Büyük birikimi hot cüzdanda tutma.",
+    "💡 <b>Sözleşme:</b> Token kontratını explorer’da doğrula; taklit token alma.",
+    "💡 <b>Likidite kilidi:</b> Unlocked LP = yüksek risk.",
+    "💡 <b>Vesting:</b> Ekip token açılış takvimine bak; ani satış baskısı olabilir.",
+    "💡 <b>Bridge:</b> Resmi köprü kullan; sahte bridge fonları yer.",
+    "💡 <b>NFT airdrop:</b> “Free mint” linkleri çoğu zaman zararlı sözleşme.",
+    "💡 <b>Destek DM:</b> Gerçek ekipler önce seed/cüzdan istemez.",
+    "💡 <b>Stop-loss / plan:</b> Duyguyla değil kuralınla işlem yap.",
+    "💡 <b>APY tuzak:</b> Aşırı yüksek getiri genelde sürdürülemez.",
+    "💡 <b>Testnet ≠ mainnet:</b> Test coinleri gerçek para değildir.",
+    "💡 <b>Multi-sig:</b> Ortak hazine için tek imza risklidir.",
+    "💡 <b>On-chain takip:</b> Büyük cüzdan hareketlerini izle, kopyala körü körüne alma.",
+    "💡 <b>Vergi / kayıt:</b> İşlem geçmişini sakla; ileride lazım olur.",
+    "💡 <b>Topluluk:</b> Sadece şişirme vaat eden gruplardan uzak dur.",
+    "💡 <b>Hardware güncelle:</b> Cüzdan firmware’ini resmi siteden güncelle.",
+    "💡 <b>Adres kontrol:</b> Kopyala-yapıştır sonrası ilk-son karakterleri doğrula.",
+    "💡 <b>MEV / sandwich:</b> Büyük swap’te private RPC veya limit emir düşün.",
+    "💡 <b>Sakin kal:</b> Panik satış çoğu zaman dibi satmaktır.",
 ]
+
 
 
 
@@ -2664,19 +2685,32 @@ async def duyuru_periyodik(context: ContextTypes.DEFAULT_TYPE):
 
 def _ipucu_havuz(chat_id):
     ozel = list(cget(chat_id, "ipucu_liste") or [])
-    return ozel + list(DEFAULT_IPUCU)
+    # once ozel, sonra varsayilan — tekrarsiz secim icin ayri tutulur
+    return ozel, list(DEFAULT_IPUCU)
 
 
 async def ipucu_gonder_grup(bot, chat_id):
+    """Her seferinde farkli ipucu; kullanilanlar bitince sifirlanir."""
     import random
-    havuz = _ipucu_havuz(chat_id)
+    ozel, varsayilan = _ipucu_havuz(chat_id)
+    havuz = ozel + varsayilan
     if not havuz:
-        return
-    text = random.choice(havuz)
+        return False
+    kullanilan = list(cget(chat_id, "ipucu_kullanilan") or [])
+    adaylar = [t for t in havuz if t not in kullanilan]
+    if not adaylar:
+        kullanilan = []
+        adaylar = list(havuz)
+    text = random.choice(adaylar)
+    kullanilan.append(text)
+    # sadece son N hatirla (havuz buyukse)
+    cset(chat_id, "ipucu_kullanilan", kullanilan[-max(5, len(havuz)):])
     try:
         await bot.send_message(chat_id, text, parse_mode="HTML", disable_web_page_preview=True)
+        return True
     except Exception as e:
         log.warning("ipucu: %s", e)
+        return False
 
 
 async def ipucu_komut(update, context):
