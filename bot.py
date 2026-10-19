@@ -530,6 +530,45 @@ CG_BASE = "https://api.coingecko.com/api/v3"
 CG_CACHE = "cg_snap.json"
 CG_PAGES = 8
 CG_STEP = 20  # sayfalar arasi sn (~3 istek/dk)
+
+# kisa espri havuzu + tekrar onleme
+_FIYAT_ESPRI_SON = []
+_FIYAT_YUKSEL = [
+    "boğa canlanıyor 🐂", "cüzdan gülümsedi", "yeşil ışık yandı", "pump sinyali mi?",
+    "hafif hop aldı", "ayılar kaçıyor", "momentum geldi", "chart mutlu",
+    "yeşile boyandı", "cüzdan şişiyor", "rocket yolda mı", "boğa uyanmış",
+    "trend yukarı", "hop diye çıktı", "yeşil yağmur", "kazanç kokusu",
+    "alım baskısı var", "yeşil mumlar", "cüzdan keyifli", "boğa dansı",
+    "yükseliş devam", "fiyat koşuyor", "iyi gidiyor", "mini pump",
+]
+_FIYAT_DUS = [
+    "cüzdan yanıyor 🔥", "ayı baskın", "su döküldü", "kırmızı alarm",
+    "panik yok sakin", "düzeltme mi bu", "boğa yoruldu", "chart ağlıyor",
+    "hold zamanı", "geçici diye umuyoruz", "kırmızı deniz", "cüzdan inceldi",
+    "ayı dans ediyor", "nefes al", "düşüş var sakin", "kırmızı mumlar",
+    "satış baskısı", "chart üzgün", "biraz geriledi", "soğuk duş",
+    "dip mi geliyor", "sakin kal lan", "geçici kanama", "ayı gücü",
+]
+_FIYAT_YATAY = [
+    "yatay sürünüyor", "ne boğa ne ayı", "sıkıcı chart", "bekle gör",
+    "kimse kıpırdamıyor", "fısıltı bile yok", "donmuş gibi", "yan range",
+    "sessiz piyasa", "ufak titreşim", "durgun su", "bekleyiş var",
+    "hareket yok", "uykuda chart", "sabır zamanı", "düz çizgi",
+    "ne yukarı ne aşağı", "sakin sakin", "fiyat uyuyor", "bekleyenler kazanır",
+]
+
+def _espri_sec(havuz):
+    """Son 5 espriyi tekrar etme."""
+    import random
+    aday = [x for x in havuz if x not in _FIYAT_ESPRI_SON[-5:]]
+    if not aday:
+        aday = list(havuz)
+    sec = random.choice(aday)
+    _FIYAT_ESPRI_SON.append(sec)
+    if len(_FIYAT_ESPRI_SON) > 20:
+        del _FIYAT_ESPRI_SON[:-15]
+    return sec
+
 _CG_ALIAS = {"ton": "the-open-network", "gram": "the-open-network", "toncoin": "the-open-network"}
 _cg_by_id = {}
 _cg_by_symbol = {}  # symbol -> [coin, ...] rank sirali
@@ -853,36 +892,28 @@ async def fiyat_gonder(update, miktar, sembol):
     try_line = ""
     if usd is not None and try_p is not None:
         try_line = f"\n🇹🇷 ₺{float(try_p) * miktar:,.2f}"
+
     if ch is not None and float(ch) >= 0.3:
         ikon = "📈"
-        espriler = [
-            f"%{float(ch):.2f} yükseldi, cüzdana bak lan!",
-            f"+%{float(ch):.2f} — hafif hop aldı.",
-            f"%{float(ch):.2f} yeşilde.",
-        ]
+        espri = f"%{float(ch):.2f} · {_espri_sec(_FIYAT_YUKSEL)}"
     elif ch is not None and float(ch) <= -0.3:
         ikon = "📉"
-        espriler = [
-            f"%{abs(float(ch)):.2f} düştü, panik yok.",
-            f"%{float(ch):.2f} kırmızıda.",
-            f"%{float(ch):.2f} — sakin kal.",
-        ]
+        espri = f"%{abs(float(ch)):.2f} · {_espri_sec(_FIYAT_DUS)}"
     else:
         ikon = "💬"
         ch_s = f"{float(ch):+.2f}" if ch is not None else "0.00"
-        espriler = [f"yatay ({ch_s}%).", "şimdilik sessiz, lan."]
-    # kisa baslik: sadece sembol (uzun isim yok)
+        espri = f"{ch_s}% · {_espri_sec(_FIYAT_YATAY)}"
+
     if link:
         baslik = f'<a href="{html.escape(link)}"><b>{adet}{html.escape(name)}</b></a>'
     else:
         baslik = f"<b>{adet}{html.escape(name)}</b>"
-    # isim / fiyat / espri arasinda bos satir
     text = (
         f"⚠️ {baslik}\n"
         f"\n"
         f"✅ {fiyat_satir}{try_line}\n"
         f"\n"
-        f"{ikon} {html.escape(random.choice(espriler))}"
+        f"{ikon} {html.escape(espri)}"
     )
     try:
         await update.effective_message.reply_text(
