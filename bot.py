@@ -870,7 +870,6 @@ async def fiyat_gonder(update, miktar, sembol):
         except Exception:
             pass
         return True
-    import random
     ch = bil.get("ch")
     name = str(bil.get("s") or sembol).upper()
     link = bil.get("link") or ""
@@ -880,11 +879,11 @@ async def fiyat_gonder(update, miktar, sembol):
     if usd is not None:
         u = float(usd) * miktar
         if u < 0.0001:
-            fiyat_satir = f"${u:.8f}"
+            fiyat_satir = f"${u:.8f} Usdt"
         elif u < 1:
-            fiyat_satir = f"${u:.4f}"
+            fiyat_satir = f"${u:.4f} Usdt"
         else:
-            fiyat_satir = f"${u:,.2f}"
+            fiyat_satir = f"${u:,.2f} Usdt"
     elif try_p is not None:
         fiyat_satir = f"₺{float(try_p) * miktar:,.2f}"
     else:
@@ -893,16 +892,18 @@ async def fiyat_gonder(update, miktar, sembol):
     if usd is not None and try_p is not None:
         try_line = f"\n🇹🇷 ₺{float(try_p) * miktar:,.2f}"
 
+    # soldaki bot gibi: "%X yükseldi/düştü + kisa cumle"
     if ch is not None and float(ch) >= 0.3:
         ikon = "📈"
-        espri = f"%{float(ch):.2f} · {_espri_sec(_FIYAT_YUKSEL)}"
+        espri = f"%{float(ch):.2f} yükseldi, {_espri_sec(_FIYAT_YUKSEL)}"
     elif ch is not None and float(ch) <= -0.3:
-        ikon = "📉"
-        espri = f"%{abs(float(ch)):.2f} · {_espri_sec(_FIYAT_DUS)}"
+        ikon = "⛔"
+        espri = f"%{abs(float(ch)):.2f} düştü, {_espri_sec(_FIYAT_DUS)}"
     else:
         ikon = "💬"
-        ch_s = f"{float(ch):+.2f}" if ch is not None else "0.00"
-        espri = f"{ch_s}% · {_espri_sec(_FIYAT_YATAY)}"
+        ch_s = f"{abs(float(ch)):.2f}" if ch is not None else "0.00"
+        yon = "yükseldi" if (ch or 0) >= 0 else "düştü"
+        espri = f"%{ch_s} {yon}, {_espri_sec(_FIYAT_YATAY)}"
 
     if link:
         baslik = f'<a href="{html.escape(link)}"><b>{adet}{html.escape(name)}</b></a>'
