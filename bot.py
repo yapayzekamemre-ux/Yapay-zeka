@@ -715,6 +715,8 @@ def _coingecko_by_id(cid: str, sym: str):
         "try": d.get("try"),
         "ch": d.get("usd_24h_change"),
         "src": "coingecko",
+        "id": cid,
+        "link": f"https://www.coingecko.com/en/coins/{cid}",
     }
 
 
@@ -768,7 +770,13 @@ def _yahoo_fiyat(query: str):
             ch = ((float(price) - float(prev)) / float(prev)) * 100
         currency = (meta.get("currency") or "").upper()
         price = float(price)
-        out = {"s": label, "ch": ch, "src": "yahoo", "cur": currency}
+        out = {
+            "s": label,
+            "ch": ch,
+            "src": "yahoo",
+            "cur": currency,
+            "link": f"https://finance.yahoo.com/quote/{ticker}",
+        }
         if currency in ("TRY", "TL"):
             out["usd"] = None
             out["try"] = price
@@ -816,6 +824,7 @@ async def fiyat_gonder(update, miktar, sembol):
     import random
     ch = bil.get("ch")
     name = str(bil.get("s") or sembol).upper()
+    link = bil.get("link") or ""
     adet = f"{miktar:g} " if miktar != 1 else "1 "
     usd = bil.get("usd")
     try_p = bil.get("try")
@@ -833,38 +842,42 @@ async def fiyat_gonder(update, miktar, sembol):
         fiyat_satir = "—"
     try_ek = ""
     if usd is not None and try_p is not None:
-        try_ek = f"\n🇹🇷 ₺{float(try_p) * miktar:,.2f}"
+        try_ek = "\n🇹🇷 ₺{:,.2f}".format(float(try_p) * miktar)
     if ch is not None and ch >= 0.3:
         ikon = "📈"
         espriler = [
-            f"%{ch:.2f} yükseldi {name} {fiyat_satir}'ye çıktı, cüzdana bak lan!",
-            f"+%{ch:.2f} — {name} hafif hop aldı.",
-            f"%{ch:.2f} yeşilde {name}.",
+            f"%{ch:.2f} yükseldi, cüzdana bak lan!",
+            f"+%{ch:.2f} — hafif hop aldı.",
+            f"%{ch:.2f} yeşilde.",
         ]
     elif ch is not None and ch <= -0.3:
         ikon = "📉"
         espriler = [
-            f"%{abs(ch):.2f} düştü {name}, panik yok.",
-            f"%{ch:.2f} kırmızıda {name}.",
-            f"{name} %{ch:.2f} — sakin kal.",
+            f"%{abs(ch):.2f} düştü, panik yok.",
+            f"%{ch:.2f} kırmızıda.",
+            f"%{ch:.2f} — sakin kal.",
         ]
     else:
         ikon = "💬"
         ch_s = f"{ch:+.2f}" if ch is not None else "0.00"
-        espriler = [f"{name} yatay ({ch_s}%).", f"{name} şimdilik sessiz, lan."]
+        espriler = [f"yatay ({ch_s}%).", "şimdilik sessiz, lan."]
+    if link:
+        baslik = f'<a href="{html.escape(link)}"><b>{adet}{html.escape(name)}</b></a>'
+    else:
+        baslik = f"<b>{adet}{html.escape(name)}</b>"
     text = (
-        f"⚠️ <b>{adet}{html.escape(name)}:</b>\n"
+        f"⚠️ {baslik}:\n"
         f"✅ {fiyat_satir}{try_ek}\n"
         f"{ikon} {html.escape(random.choice(espriler))}"
     )
     try:
-        await update.effective_message.reply_text(text, parse_mode="HTML")
+        await update.effective_message.reply_text(
+            text, parse_mode="HTML", disable_web_page_preview=True
+        )
         return True
     except Exception as e:
         log.warning("fiyat_gonder: %s", e)
         return False
-
-
 
 
 # ---------- panel ----------
