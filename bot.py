@@ -132,6 +132,7 @@ SISTEM = (
     "Birinin adını söyleyerek şaka yapılıyorsa duruma uygun, adil cevap ver. "
     "Grup üyelerini tanı; isimleriyle hitap et. "
     "Bot/model ismi yazma. Yatırım tavsiyesi verme. Bilmediğini uydurma."
+    "Fiyat uydurma; borsaya gönderme. Kısa ve net kal."
 )
 
 DOSYA, DURUM = "uyeler.json", "durum.json"
@@ -209,7 +210,7 @@ DEFAULT_G = {
     "reports": True,
     "duyuru_kanal": None,
     "duyuru_aktif": False,
-    "duyuru_saat": 2,
+    "duyuru_saat": 5,
     "duyuru_posts": [],
     "ipucu_aktif": False,
     "ipucu_saat": 3,
@@ -572,6 +573,11 @@ _cg_list_ts = 0
 CG_LIST_FILE = "cg_coins.json"
 
 
+
+def _re_sub_yapay(metin: str) -> str:
+    return re.sub(r"(?i)\byapay\b", "", metin or "").strip()
+
+
 def kisa_token(metin):
     """Sadece ticker gibi kisa ASCII semboller. Turkce sohbet kelimesi degil."""
     t = (metin or "").strip()
@@ -844,8 +850,14 @@ def fiyat_cek(sembol: str):
 async def fiyat_gonder(update, miktar, sembol):
     bil = fiyat_cek(sembol)
     if not bil:
-        # bulunamadi -> sohbet/AI devam etsin
-        return False
+        try:
+            await update.effective_message.reply_text(
+                f"❌ <b>{html.escape(str(sembol).upper())}</b> bulunamadı.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return True  # fiyat denemesiydi, AI'ye dusmesin
 
     import random
     ch = bil.get("ch")
@@ -1466,19 +1478,24 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "duyuru":
         aktif = bool(cget(cid, "duyuru_aktif"))
         kid = cget(cid, "duyuru_kanal")
-        saat = int(cget(cid, "duyuru_saat") or 2)
+        saat = float(cget(cid, "duyuru_saat") or 5)
         n = len(cget(cid, "duyuru_posts") or [])
-        await q.edit_message_text(
+        txt = (
             f"📢 <b>Günlük Duyurular</b>\n"
             f"Durum: {_ok(aktif)}\n"
-            f"Kanal: <code>{kid or 'yok'}</code>\n"
-            f"Aralık: her {saat} saat\n"
-            f"Kayıtlı post: {n}\n\n"
-            f"1) Botu duyuru kanalına admin ekle\n"
+            f"Kanal: <code>{kid or 'bağlı değil'}</code>\n"
+            f"Aralık: her <b>{saat}</b> saat\n"
+            f"Kayıtlı: {n} post\n\n"
+            f"Boş liste otomatik <b>gönderilmez</b>.\n"
+            f"1) Botu kanala admin ekle\n"
             f"2) Kanalda: <code>/setduyuru {cid}</code>\n"
-            f"3) Panelden aç veya <code>/duyuruac</code>\n"
-            f"Aralık: <code>/duyurusaat 2</code>\n"
-            f"Şimdi gönder: <code>/duyuru</code>",
+            f"3) Aç/kapa + aralık seç\n"
+            f"Manuel: <code>/duyuruekle metin</code>\n"
+            f"Şimdi: <code>/duyuru</code>\n"
+            f"Aralık: <code>/duyurusaat 5</code>"
+        )
+        await q.edit_message_text(
+            txt,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"Aktif {_ok(aktif)}", callback_data="p:duyuru_tog")],
@@ -1486,6 +1503,16 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("1s", callback_data="p:duys1"),
                     InlineKeyboardButton("2s", callback_data="p:duys2"),
                     InlineKeyboardButton("3s", callback_data="p:duys3"),
+                    InlineKeyboardButton("5s", callback_data="p:duys5"),
+                ],
+                [
+                    InlineKeyboardButton("6s", callback_data="p:duys6"),
+                    InlineKeyboardButton("12s", callback_data="p:duys12"),
+                    InlineKeyboardButton("24s", callback_data="p:duys24"),
+                ],
+                [
+                    InlineKeyboardButton("Şimdi gönder", callback_data="p:duyuru_now"),
+                    InlineKeyboardButton("Listeyi temizle", callback_data="p:duyuru_clr"),
                 ],
                 [InlineKeyboardButton("« Geri", callback_data="p:geri")],
             ]),
@@ -1495,8 +1522,17 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cset(cid, "duyuru_aktif", not bool(cget(cid, "duyuru_aktif")))
         await yenile()
         return
-    if data in ("duys1", "duys2", "duys3"):
-        cset(cid, "duyuru_saat", int(data[-1]))
+    if data.startswith("duys") and data[4:].isdigit():
+        cset(cid, "duyuru_saat", int(data[4:]))
+        await yenile()
+        return
+    if data == "duyuru_now":
+        ok = await duyuru_gonder_grup(context.bot, cid, zorla=True)
+        await q.answer("Gönderildi" if ok else "Boş / hata", show_alert=True)
+        return
+    if data == "duyuru_clr":
+        cset(cid, "duyuru_posts", [])
+        await q.answer("Liste temizlendi", show_alert=True)
         await yenile()
         return
 
@@ -1519,9 +1555,14 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"Aktif {_ok(aktif)}", callback_data="p:ipucu_tog")],
                 [
+                    InlineKeyboardButton("1s", callback_data="p:ips1"),
                     InlineKeyboardButton("2s", callback_data="p:ips2"),
                     InlineKeyboardButton("3s", callback_data="p:ips3"),
+                    InlineKeyboardButton("5s", callback_data="p:ips5"),
+                ],
+                [
                     InlineKeyboardButton("6s", callback_data="p:ips6"),
+                    InlineKeyboardButton("12s", callback_data="p:ips12"),
                 ],
                 [InlineKeyboardButton("« Geri", callback_data="p:geri")],
             ]),
@@ -1531,7 +1572,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cset(cid, "ipucu_aktif", not bool(cget(cid, "ipucu_aktif")))
         await yenile()
         return
-    if data in ("ips2", "ips3", "ips6"):
+    if data.startswith("ips") and data[3:].isdigit():
         cset(cid, "ipucu_saat", int(data[3:]))
         await yenile()
         return
@@ -2436,70 +2477,37 @@ def _duyuru_link(chat, msg_id: int) -> str:
     return f"https://t.me/c/{cid}/{msg_id}"
 
 
-def duyuru_liste_metni(chat_id) -> str:
+def duyuru_liste_metni(chat_id, bos_mesaj=False):
     posts = list(cget(chat_id, "duyuru_posts") or [])
     bugun = datetime.now(TR).strftime("%Y-%m-%d")
     bugunku = [p for p in posts if p.get("date") == bugun]
     if not bugunku:
-        return "📣 <b>Bugünkü Duyurular</b>\n\nHenüz duyuru yok."
+        if bos_mesaj:
+            return "📣 <b>Bugünkü Duyurular</b>\n\nHenüz duyuru yok."
+        return None
     lines = ["📣 <b>Bugünkü Duyurular</b>", ""]
     for i, p in enumerate(bugunku[-20:], 1):
         title = html.escape(p.get("title") or "Duyuru")
         link = p.get("link") or ""
         if link:
-            lines.append(f"{i}. <a href=\"{html.escape(link)}\">{title}</a>")
+            lines.append(f'{i}. <a href="{html.escape(link)}">{title}</a>')
         else:
             lines.append(f"{i}. {title}")
     return "\n".join(lines)
 
 
-async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kanal postlarini ilgili gruba kaydet."""
-    msg = update.effective_message or update.channel_post
-    chat = update.effective_chat
-    if not msg or not chat:
-        return
-    if chat.type not in (ChatType.CHANNEL, "channel"):
-        return
-    # hangi gruplar bu kanali dinliyor?
-    for gid_s, conf in (durum.get("grup") or {}).items():
-        if not isinstance(conf, dict):
-            continue
-        if conf.get("duyuru_kanal") != chat.id:
-            continue
-        posts = list(conf.get("duyuru_posts") or [])
-        bugun = datetime.now(TR).strftime("%Y-%m-%d")
-        entry = {
-            "id": msg.message_id,
-            "title": _duyuru_baslik(msg),
-            "date": bugun,
-            "link": _duyuru_link(chat, msg.message_id),
-        }
-        # ayni id varsa guncelle
-        posts = [p for p in posts if p.get("id") != msg.message_id]
-        posts.append(entry)
-        # sadece son 3 gun
-        keep = []
-        for p in posts:
-            try:
-                d = datetime.strptime(p.get("date", bugun), "%Y-%m-%d").date()
-                if (datetime.now(TR).date() - d).days <= 3:
-                    keep.append(p)
-            except Exception:
-                keep.append(p)
-        conf["duyuru_posts"] = keep[-40:]
-        durum_kaydet()
-        log.info("duyuru kayit grup=%s post=%s", gid_s, entry["title"][:40])
-
-
-async def duyuru_gonder_grup(bot, chat_id):
-    text = duyuru_liste_metni(chat_id)
+async def duyuru_gonder_grup(bot, chat_id, zorla=False):
+    text = duyuru_liste_metni(chat_id, bos_mesaj=zorla)
+    if not text:
+        return False
     try:
         await bot.send_message(
             chat_id, text, parse_mode="HTML", disable_web_page_preview=True
         )
+        return True
     except Exception as e:
         log.warning("duyuru gonder: %s", e)
+        return False
 
 
 async def setduyuru_komut(update, context):
@@ -2551,12 +2559,38 @@ async def setduyuru_komut(update, context):
     )
 
 
+
+async def duyuruekle_komut(update, context):
+    """Manuel duyuru satiri ekle (kanal sart degil)."""
+    g = await _mod_giris(update, context, "duyuruekle")
+    if not g:
+        return
+    _, chat, _ = g
+    metin = " ".join(context.args or []).strip()
+    if not metin and update.effective_message:
+        parts = (update.effective_message.text or "").split(maxsplit=1)
+        metin = parts[1].strip() if len(parts) > 1 else ""
+    if not metin:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/duyuruekle metin...</code>")
+        return
+    posts = list(cget(chat.id, "duyuru_posts") or [])
+    bugun = datetime.now(TR).strftime("%Y-%m-%d")
+    posts.append({
+        "id": int(time.time()),
+        "title": metin[:200],
+        "date": bugun,
+        "link": "",
+    })
+    cset(chat.id, "duyuru_posts", posts[-40:])
+    await kisa_cevap(context.bot, chat.id, f"✅ Duyuru eklendi ({len(posts)}).")
+
+
 async def duyuru_komut(update, context):
     g = await _mod_giris(update, context, "duyuru")
     if not g:
         return
     _, chat, _ = g
-    await duyuru_gonder_grup(context.bot, chat.id)
+    await duyuru_gonder_grup(context.bot, chat.id, zorla=True)
 
 
 async def duyuruac_komut(update, context):
@@ -2585,7 +2619,7 @@ async def duyurusaat_komut(update, context):
     if not context.args or not context.args[0].isdigit():
         await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/duyurusaat 2</code>")
         return
-    s = max(1, min(int(context.args[0]), 24))
+    s = max(1, min(int(context.args[0]), 48))
     cset(chat.id, "duyuru_saat", s)
     await kisa_cevap(context.bot, chat.id, f"✅ Her {s} saatte bir gönderilecek.")
 
@@ -2602,14 +2636,16 @@ async def duyuru_periyodik(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             continue
         # duyuru listesi
-        if conf.get("duyuru_aktif") and conf.get("duyuru_kanal"):
-            saat = int(conf.get("duyuru_saat") or 2)
+        if conf.get("duyuru_aktif"):
+            saat = float(conf.get("duyuru_saat") or 5)
             last = float(conf.get("duyuru_last") or 0)
             if now - last >= saat * 3600 - 30:
                 try:
-                    await duyuru_gonder_grup(bot, gid)
-                    conf["duyuru_last"] = now
+                    ok = await duyuru_gonder_grup(bot, gid, zorla=False)
+                    conf["duyuru_last"] = now  # bos olsa da sayac ilerlesin (spam yok)
                     durum_kaydet()
+                    if ok:
+                        log.info("duyuru gonderildi grup=%s", gid_s)
                 except Exception as e:
                     log.warning("duyuru job %s: %s", gid_s, e)
         # ipucu
@@ -3127,12 +3163,21 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "yapay" in low or reply_bot or mention_bot:
                 cagrildi = True
 
-    # Fiyat sadece AI cagrilmadiysa (yapay / yanit / @bot degilse)
-    if not cagrildi and not reply_bot and not mention_bot and "yapay" not in low:
-        kt = kisa_token(metin)
+    # Fiyat: once ticker dene (yapay yazilsa bile "yapay 1 btc" -> fiyat)
+    fiyat_ok = False
+    adaylar = [metin]
+    if "yapay" in low:
+        adaylar.append(_re_sub_yapay(metin))
+    for aday in adaylar:
+        if not aday:
+            continue
+        kt = kisa_token(aday)
         if kt:
             if await fiyat_gonder(update, kt[0], kt[1]):
-                return
+                fiyat_ok = True
+                break
+    if fiyat_ok:
+        return
 
     if not cagrildi:
         return
@@ -3293,6 +3338,7 @@ def main():
     app.add_handler(CommandHandler("import", import_komut))
     app.add_handler(CommandHandler("setduyuru", setduyuru_komut))
     app.add_handler(CommandHandler("duyuru", duyuru_komut))
+    app.add_handler(CommandHandler("duyuruekle", duyuruekle_komut))
     app.add_handler(CommandHandler("duyuruac", duyuruac_komut))
     app.add_handler(CommandHandler("duyurukapat", duyurukapat_komut))
     app.add_handler(CommandHandler("duyurusaat", duyurusaat_komut))
