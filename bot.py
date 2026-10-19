@@ -2498,6 +2498,43 @@ def _duyuru_link(chat, msg_id: int) -> str:
     return f"https://t.me/c/{cid}/{msg_id}"
 
 
+
+async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kanal postlarini bagli gruba kaydet."""
+    msg = update.effective_message or update.channel_post
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+    if chat.type not in (ChatType.CHANNEL, "channel"):
+        return
+    for gid_s, conf in (durum.get("grup") or {}).items():
+        if not isinstance(conf, dict):
+            continue
+        if conf.get("duyuru_kanal") != chat.id:
+            continue
+        posts = list(conf.get("duyuru_posts") or [])
+        bugun = datetime.now(TR).strftime("%Y-%m-%d")
+        entry = {
+            "id": msg.message_id,
+            "title": _duyuru_baslik(msg),
+            "date": bugun,
+            "link": _duyuru_link(chat, msg.message_id),
+        }
+        posts = [p for p in posts if p.get("id") != msg.message_id]
+        posts.append(entry)
+        keep = []
+        for p in posts:
+            try:
+                d = datetime.strptime(p.get("date", bugun), "%Y-%m-%d").date()
+                if (datetime.now(TR).date() - d).days <= 3:
+                    keep.append(p)
+            except Exception:
+                keep.append(p)
+        conf["duyuru_posts"] = keep[-40:]
+        durum_kaydet()
+        log.info("duyuru kayit grup=%s post=%s", gid_s, (entry["title"] or "")[:40])
+
+
 def duyuru_liste_metni(chat_id, bos_mesaj=False):
     posts = list(cget(chat_id, "duyuru_posts") or [])
     bugun = datetime.now(TR).strftime("%Y-%m-%d")
