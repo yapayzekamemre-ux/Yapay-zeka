@@ -531,17 +531,6 @@ _cg_id_cache = {}
 _cg_symbol_map = {}
 _cg_list_ts = 0
 
-# Sadece CG isim karisikliklari (TON vs GRAM vb.) — liste degil
-_CG_ALIAS = {
-    "ton": ("the-open-network", "TON"),
-    "toncoin": ("the-open-network", "TON"),
-    "toncoin": ("the-open-network", "TON"),
-    "opennetwork": ("the-open-network", "TON"),
-    "pump": ("pump-fun", "PUMP"),
-    "pumpfun": ("pump-fun", "PUMP"),
-    "pumfun": ("pump-fun", "PUMP"),
-}
-
 KISA = re.compile(
     r"(?i)^\s*(?:(\d+(?:[.,]\d+)?)\s+)?"
     r"(?:\$|fiyat\s+|price\s+)?"
@@ -668,11 +657,6 @@ def _cg_resolve(query: str):
         return None
     if q in _cg_id_cache:
         return _cg_id_cache[q]
-    if q in _CG_ALIAS:
-        got = _CG_ALIAS[q]
-        _cg_id_cache[q] = got
-        return got
-
     # search once (en guvenilir)
     got = _cg_search(q)
     if got:
