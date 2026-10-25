@@ -517,9 +517,19 @@ _mongo_col = None
 if _MONGO_URI:
     try:
         from pymongo import MongoClient
-        _mc = MongoClient(_MONGO_URI, serverSelectionTimeoutMS=4000)
-        _mongo_col = _mc.get_default_database()["bot_state"]
-        log.info("MongoDB baglandi")
+        _mc = MongoClient(
+            _MONGO_URI,
+            serverSelectionTimeoutMS=8000,
+            connectTimeoutMS=8000,
+        )
+        # baglanti testi
+        _mc.admin.command("ping")
+        try:
+            db = _mc.get_default_database()
+        except Exception:
+            db = _mc["turkpronim"]
+        _mongo_col = db["bot_state"]
+        log.info("MongoDB baglandi: %s", db.name)
     except Exception as e:
         log.warning("Mongo yok/hata (JSON devam): %s", e)
         _mongo_col = None
