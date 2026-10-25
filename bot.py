@@ -164,7 +164,7 @@ class _Ping(BaseHTTPRequestHandler):
             if not PANEL_TOKEN or tok != PANEL_TOKEN:
                 self.send_response(403)
                 self.end_headers()
-                self.wfile.write(b"Forbidden — ?token=PANEL_TOKEN")
+                self.wfile.write(b"Forbidden - ?token=PANEL_TOKEN")
                 return
             # ozet HTML
             gruplar = durum.get("grup") or {}
