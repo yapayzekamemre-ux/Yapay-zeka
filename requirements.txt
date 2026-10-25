@@ -2,3 +2,5 @@ python-telegram-bot[job-queue]==22.8
 groq
 google-genai
 requests
+httpx
+pymongo
