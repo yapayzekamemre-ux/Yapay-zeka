@@ -255,7 +255,7 @@ SISTEM_TABAN = (
 SISTEM = SISTEM_TABAN  # geriye uyum
 
 # kisi basi AI limit (dakikada)
-AI_LIMIT_DK = 8
+AI_LIMIT_DK = 20
 AI_LIMIT_PENCERE = 60
 _ai_limit = defaultdict(lambda: deque())  # uid -> timestamps
 
