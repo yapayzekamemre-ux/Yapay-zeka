@@ -6,6 +6,8 @@ oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
 BOT_SURUM = "v2.6.0"
+import pymongo.collection as _pmc
+_pmc.Collection.__bool__ = lambda self: True
 import asyncio
 import html
 import json
