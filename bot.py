@@ -2762,21 +2762,32 @@ async def boost_senkron(bot, chat_id, user_id) -> dict:
     return u
 
 
+def _boost_unvan_temiz(etiket: str) -> str:
+    """Telegram custom title: emoji genelde reddedilir, max 16 karakter."""
+    if not etiket:
+        return ""
+    # emoji / sembol temizle — sadece harf, rakam, bosluk, - _
+    s = re.sub(r"[^\w\s\-\+]+", "", etiket, flags=re.UNICODE)
+    s = re.sub(r"\s+", " ", s).strip()
+    # bos kalirsa ham metinden ascii-ish
+    if not s:
+        s = re.sub(r"[^ -~]+", "", etiket).strip()
+    return (s or "Boost")[:16]
+
+
 async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
-    """Isim yanina etiket icin Telegram yonetici unvani gerekir.
-    Boostlu uyeyi yetkisiz admin yapip custom title yazar (Lite/Godmode...).
-    Botun 'uyeleri yonet / admin atama' yetkisi olmali.
-    """
+    """Isim yanina unvan: yetkisiz admin + emojisiz title (Lite, Godmode...)."""
     if not etiket:
         return
-    title = (etiket if len(etiket) <= 16 else etiket[:16])
+    title = _boost_unvan_temiz(etiket)
+    if not title:
+        return
     try:
         m = await bot.get_chat_member(chat_id, user_id)
         st = getattr(m, "status", None)
         if st in (ChatMemberStatus.OWNER, "creator"):
             return
         if st not in (ChatMemberStatus.ADMINISTRATOR, "administrator"):
-            # yetkisiz admin — sadece isim yani unvan icin
             await bot.promote_chat_member(
                 chat_id,
                 user_id,
@@ -2816,7 +2827,7 @@ async def boost_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u["adet"] = max(int(u.get("adet") or 0) + 1, 1)
     boost_kaydet(cid, uid, u)
     u = boost_bilgi(cid, uid)
-    await boost_etiket_dene(context.bot, cid, uid, boost_etiket_text(u))
+    await boost_etiket_dene(context.bot, cid, uid, u.get('etiket') or boost_etiket_text(u))
     try:
         et = boost_etiket_text(u) or "—"
         txt = (
@@ -2911,7 +2922,7 @@ async def boost_komut(update, context):
             boost_kaydet(cid, hedef.id, u)
             u = boost_bilgi(cid, hedef.id)
             try:
-                await boost_etiket_dene(context.bot, cid, hedef.id, boost_etiket_text(u))
+                await boost_etiket_dene(context.bot, cid, hedef.id, u.get('etiket') or boost_etiket_text(u))
             except Exception:
                 pass
             r = await msg.reply_text(
