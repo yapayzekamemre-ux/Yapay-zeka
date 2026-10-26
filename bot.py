@@ -2651,9 +2651,23 @@ def boost_kaydet(chat_id, user_id, u: dict):
 
 
 def boost_link_hakki_var(chat_id, user_id) -> bool:
-    """Etiketi olan (boostlu) uye link atabilir — kota yok, silinmez."""
-    u = boost_bilgi(chat_id, user_id)
-    return bool(u.get("etiket"))
+    """Etiketi/adet olan boostlu uye link atabilir — asla silinmez."""
+    try:
+        u = boost_bilgi(chat_id, user_id)
+        if u.get("etiket") or int(u.get("adet") or 0) >= 1:
+            return True
+        kayit = _boost_kayit(chat_id)
+        raw = kayit.get(str(user_id))
+        if raw is None and str(user_id).isdigit():
+            for k, v in kayit.items():
+                if str(k) == str(user_id):
+                    raw = v
+                    break
+        if isinstance(raw, dict) and (raw.get("etiket") or int(raw.get("adet") or 0) >= 1):
+            return True
+    except Exception as e:
+        log.warning("boost_link_hakki_var: %s", e)
+    return False
 
 
 def boost_link_kullan(chat_id, user_id) -> bool:
@@ -5953,54 +5967,62 @@ def _spam_benzer(chat_id, metin: str) -> bool:
 
 
 async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """En once calisir: boostlu uyenin linki ASLA silinmez."""
+    """Boostlu = link silinmez. Digerleri link_engel aciksa silinir."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
     if not msg or not chat or not user:
         return
-    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+    if getattr(chat, "type", None) not in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
         return
-    if user.is_bot:
+    if getattr(user, "is_bot", False):
         return
     metin = (msg.text or msg.caption or "") or ""
-    if not mesajda_link_var(msg, metin):
-        return
-    # admin / sahip serbest
     try:
-        if sahip_mi(user) or await admin_mi(chat.id, user, context.bot):
+        var_link = mesajda_link_var(msg, metin)
+    except Exception:
+        var_link = bool(metin and LINK_RE.search(metin))
+    if not var_link:
+        return
+    uid = user.id
+    cid = chat.id
+    # sahip / admin
+    try:
+        if sahip_mi(user):
+            return
+        if await admin_mi(cid, user, context.bot):
             return
     except Exception:
         pass
-    # BOOST: etiket varsa birak
-    try:
-        if boost_link_hakki_var(chat.id, user.id):
-            try:
-                boost_link_kullan(chat.id, user.id)
-            except Exception:
-                pass
-            try:
-                _LINK_GECTI.add((chat.id, msg.message_id))
-            except Exception:
-                pass
-            log.info("boost link serbest uid=%s chat=%s", user.id, chat.id)
-            return
-    except Exception as e:
-        log.warning("boost kontrol: %s", e)
-    # domain izin
-    if not cget(chat.id, "link_engel"):
+    # BOOST — en onemli
+    if boost_link_hakki_var(cid, uid):
+        try:
+            boost_link_kullan(cid, uid)
+        except Exception:
+            pass
+        try:
+            _LINK_GECTI.add((cid, msg.message_id))
+        except Exception:
+            pass
+        log.info("BOOST LINK SERBEST uid=%s chat=%s", uid, cid)
         return
-    izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
+    # engel kapaliysa birak
+    if not cget(cid, "link_engel"):
+        return
+    # domain izin
+    izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
     low = metin.lower()
     if any(d and d in low for d in izin):
         return
-    # sil
+    # SIL
     try:
         await msg.delete()
-        log.info("link silindi (oncelik) uid=%s", user.id)
+        log.info("LINK SILINDI uid=%s (boost yok)", uid)
     except Exception as e:
         log.warning("link silinemedi: %s", e)
+        return
     raise ApplicationHandlerStop
+
 
 
 async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6622,6 +6644,11 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ozel:
         # admin degilse filtreler
         is_adm = await admin_mi(cid, user, context.bot)
+        boostlu = False
+        try:
+            boostlu = (not is_adm) and boost_link_hakki_var(cid, user.id)
+        except Exception:
+            boostlu = False
         # link engel sadece erken filtrede (boost hakki orada)
         if not is_adm:
             # sessizlik
@@ -6678,8 +6705,8 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
                     buf.clear()
                     return
-            # medya engel
-            if cget(cid, "medya_engel"):
+            # medya engel (boostlu + linkli kart silinmesin)
+            if cget(cid, "medya_engel") and not boostlu:
                 sil = False
                 if msg.photo and cget(cid, "medya_foto"):
                     sil = True
@@ -6699,8 +6726,8 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                     return
-            # typosquat / sahte site
-            if metin and _SAHTE_RE.search(metin):
+            # typosquat / sahte site (boostlu serbest)
+            if metin and _SAHTE_RE.search(metin) and not boostlu:
                 if cget(cid, "golge"):
                     await log_gonder(context.bot, cid, f"👤 Gölge: sahte domain yakalandı (silinmedi)\n{html.escape(metin[:120])}")
                 else:
@@ -6715,7 +6742,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
             # link engel erken filtrede islendi
             # link guvenlik tarama
-            if ozellik_acik(cid, "link_tara") and metin:
+            if ozellik_acik(cid, "link_tara") and metin and not boostlu:
                 for url in linkleri_cikar(metin, msg):
                     guven, neden = link_guvenli_mi(url)
                     if not guven:
@@ -8047,10 +8074,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
     app.add_handler(
         MessageHandler(
-            filters.ChatType.GROUPS
-            & filters.UpdateType.MESSAGE
-            & (~filters.COMMAND)
-            & (~filters.StatusUpdate.ALL),
+            filters.ChatType.GROUPS & (~filters.COMMAND) & filters.UpdateType.MESSAGE,
             link_filtre_oncelik,
         ),
         group=-5,
