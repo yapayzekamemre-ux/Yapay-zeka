@@ -1301,43 +1301,55 @@ CG_CACHE = "cg_snap.json"
 CG_PAGES = 8
 CG_STEP = 20  # sayfalar arasi sn (~3 istek/dk)
 
-# kisa espri havuzu + tekrar onleme
+# parca birlestir — yuzlerce farkli tam cumle
 _FIYAT_ESPRI_SON = []
-_FIYAT_YUKSEL = [
-    "boğa canlanıyor 🐂", "cüzdan gülümsedi", "yeşil ışık yandı", "pump sinyali mi?",
-    "hafif hop aldı", "ayılar kaçıyor", "momentum geldi", "chart mutlu",
-    "yeşile boyandı", "cüzdan şişiyor", "rocket yolda mı", "boğa uyanmış",
-    "trend yukarı", "hop diye çıktı", "yeşil yağmur", "kazanç kokusu",
-    "alım baskısı var", "yeşil mumlar", "cüzdan keyifli", "boğa dansı",
-    "yükseliş devam", "fiyat koşuyor", "iyi gidiyor", "mini pump",
+_Y_A = [
+    "boğa canlanıyor", "yeşil mumlar geldi", "hafif pump var", "alım baskısı arttı",
+    "trend yukarı", "momentum geldi", "cüzdan gülümsüyor", "hop diye çıktı",
+    "ayılar geriledi", "chart mutlu", "küçük sıçrama var", "yeşil ışık yandı",
 ]
-_FIYAT_DUS = [
-    "cüzdan yanıyor 🔥", "ayı baskın", "su döküldü", "kırmızı alarm",
-    "panik yok sakin", "düzeltme mi bu", "boğa yoruldu", "chart ağlıyor",
-    "hold zamanı", "geçici diye umuyoruz", "kırmızı deniz", "cüzdan inceldi",
-    "ayı dans ediyor", "nefes al", "düşüş var sakin", "kırmızı mumlar",
-    "satış baskısı", "chart üzgün", "biraz geriledi", "soğuk duş",
-    "dip mi geliyor", "sakin kal lan", "geçici kanama", "ayı gücü",
+_Y_B = [
+    "cüzdan keyifli", "iyi gidiyor", "sakin izle", "acele etme",
+    "boğa dansı gibi", "umut yeşerdi", "nefes almak iyi", "takip et yeter",
 ]
-_FIYAT_YATAY = [
-    "yatay sürünüyor", "ne boğa ne ayı", "sıkıcı chart", "bekle gör",
-    "kimse kıpırdamıyor", "fısıltı bile yok", "donmuş gibi", "yan range",
-    "sessiz piyasa", "ufak titreşim", "durgun su", "bekleyiş var",
-    "hareket yok", "uykuda chart", "sabır zamanı", "düz çizgi",
-    "ne yukarı ne aşağı", "sakin sakin", "fiyat uyuyor", "bekleyenler kazanır",
+_D_A = [
+    "kırmızı mumlar geldi", "satış baskısı var", "cüzdan inceldi", "chart üzgün",
+    "ayı baskın", "soğuk duş oldu", "biraz geriledi", "düzeltme kokusu var",
+    "geçici kanama gibi", "panik havası var", "dip mi geliyor", "su döküldü",
+]
+_D_B = [
+    "sakin kal", "panik yapma", "nefes al", "acele satma",
+    "hold düşün", "sakin izle", "geçici olabilir", "soğukkanlı ol",
+]
+_T_A = [
+    "yatay sürünüyor", "sessiz piyasa", "fiyat uyuyor", "dar bantta",
+    "ne boğa ne ayı", "kıprıtı yok", "donmuş chart", "ufak titreşim",
+]
+_T_B = [
+    "net yön yok", "bekle gör", "sabır zamanı", "sıkıcı ama normal",
+    "büyük hareket yok", "izle yeter", "sakin sakin", "acele yok",
 ]
 
-def _espri_sec(havuz):
-    """Son 5 espriyi tekrar etme."""
+
+def _espri_uret(yon: str) -> str:
+    """Her seferinde farkli tam cumle; son 12 tekrar etmez."""
     import random
-    aday = [x for x in havuz if x not in _FIYAT_ESPRI_SON[-5:]]
-    if not aday:
-        aday = list(havuz)
-    sec = random.choice(aday)
-    _FIYAT_ESPRI_SON.append(sec)
-    if len(_FIYAT_ESPRI_SON) > 20:
-        del _FIYAT_ESPRI_SON[:-15]
-    return sec
+    if yon == "up":
+        a, b = _Y_A, _Y_B
+    elif yon == "down":
+        a, b = _D_A, _D_B
+    else:
+        a, b = _T_A, _T_B
+    for _ in range(30):
+        cumle = f"{random.choice(a)}, {random.choice(b)}"
+        if cumle not in _FIYAT_ESPRI_SON[-12:]:
+            _FIYAT_ESPRI_SON.append(cumle)
+            if len(_FIYAT_ESPRI_SON) > 40:
+                del _FIYAT_ESPRI_SON[:-30]
+            return cumle
+    cumle = f"{random.choice(a)}, {random.choice(b)}"
+    _FIYAT_ESPRI_SON.append(cumle)
+    return cumle
 
 _CG_ALIAS = {"ton": "the-open-network", "gram": "the-open-network", "toncoin": "the-open-network"}
 _cg_by_id = {}
@@ -1716,23 +1728,20 @@ async def fiyat_gonder(update, miktar, sembol, niyetli=False):
     if usd is not None and try_p is not None:
         try_line = f"\n🇹🇷 ₺{float(try_p) * miktar:,.2f}"
 
-    # soldaki bot gibi: "%X yükseldi/düştü + kisa cumle"
+    # her seferinde farkli tam cumle
     if ch is not None and float(ch) >= 0.3:
         ikon = "📈"
-        espri = f"%{float(ch):.2f} yükseldi, {_espri_sec(_FIYAT_YUKSEL)}"
+        espri = f"%{float(ch):.2f} yükseldi — {_espri_uret('up')}"
     elif ch is not None and float(ch) <= -0.3:
         ikon = "⛔"
-        espri = f"%{abs(float(ch)):.2f} düştü, {_espri_sec(_FIYAT_DUS)}"
+        espri = f"%{abs(float(ch)):.2f} düştü — {_espri_uret('down')}"
     else:
         ikon = "💬"
         ch_s = f"{abs(float(ch)):.2f}" if ch is not None else "0.00"
         yon = "yükseldi" if (ch or 0) >= 0 else "düştü"
-        espri = f"%{ch_s} {yon}, {_espri_sec(_FIYAT_YATAY)}"
+        espri = f"%{ch_s} {yon} — {_espri_uret('flat')}"
 
-    if link:
-        baslik = f'<a href="{html.escape(link)}"><b>{adet}{html.escape(name)}</b></a>'
-    else:
-        baslik = f"<b>{adet}{html.escape(name)}</b>"
+    baslik = f"<b>{adet}{html.escape(name)}</b>"
     text = (
         f"⚠️ {baslik}\n"
         f"\n"
