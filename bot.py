@@ -2651,15 +2651,17 @@ def boost_kaydet(chat_id, user_id, u: dict):
 
 
 def boost_link_hakki_var(chat_id, user_id) -> bool:
+    """Etiketi olan (boostlu) uye link atabilir — kota yok, silinmez."""
     u = boost_bilgi(chat_id, user_id)
-    return bool(u.get("etiket")) and u["link_k"] < u["link_max"]
+    return bool(u.get("etiket"))
 
 
 def boost_link_kullan(chat_id, user_id) -> bool:
+    """Istatistik icin say, ama hak bitince de True (link silinmez)."""
     u = boost_bilgi(chat_id, user_id)
-    if not u.get("etiket") or u["link_k"] >= u["link_max"]:
+    if not u.get("etiket"):
         return False
-    u["link_k"] += 1
+    u["link_k"] = int(u.get("link_k") or 0) + 1
     boost_kaydet(chat_id, user_id, u)
     return True
 
@@ -5963,7 +5965,10 @@ async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_adm = await admin_mi(chat.id, user, context.bot)
         if not is_adm:
             izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
-            if not any(d and d in metin.lower() for d in izin):
+            ok = any(d and d in metin.lower() for d in izin)
+            if not ok and boost_link_hakki_var(chat.id, user.id):
+                ok = True
+            if not ok:
                 try:
                     await msg.delete()
                 except Exception:
@@ -6523,34 +6528,23 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not sahip_mi(user):
             is_adm_erken = await admin_mi(cid, user, context.bot)
             if not is_adm_erken and cget(cid, "link_engel") and mesajda_link_var(msg, metin):
-                # once domain, sonra boost
                 izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
                 ok = any(d and d in (metin or "").lower() for d in izin)
-                boost_kullanildi = False
+                # boost etiketi varsa link HER ZAMAN serbest
                 if not ok and boost_link_hakki_var(cid, user.id):
-                    if boost_link_kullan(cid, user.id):
-                        ok = True
-                        boost_kullanildi = True
+                    ok = True
+                    try:
+                        boost_link_kullan(cid, user.id)
+                    except Exception:
+                        pass
                 if ok:
-                    if boost_kullanildi:
-                        try:
-                            u = boost_bilgi(cid, user.id)
-                            et = boost_etiket_text(u)
-                            m2 = await context.bot.send_message(
-                                cid,
-                                "🚀 %s link geçti (%s/%s)" % (et or "Boost", u["link_k"], u["link_max"]),
-                                disable_notification=True,
-                            )
-                            asyncio.create_task(_mesaj_sil_sn(m2, 8))
-                        except Exception:
-                            pass
-                    # mesaj SILINMEZ — devam
                     try:
                         _LINK_GECTI.add((cid, msg.message_id))
                         if len(_LINK_GECTI) > 500:
                             _LINK_GECTI.clear()
                     except Exception:
                         pass
+                    # sessiz gec — mesaj silinmez
                 else:
                     try:
                         await msg.delete()
@@ -6688,7 +6682,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # dusuk guven + link = ekstra sikı
             if ozellik_acik(cid, "guven") and guven_get(cid, user.id) < 25:
                 if mesajda_link_var(msg, metin) and (cid, msg.message_id) not in _LINK_GECTI:
-                    if not link_uye_izinli(cid, user.id, metin, kullan_hak=False):
+                    if not boost_link_hakki_var(cid, user.id) and not link_uye_izinli(cid, user.id, metin, kullan_hak=False):
                         try:
                             await msg.delete()
                         except Exception:
