@@ -5933,31 +5933,52 @@ async def servis_mesaj_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 LINK_RE = re.compile(r"(https?://|t\.me/|telegram\.me/|www\.)", re.I)
 
 
+_REKLAM_KELIME = re.compile(
+    r"(?i)(\bairdrop\b|\bfree\s*chicken\b|\bjoin\s+with\s+my\s+link\b|"
+    r"\bget\s+my\s+free\b|\bclaim\s+now\b|\bref(eral)?\s*link\b|"
+    r"\bwithdraw\s+to\s+your\b|\bmini\s*app\b|\btap\s+to\s+earn\b|"
+    r"\bconnect\s+wallet\b|\bpresale\b|\bwhite\s*list\b)",
+)
+
+
+def mesajda_buton_var(msg) -> bool:
+    rm = getattr(msg, "reply_markup", None)
+    if not rm:
+        return False
+    rows = getattr(rm, "inline_keyboard", None) or []
+    for row in rows:
+        for btn in row:
+            if getattr(btn, "url", None) or getattr(btn, "web_app", None):
+                return True
+            if getattr(btn, "login_url", None):
+                return True
+            # callback_data'li tanitim butonlari da engelle (reklam kartlari)
+            if getattr(btn, "callback_data", None) or getattr(btn, "switch_inline_query", None):
+                return True
+    return bool(rows)
+
+
 def mesajda_link_var(msg, metin: str) -> bool:
-    """Metin, entity, inline buton (url/web_app) veya iletilmis reklam."""
+    """Metin, entity, inline buton, via_bot, reklam kalibi."""
     if metin and LINK_RE.search(metin):
+        return True
+    if metin and _REKLAM_KELIME.search(metin):
         return True
     for ent in list(getattr(msg, "entities", None) or []) + list(getattr(msg, "caption_entities", None) or []):
         t = getattr(ent, "type", None)
-        if t in ("url", "text_link"):
-            return True
-    # Chicken Land tarzi: altinda URL / WebApp butonu
-    rm = getattr(msg, "reply_markup", None)
-    if rm and getattr(rm, "inline_keyboard", None):
-        for row in rm.inline_keyboard:
-            for btn in row:
-                if getattr(btn, "url", None) or getattr(btn, "web_app", None):
-                    return True
-                if getattr(btn, "login_url", None):
-                    return True
-    # baska kanaldan iletilmis reklam
-    if getattr(msg, "forward_origin", None) or getattr(msg, "forward_from_chat", None):
-        if metin and LINK_RE.search(metin or ""):
-            return True
-        if rm and getattr(rm, "inline_keyboard", None):
-            return True
+        if t in ("url", "text_link", "mention"):
+            # mention tek basina engellenmesin; sadece text_link/url
+            if t in ("url", "text_link"):
+                return True
+    if mesajda_buton_var(msg):
+        return True
     if getattr(msg, "via_bot", None):
         return True
+    if getattr(msg, "forward_origin", None) or getattr(msg, "forward_from_chat", None):
+        if metin and (LINK_RE.search(metin) or _REKLAM_KELIME.search(metin)):
+            return True
+        if mesajda_buton_var(msg):
+            return True
     return False
 
 
@@ -6102,10 +6123,42 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"🔗 Link engeli <b>KAPALI</b> — üyeler link paylaşabilir ({len(hedefler)} grup).", parse_mode="HTML")
             return
     else:
-        # grup: sadece sahip bu grubun uyesi/yoneticisiyse calis
+        # grubu her zaman kaydet
+        try:
+            gconf = (durum.setdefault("grup", {})).setdefault(str(cid), {})
+            if chat.title and not gconf.get("title"):
+                gconf["title"] = chat.title
+                durum_kaydet()
+        except Exception:
+            pass
+
+        # LINK/REKLAM FILTRESI — bakim ve sahip kontrolunden ONCE (t.me/ChickenLandBot vb.)
+        if not sahip_mi(user):
+            is_adm_erken = await admin_mi(cid, user, context.bot)
+            if not is_adm_erken and cget(cid, "link_engel") and mesajda_link_var(msg, metin):
+                izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
+                ok = any(d and d in (metin or "").lower() for d in izin)
+                if not ok:
+                    try:
+                        await msg.delete()
+                        log.info("link/buton silindi chat=%s user=%s", cid, user.id)
+                    except Exception as e:
+                        log.warning("link silinemedi chat=%s: %s", cid, e)
+                        try:
+                            await context.bot.send_message(
+                                SAHIP_ID,
+                                f"⚠️ Linkli mesaj silinemedi (botta silme yetkisi ver)\n"
+                                f"Grup <code>{cid}</code>\n{html.escape(str(e)[:120])}",
+                                parse_mode="HTML",
+                            )
+                        except Exception:
+                            pass
+                    return
+
+        # grup: sadece sahip bu grubun uyesi/yoneticisiyse AI/komut
         if not await sahip_grupta_mi(context.bot, cid):
             return
-        # bakim modu
+        # bakim modu — AI susar ama spam filtresi yukarda calisti
         if cget(cid, "bakim") and not sahip_mi(user):
             if metin and ("yapay" in kucult(metin) or ozel):
                 try:
@@ -6117,6 +6170,16 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ozel:
         # admin degilse filtreler
         is_adm = await admin_mi(cid, user, context.bot)
+        # yedek link kontrolu
+        if not is_adm and cget(cid, "link_engel") and mesajda_link_var(msg, metin):
+            izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
+            ok = any(d and d in (metin or "").lower() for d in izin)
+            if not ok:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return
         if not is_adm:
             # sessizlik
             if cget(cid, "sessizlik"):
