@@ -2678,6 +2678,23 @@ def boost_mute_kullan(chat_id, user_id) -> bool:
     return True
 
 
+
+_LINK_GECTI = set()  # (chat_id, message_id) boost/domain ile gecen mesajlar
+
+
+def link_uye_izinli(chat_id, user_id, metin: str, kullan_hak=True) -> bool:
+    """Izinli domain veya boost link hakki. kullan_hak=True ise hak duser."""
+    izin = [x.lower() for x in (cget(chat_id, "link_izin") or [])]
+    low = (metin or "").lower()
+    if any(d and d in low for d in izin):
+        return True
+    if boost_link_hakki_var(chat_id, user_id):
+        if not kullan_hak:
+            return True
+        return boost_link_kullan(chat_id, user_id)
+    return False
+
+
 def boost_etiket_text(u: dict) -> str:
     if not u or not u.get("etiket"):
         return ""
@@ -6506,37 +6523,40 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not sahip_mi(user):
             is_adm_erken = await admin_mi(cid, user, context.bot)
             if not is_adm_erken and cget(cid, "link_engel") and mesajda_link_var(msg, metin):
+                # once domain, sonra boost
                 izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
                 ok = any(d and d in (metin or "").lower() for d in izin)
-                # boost link hakki
+                boost_kullanildi = False
                 if not ok and boost_link_hakki_var(cid, user.id):
                     if boost_link_kullan(cid, user.id):
                         ok = True
+                        boost_kullanildi = True
+                if ok:
+                    if boost_kullanildi:
                         try:
                             u = boost_bilgi(cid, user.id)
                             et = boost_etiket_text(u)
-                            await context.bot.send_message(
+                            m2 = await context.bot.send_message(
                                 cid,
-                                "🚀 %s link hakkı (%s/%s)" % (et or "Boost", u["link_k"], u["link_max"]),
+                                "🚀 %s link geçti (%s/%s)" % (et or "Boost", u["link_k"], u["link_max"]),
                                 disable_notification=True,
                             )
+                            asyncio.create_task(_mesaj_sil_sn(m2, 8))
                         except Exception:
                             pass
-                if not ok:
+                    # mesaj SILINMEZ — devam
+                    try:
+                        _LINK_GECTI.add((cid, msg.message_id))
+                        if len(_LINK_GECTI) > 500:
+                            _LINK_GECTI.clear()
+                    except Exception:
+                        pass
+                else:
                     try:
                         await msg.delete()
                         log.info("link/buton silindi chat=%s user=%s", cid, user.id)
                     except Exception as e:
                         log.warning("link silinemedi chat=%s: %s", cid, e)
-                        try:
-                            await context.bot.send_message(
-                                SAHIP_ID,
-                                f"⚠️ Linkli mesaj silinemedi (botta silme yetkisi ver)\n"
-                                f"Grup <code>{cid}</code>\n{html.escape(str(e)[:120])}",
-                                parse_mode="HTML",
-                            )
-                        except Exception:
-                            pass
                     return
 
         # grup: sadece sahip bu grubun uyesi/yoneticisiyse AI/komut
@@ -6554,16 +6574,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ozel:
         # admin degilse filtreler
         is_adm = await admin_mi(cid, user, context.bot)
-        # yedek link kontrolu
-        if not is_adm and cget(cid, "link_engel") and mesajda_link_var(msg, metin):
-            izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
-            ok = any(d and d in (metin or "").lower() for d in izin)
-            if not ok:
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-                return
+        # link engel sadece erken filtrede (boost hakki orada)
         if not is_adm:
             # sessizlik
             if cget(cid, "sessizlik"):
@@ -6654,21 +6665,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                     return
-            # link engel (metin + entity)
-            if cget(cid, "link_engel") and mesajda_link_var(msg, metin):
-                izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
-                ok = False
-                low_m = (metin or "").lower()
-                for d in izin:
-                    if d and d in low_m:
-                        ok = True
-                        break
-                if not ok:
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-                    return
+            # link engel erken filtrede islendi
             # link guvenlik tarama
             if ozellik_acik(cid, "link_tara") and metin:
                 for url in linkleri_cikar(metin, msg):
@@ -6690,12 +6687,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return
             # dusuk guven + link = ekstra sikı
             if ozellik_acik(cid, "guven") and guven_get(cid, user.id) < 25:
-                if mesajda_link_var(msg, metin):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-                    return
+                if mesajda_link_var(msg, metin) and (cid, msg.message_id) not in _LINK_GECTI:
+                    if not link_uye_izinli(cid, user.id, metin, kullan_hak=False):
+                        try:
+                            await msg.delete()
+                        except Exception:
+                            pass
+                        return
             # blocklist + otomatik kufur
             if metin:
                 low_m = metin.lower()
