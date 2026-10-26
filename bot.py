@@ -2718,16 +2718,37 @@ async def boost_senkron(bot, chat_id, user_id) -> dict:
 
 
 async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
+    """Isim yanina etiket icin Telegram yonetici unvani gerekir.
+    Boostlu uyeyi yetkisiz admin yapip custom title yazar (Lite/Godmode...).
+    Botun 'uyeleri yonet / admin atama' yetkisi olmali.
+    """
     if not etiket:
         return
+    title = (etiket if len(etiket) <= 16 else etiket[:16])
     try:
         m = await bot.get_chat_member(chat_id, user_id)
         st = getattr(m, "status", None)
-        if st in (ChatMemberStatus.ADMINISTRATOR, "administrator"):
-            title = (etiket if len(etiket) <= 16 else etiket[:16])
-            await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
-    except Exception:
-        pass
+        if st in (ChatMemberStatus.OWNER, "creator"):
+            return
+        if st not in (ChatMemberStatus.ADMINISTRATOR, "administrator"):
+            # yetkisiz admin — sadece isim yani unvan icin
+            await bot.promote_chat_member(
+                chat_id,
+                user_id,
+                can_change_info=False,
+                can_delete_messages=False,
+                can_invite_users=False,
+                can_restrict_members=False,
+                can_pin_messages=False,
+                can_promote_members=False,
+                can_manage_chat=False,
+                can_manage_video_chats=False,
+                is_anonymous=False,
+            )
+        await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
+        log.info("boost unvan: uid=%s title=%s", user_id, title)
+    except Exception as e:
+        log.warning("boost unvan yazilamadi uid=%s: %s", user_id, e)
 
 
 async def boost_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5930,6 +5951,58 @@ def _spam_benzer(chat_id, metin: str) -> bool:
     return False
 
 
+
+async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """En once calisir: boostlu uyenin linki ASLA silinmez."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not chat or not user:
+        return
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return
+    if user.is_bot:
+        return
+    metin = (msg.text or msg.caption or "") or ""
+    if not mesajda_link_var(msg, metin):
+        return
+    # admin / sahip serbest
+    try:
+        if sahip_mi(user) or await admin_mi(chat.id, user, context.bot):
+            return
+    except Exception:
+        pass
+    # BOOST: etiket varsa birak
+    try:
+        if boost_link_hakki_var(chat.id, user.id):
+            try:
+                boost_link_kullan(chat.id, user.id)
+            except Exception:
+                pass
+            try:
+                _LINK_GECTI.add((chat.id, msg.message_id))
+            except Exception:
+                pass
+            log.info("boost link serbest uid=%s chat=%s", user.id, chat.id)
+            return
+    except Exception as e:
+        log.warning("boost kontrol: %s", e)
+    # domain izin
+    if not cget(chat.id, "link_engel"):
+        return
+    izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
+    low = metin.lower()
+    if any(d and d in low for d in izin):
+        return
+    # sil
+    try:
+        await msg.delete()
+        log.info("link silindi (oncelik) uid=%s", user.id)
+    except Exception as e:
+        log.warning("link silinemedi: %s", e)
+    raise ApplicationHandlerStop
+
+
 async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Edit tuzagi: duzenlenen mesaji tekrar tara."""
     msg = update.edited_message or update.effective_message
@@ -6527,31 +6600,12 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # LINK/REKLAM FILTRESI — bakim ve sahip kontrolunden ONCE (t.me/ChickenLandBot vb.)
         if not sahip_mi(user):
             is_adm_erken = await admin_mi(cid, user, context.bot)
-            if not is_adm_erken and cget(cid, "link_engel") and mesajda_link_var(msg, metin):
-                izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
-                ok = any(d and d in (metin or "").lower() for d in izin)
-                # boost etiketi varsa link HER ZAMAN serbest
-                if not ok and boost_link_hakki_var(cid, user.id):
-                    ok = True
-                    try:
-                        boost_link_kullan(cid, user.id)
-                    except Exception:
-                        pass
-                if ok:
-                    try:
-                        _LINK_GECTI.add((cid, msg.message_id))
-                        if len(_LINK_GECTI) > 500:
-                            _LINK_GECTI.clear()
-                    except Exception:
-                        pass
-                    # sessiz gec — mesaj silinmez
-                else:
-                    try:
-                        await msg.delete()
-                        log.info("link/buton silindi chat=%s user=%s", cid, user.id)
-                    except Exception as e:
-                        log.warning("link silinemedi chat=%s: %s", cid, e)
-                    return
+            # link silme link_filtre_oncelik (-5) yaptı; burada sadece boost isaretle
+            if mesajda_link_var(msg, metin) and boost_link_hakki_var(cid, user.id):
+                try:
+                    _LINK_GECTI.add((cid, msg.message_id))
+                except Exception:
+                    pass
 
         # grup: sadece sahip bu grubun uyesi/yoneticisiyse AI/komut
         if not await sahip_grupta_mi(context.bot, cid):
@@ -7991,6 +8045,16 @@ async def baslat(app):
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(baslat).build()
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS
+            & filters.UpdateType.MESSAGE
+            & (~filters.COMMAND)
+            & (~filters.StatusUpdate.ALL),
+            link_filtre_oncelik,
+        ),
+        group=-5,
+    )
     app.add_handler(MessageHandler(filters.ALL, sahip_yakala), group=-2)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, kilit_engel), group=-3)
     app.add_handler(CallbackQueryHandler(kilit_engel), group=-3)
