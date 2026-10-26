@@ -449,7 +449,7 @@ DEFAULT_G = {
     "istatistik": {"giren": 0, "cikan": 0, "spam": 0, "mesaj": 0},
     "bot_mod": "normal",  # normal | ciddi | eglenceli | sert
     "cift_onay_ban": False,
-    "spam_ogren": True,
+    "spam_ogren": False,
     "bakim": False,
     "bakim_metin": "🔧 Bakımdayım, birazdan dönerim.",
     "anti_nuke": True,
@@ -1762,6 +1762,37 @@ async def fiyat_gonder(update, miktar, sembol, niyetli=False):
         return True
     except Exception as e:
         log.warning("fiyat_gonder: %s", e)
+        return False
+
+
+
+async def guvenli_sil(msg, neden: str, user=None, chat_id=None, bot=None):
+    """Tek silme noktasi: boostlu + linkli mesaji ASLA silme; sahibe log."""
+    try:
+        uid = getattr(user, "id", None) or getattr(getattr(msg, "from_user", None), "id", None)
+        cid = chat_id or getattr(getattr(msg, "chat", None), "id", None)
+        metin = ""
+        if msg:
+            metin = (msg.text or msg.caption or "") or ""
+        boostlu = False
+        if cid and uid:
+            try:
+                boostlu = boost_link_hakki_var(cid, uid)
+            except Exception:
+                pass
+        if boostlu and (mesajda_link_var(msg, metin) if msg else False):
+            log.info("SILME IPTAL (boostlu) neden=%s uid=%s", neden, uid)
+            return False
+        if boostlu and neden in (
+            "link", "link_engel", "sahte", "link_tara", "guven_link", "medya", "medya_engel", "reklam"
+        ):
+            log.info("SILME IPTAL (boostlu kural) neden=%s uid=%s", neden, uid)
+            return False
+        await msg.delete()
+        log.info("SILINDI neden=%s uid=%s chat=%s", neden, uid, cid)
+        return True
+    except Exception as e:
+        log.warning("sil hata neden=%s %s", neden, e)
         return False
 
 
@@ -6014,14 +6045,11 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
     low = metin.lower()
     if any(d and d in low for d in izin):
         return
-    # SIL
-    try:
-        await msg.delete()
-        log.info("LINK SILINDI uid=%s (boost yok)", uid)
-    except Exception as e:
-        log.warning("link silinemedi: %s", e)
-        return
-    raise ApplicationHandlerStop
+    # SIL (boost zaten ustte return etti)
+    ok = await guvenli_sil(msg, "link_engel", user=user, chat_id=cid)
+    if ok:
+        raise ApplicationHandlerStop
+    return
 
 
 
@@ -6651,15 +6679,18 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             boostlu = False
         # link engel sadece erken filtrede (boost hakki orada)
         if not is_adm:
+            # BOOSTLU: otomatik silme yok (sadece seed/kritik asagida ayri)
+            if boostlu:
+                pass  # sessizlik/gece/flood/medya/link asagida atlanacak
             # sessizlik
-            if cget(cid, "sessizlik"):
+            if cget(cid, "sessizlik") and not boostlu:
                 try:
                     await msg.delete()
                 except Exception:
                     pass
                 return
             # gece modu 00-07 TR
-            if cget(cid, "gece"):
+            if cget(cid, "gece") and not boostlu:
                 saat = datetime.now(TR).hour
                 bas = int(cget(cid, "gece_bas") or 0)
                 bit = int(cget(cid, "gece_bit") or 7)
@@ -6676,7 +6707,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 oy_aktif = _oy.get("durum") == "oyna" and metin and len(metin.strip()) <= 12
             except Exception:
                 pass
-            if cget(cid, "flood") and not oy_aktif:
+            if cget(cid, "flood") and not oy_aktif and not boostlu:
                 key = (cid, user.id)
                 now = time.time()
                 adet = int(cget(cid, "flood_adet") or 5)
@@ -6819,8 +6850,8 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "ad": (user.first_name or "")[:20],
                 "text": metin[:300],
             })
-        # ogrenilen spam
-        if metin and _spam_benzer(cid, metin):
+        # ogrenilen spam (boostlu degil)
+        if metin and _spam_benzer(cid, metin) and not boostlu:
             try:
                 await msg.delete()
             except Exception:
@@ -6830,7 +6861,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cset(cid, "istatistik", st)
             return
         # yabanci dil spam
-        if cget(cid, "yabanci_spam") is not False and metin and _yabanci_spam_mi(metin):
+        if (not boostlu) and cget(cid, "yabanci_spam") is not False and metin and _yabanci_spam_mi(metin):
             if guven_get(cid, user.id) < 70:
                 try:
                     await msg.delete()
