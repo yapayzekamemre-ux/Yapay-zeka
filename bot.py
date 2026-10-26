@@ -921,13 +921,20 @@ async def guvenli_gonder(bot, chat_id, text, parse_mode="HTML", sil=None, **extr
     await _msg_q.put(payload)
 
 
-async def kisa_cevap(bot, chat_id, text, sn=8):
+async def kisa_cevap(bot, chat_id, text, sn=8, sahip_kopya=True):
     try:
         _kuyruk_baslat(bot)
         # hizli yol: kisa cevaplar yine await (onay/feedback)
         m = await bot.send_message(chat_id, text, parse_mode="HTML")
         if sn:
             asyncio.create_task(sil_sonra(bot, chat_id, m.message_id, sn))
+        # sahip ozelden yonetiyorsa gruba giden ozeti DM'de de gorsun
+        if sahip_kopya and SAHIP_ID and int(chat_id) != int(SAHIP_ID):
+            try:
+                if _aktif_grup_id() and int(chat_id) == int(_aktif_grup_id()):
+                    await bot.send_message(SAHIP_ID, f"↪️ grup <code>{chat_id}</code>\n{text}", parse_mode="HTML")
+            except Exception:
+                pass
         return m
     except Exception as e:
         err = str(e)
@@ -2560,9 +2567,20 @@ async def hedef_kullanici(update, context):
     a0 = args[0].lstrip("@")
     if a0.isdigit():
         return _FakeUser(a0)
+    # once mevcut chat uyeleri
     if chat:
         for uid, bil in (uyeler.get(str(chat.id)) or {}).items():
-            if (bil.get("kullanici") or "") == a0.lower():
+            if (bil.get("kullanici") or "").lower() == a0.lower():
+                return _FakeUser(uid, bil.get("ad") or a0, a0)
+    # ozelden yonetim: aktif grup + tum gruplar
+    arama = []
+    ag = _aktif_grup_id()
+    if ag:
+        arama.append(str(ag))
+    arama.extend(list(uyeler.keys()))
+    for gid in arama:
+        for uid, bil in (uyeler.get(str(gid)) or {}).items():
+            if (bil.get("kullanici") or "").lower() == a0.lower():
                 return _FakeUser(uid, bil.get("ad") or a0, a0)
     try:
         c = await context.bot.get_chat("@" + a0)
@@ -2575,10 +2593,45 @@ def _ad(u):
     return html.escape(getattr(u, "full_name", None) or str(getattr(u, "id", "?")))
 
 
+class _ProxyChat:
+    """Ozelden yonetim icin sahte chat (id + type)."""
+    def __init__(self, cid):
+        self.id = int(cid)
+        self.type = ChatType.SUPERGROUP
+        self.title = ""
+
+
+def _aktif_grup_id():
+    try:
+        return int(durum.get("aktif_grup") or 0) or None
+    except Exception:
+        return None
+
+
 async def _mod_giris(update, context, cmd_name: str = None):
     msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
     if not msg or not chat or not user:
         return None
+    # --- sahip ozelden: aktif gruba yonlendir ---
+    ozel = chat.type in (ChatType.PRIVATE, "private")
+    if ozel and sahip_mi(user):
+        gid = _aktif_grup_id()
+        if not gid:
+            try:
+                await msg.reply_text(
+                    "Önce grup seç:\n"
+                    "<code>/gruplar</code> → liste\n"
+                    "<code>/grup -100...</code> veya <code>/grup 1</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return None
+        if cmd_name is None and msg.text:
+            part = msg.text.split()[0].lstrip("/").split("@")[0].lower()
+            cmd_name = part
+        proxy = _ProxyChat(gid)
+        return msg, proxy, user
     if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
         return None
     await komut_sil(msg, context.bot)
@@ -4478,6 +4531,100 @@ async def bakim_komut(update, context):
     await kisa_cevap(context.bot, chat.id, f"🔧 Bakım: {_ok(ac)}")
 
 
+async def send_komut(update, context):
+    """Sahip: ozelden tum bilinen gruplara mesaj."""
+    user = update.effective_user
+    if not sahip_mi(user):
+        return
+    met = " ".join(context.args or []).strip()
+    if not met:
+        try:
+            await update.effective_message.reply_text(
+                "Kullanım: <code>/send Bakımdayız, birazdan döneriz</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+    ok_n, fail_n = 0, 0
+    for gid in list((durum.get("grup") or {}).keys()):
+        try:
+            await context.bot.send_message(int(gid), met)
+            ok_n += 1
+        except Exception:
+            fail_n += 1
+    try:
+        await update.effective_message.reply_text(
+            f"📢 Gönderildi: {ok_n} grup" + (f" · hata: {fail_n}" if fail_n else "")
+        )
+    except Exception:
+        pass
+
+
+async def gruplar_komut(update, context):
+    """Sahip: bilinen gruplari listele (ozelden yonetim)."""
+    user = update.effective_user
+    if not sahip_mi(user):
+        return
+    gruplar = durum.get("grup") or {}
+    if not gruplar:
+        await update.effective_message.reply_text("Kayıtlı grup yok. Botu gruba ekle, bir kez mesaj atsın.")
+        return
+    aktif = _aktif_grup_id()
+    lines = ["📋 <b>Grupların</b> (özelden yönetim)\n"]
+    for i, gid in enumerate(list(gruplar.keys())[:40], 1):
+        conf = gruplar.get(gid) or {}
+        title = conf.get("title") or conf.get("baslik") or ""
+        mark = " ✅" if aktif and str(gid) == str(aktif) else ""
+        lines.append(f"{i}. <code>{gid}</code> {html.escape(str(title)[:40])}{mark}")
+    lines.append("\nSeç: <code>/grup 1</code> veya <code>/grup -100...</code>")
+    lines.append("Sonra: <code>/ban @user</code> · <code>/mute @user 30</code> · <code>/kick</code> …")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def grup_sec_komut(update, context):
+    """Sahip: aktif yonetim grubunu sec."""
+    user = update.effective_user
+    if not sahip_mi(user):
+        return
+    args = context.args or []
+    if not args:
+        a = _aktif_grup_id()
+        await update.effective_message.reply_text(
+            f"Aktif grup: <code>{a or 'yok'}</code>\n<code>/gruplar</code> · <code>/grup 1</code>",
+            parse_mode="HTML",
+        )
+        return
+    key = args[0].strip()
+    gruplar = list((durum.get("grup") or {}).keys())
+    sec = None
+    if key.isdigit() and 1 <= int(key) <= len(gruplar):
+        sec = int(gruplar[int(key) - 1])
+    else:
+        try:
+            sec = int(key)
+        except Exception:
+            sec = None
+    if sec is None:
+        await update.effective_message.reply_text("Geçersiz. <code>/gruplar</code> ile bak.", parse_mode="HTML")
+        return
+    # kaydet + title dene
+    durum["aktif_grup"] = sec
+    conf = (durum.get("grup") or {}).setdefault(str(sec), {})
+    try:
+        ch = await context.bot.get_chat(sec)
+        if getattr(ch, "title", None):
+            conf["title"] = ch.title
+    except Exception:
+        pass
+    durum_kaydet()
+    await update.effective_message.reply_text(
+        f"✅ Aktif grup: <code>{sec}</code> {html.escape(str(conf.get('title') or ''))}\n"
+        f"Artık <code>/ban</code> <code>/mute</code> <code>/kick</code> <code>/warn</code> buraya uygulanır.",
+        parse_mode="HTML",
+    )
+
+
 async def durum_komut(update, context):
     user = update.effective_user
     if not sahip_mi(user) and not (update.effective_chat and await admin_mi(update.effective_chat.id, user, context.bot)):
@@ -5778,24 +5925,58 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         durum["sahip"] = user.id
         durum_kaydet()
-        # bakim ac/kapat (sadece sahip ozel)
+        # bakim ac/kapat + gruba mesaj (sadece sahip ozel)
         low0 = kucult(metin or "")
-        if low0 in ("bakım aç", "bakim ac", "bakımda", "bakimda"):
-            # tum gruplara bakim
+        if low0 in ("bakım aç", "bakim ac", "bakımda", "bakimda") or low0.startswith("bakım aç") or low0.startswith("bakim ac"):
+            duyuru = "🔧 <b>Bakımdayım</b>\nKısa süre işlem yapamayabilirim. Bitince yazacağım."
+            # ozel metin: "bakim ac mesajiniz"
+            for prefix in ("bakım aç", "bakim ac", "bakımda", "bakimda"):
+                if low0.startswith(prefix) and len(metin) > len(prefix) + 1:
+                    duyuru = metin[len(prefix):].strip() or duyuru
+                    break
+            ok_n, fail_n = 0, 0
             for gid in list((durum.get("grup") or {}).keys()):
                 try:
-                    cset(int(gid), "bakim", True)
+                    gid_i = int(gid)
+                    cset(gid_i, "bakim", True)
+                    await context.bot.send_message(gid_i, duyuru, parse_mode="HTML")
+                    ok_n += 1
                 except Exception:
-                    pass
-            await msg.reply_text("🔧 Bakım modu AÇIK — gruplarda otomatik cevap.")
+                    fail_n += 1
+            await msg.reply_text(f"🔧 Bakım AÇIK · gruba giden: {ok_n}" + (f" · hata: {fail_n}" if fail_n else ""))
             return
         if low0 in ("bakım kapat", "bakim kapat", "bakım bitti", "bakim bitti"):
+            ok_n = 0
             for gid in list((durum.get("grup") or {}).keys()):
                 try:
-                    cset(int(gid), "bakim", False)
+                    gid_i = int(gid)
+                    cset(gid_i, "bakim", False)
+                    await context.bot.send_message(gid_i, "✅ Bakım bitti, normal çalışıyorum.")
+                    ok_n += 1
                 except Exception:
                     pass
-            await msg.reply_text("✅ Bakım modu kapandı.")
+            await msg.reply_text(f"✅ Bakım kapandı · gruba bilgi: {ok_n}")
+            return
+        # gruba gonder / send  (sadece sahip, ozel sohbet)
+        gonder_met = None
+        for prefix in ("gruba gönder", "gruba gonder", "gruba yaz", "/send", "send "):
+            if low0.startswith(prefix.strip().lower()) or (metin or "").lower().startswith(prefix):
+                gonder_met = (metin or "")[len(prefix):].strip()
+                break
+        if gonder_met is None and (metin or "").startswith("/send"):
+            gonder_met = (metin or "")[5:].strip()
+        if gonder_met is not None:
+            if not gonder_met:
+                await msg.reply_text("Kullanım:\n<code>gruba gönder Bakımdayız</code>\n<code>/send Bakımdayız</code>", parse_mode="HTML")
+                return
+            ok_n, fail_n = 0, 0
+            for gid in list((durum.get("grup") or {}).keys()):
+                try:
+                    await context.bot.send_message(int(gid), gonder_met)
+                    ok_n += 1
+                except Exception:
+                    fail_n += 1
+            await msg.reply_text(f"📢 Gönderildi: {ok_n} grup" + (f" · hata: {fail_n}" if fail_n else ""))
             return
     else:
         # grup: sadece sahip bu grubun uyesi/yoneticisiyse calis
@@ -7310,6 +7491,9 @@ def main():
     app.add_handler(CommandHandler("mod", mod_komut))
     app.add_handler(CommandHandler("topic", topic_komut))
     app.add_handler(CommandHandler("bakim", bakim_komut))
+    app.add_handler(CommandHandler("send", send_komut))
+    app.add_handler(CommandHandler("gruplar", gruplar_komut))
+    app.add_handler(CommandHandler("grup", grup_sec_komut))
     app.add_handler(CommandHandler("durum", durum_komut))
     app.add_handler(CommandHandler("log", log_komut))
     app.add_handler(CommandHandler("rozet", rozet_komut))
