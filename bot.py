@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.6.0"
+BOT_SURUM = "v2.7.0"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -242,14 +242,15 @@ SISTEM_TABAN = (
     "Adın Yapay. Telegram grup asistanısın.\n"
     "KURALLAR:\n"
     "- Kullanıcı hangi dilde yazarsa o dilde cevap ver.\n"
-    "- Basit soruya 1 kısa cümle; zor soruya en fazla 3-4 cümle.\n"
-    "- Bilmiyorsan açıkça 'bilmiyorum' de; uydurma, sahte link/fiyat üretme.\n"
-    "- Yatırım/sağlık/hukuk: kesin al-sat veya teşhis verme. "
-    "Kriptoda 'finansal tavsiye değildir' de.\n"
+    "- Basit soruya 1-2 net cümle; zor soruya en fazla 5 cümle. Cümleyi yarım bırakma.\n"
+    "- Bilmiyorsan açıkça 'bilmiyorum' de; uydurma, sahte link/fiyat/haber üretme.\n"
+    "- Canlı haber, gündem, skor, anlık piyasa verisine erişimin YOK. Uydurma; 'Canlı veriye erişimim yok' de.\n"
+    "- Harf/kelime oyunlarını kendin yürütme; oyun motoru ayrıca çalışır.\n"
+    "- Şaka bile olsa al-sat emri verme.\n"
+    "- Yatırım/sağlık/hukuk: kesin tavsiye verme. Kriptoda bir kez 'finansal tavsiye değildir' yeter.\n"
     "- Olgun ve net ol; sulu/flörtöz olma.\n"
     "- Dalga geçilirse zekice, kısa karşılık ver; küfür yağdırma.\n"
     "- Bot/model ismi yazma. Grup üyelerini isimleriyle tanı.\n"
-    "- Web'den emin olmadığın bilgiyi kaynak uydurarak verme.\n"
 )
 
 SISTEM = SISTEM_TABAN  # geriye uyum
@@ -964,16 +965,16 @@ def komut_kapali(chat_id, isim: str) -> bool:
 def groq_sor(m, sistem):
     if not groq:
         return None
-    for model in ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+    for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b", "openai/gpt-oss-120b"):
         try:
             r = groq.chat.completions.create(
                 model=model,
                 messages=[{"role": "system", "content": sistem}] + m,
                 temperature=0.7,
-                max_tokens=120,
+                max_tokens=400,
             )
             t = (r.choices[0].message.content or "").strip()
-            if t:
+            if t and len(t) >= 2:
                 return t
         except Exception as e:
             log.warning("Groq %s: %s", model, e)
@@ -1004,7 +1005,7 @@ def gemini_sor(m, sistem):
                 model=model,
                 contents=_gem_parts(m),
                 config=types.GenerateContentConfig(
-                    system_instruction=sistem, temperature=0.7, max_output_tokens=120
+                    system_instruction=sistem, temperature=0.7, max_output_tokens=400
                 ),
             )
             t = (getattr(r, "text", None) or "").strip()
@@ -1022,7 +1023,7 @@ def deepseek_sor(m, sistem):
         r = requests.post(
             "https://api.deepseek.com/chat/completions",
             headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"},
-            json={"model": "deepseek-chat", "messages": [{"role": "system", "content": sistem}] + m, "max_tokens": 200},
+            json={"model": "deepseek-chat", "messages": [{"role": "system", "content": sistem}] + m, "max_tokens": 400},
             timeout=25,
         )
         if r.ok:
@@ -1039,7 +1040,7 @@ def mistral_sor(m, sistem):
         r = requests.post(
             "https://api.mistral.ai/v1/chat/completions",
             headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
-            json={"model": "mistral-small-latest", "messages": [{"role": "system", "content": sistem}] + m, "max_tokens": 200},
+            json={"model": "mistral-small-latest", "messages": [{"role": "system", "content": sistem}] + m, "max_tokens": 400},
             timeout=25,
         )
         if r.ok:
@@ -1064,7 +1065,7 @@ def openrouter_sor(m, sistem):
                 json={
                     "model": model,
                     "messages": [{"role": "system", "content": sistem}] + m,
-                    "max_tokens": 200,
+                    "max_tokens": 400,
                 },
                 timeout=30,
             )
@@ -1352,6 +1353,11 @@ KISA = re.compile(
     r"([a-zA-Z][a-zA-Z0-9]{1,15})"
     r"(?:\s+(?:fiyat|price|ne kadar|kaç|kac))?$"
 )
+_FIYAT_NIYET = re.compile(r"(?i)(\d|\$|\bfiyat\b|\bprice\b|\bne kadar\b|\bkaç\b|\bkac\b)")
+_BILINEN_DOVIZ = {
+    "usd", "usdt", "dolar", "eur", "euro", "gbp", "sterlin",
+    "altin", "gold", "ons", "gumus", "silver",
+}
 _ATLA = {
     "tl", "try", "gb", "mb", "kg", "tane", "adet", "saat", "gun", "dk", "sn",
     "lira", "fiyat", "price", "yapay", "ne", "naber", "merhaba", "selam", "sa",
@@ -1359,6 +1365,7 @@ _ATLA = {
     "yok", "var", "lan", "abi", "knk", "bro", "anlamadim", "anlamadım",
     "etmiyorum", "belki", "ben", "sen", "biz", "bu", "su", "kim", "neden",
     "nasil", "ceza", "bot", "grup", "mesaj", "chat", "link", "amk", "aq",
+    "aslan", "bildin", "aklan", "tamamdır", "tamamdir", "haha", "lol",
 }
 
 
@@ -1366,7 +1373,35 @@ def _re_sub_yapay(metin: str) -> str:
     return re.sub(r"(?i)\byapay\b", "", metin or "").strip()
 
 
+def _coin_snapshot_top(sembol: str, max_rank: int = 300) -> bool:
+    """API cagrisi yok; sadece snapshot rank."""
+    q = (sembol or "").strip().lower()
+    if not q:
+        return False
+    if q in _BILINEN_DOVIZ:
+        return True
+    alias_map = globals().get("_CG_ALIAS") or {}
+    aid = alias_map.get(q)
+    coin = None
+    if aid and aid in _cg_by_id:
+        coin = _cg_by_id[aid]
+    if coin is None:
+        lst = _cg_by_symbol.get(q) or []
+        if lst:
+            coin = lst[0]
+    if coin is None:
+        return False
+    rank = coin.get("market_cap_rank")
+    if rank is None:
+        return False
+    try:
+        return int(rank) <= max_rank
+    except Exception:
+        return False
+
+
 def kisa_token(metin):
+    """(miktar, sembol, niyetli) veya None. Niyetsiz rastgele kelimeye API yok."""
     t = (metin or "").strip()
     if not t or len(t) > 40 or len(t.split()) > 3:
         return None
@@ -1382,7 +1417,10 @@ def kisa_token(metin):
     s = m.group(2).lower().strip(".")
     if s in _ATLA or any(c in s for c in "ğüşıöç") or len(s) > 15:
         return None
-    return (miktar, s)
+    niyet = bool(_FIYAT_NIYET.search(t)) or bool(m.group(1))
+    if not niyet and not _coin_snapshot_top(s):
+        return None
+    return (miktar, s, niyet)
 
 
 def _cg_index(coins):
@@ -1634,9 +1672,11 @@ def fiyat_cek(sembol: str):
     return bil
 
 
-async def fiyat_gonder(update, miktar, sembol):
+async def fiyat_gonder(update, miktar, sembol, niyetli=False):
     bil = fiyat_cek(sembol)
     if not bil:
+        if not niyetli:
+            return False
         warming = (not _cg_by_id) or (time.time() < _cg_cooldown_until)
         if warming:
             msg = "⏳ Veri güncelleniyor, birazdan tekrar dene."
@@ -3785,14 +3825,45 @@ async def hatirlat_periyodik(context: ContextTypes.DEFAULT_TYPE):
     _hatirlat_q[:] = kalan
 
 
-# --- adam asmaca ---
+# --- adam asmaca (butonlu) ---
 _ADAM_KELIME = [
-    "bitcoin", "ethereum", "airdrop", "cüzdan", "blokzincir", "token", "defi",
-    "nft", "mainnet", "testnet", "liquidity", "staking", "snapshot", "whitelist",
+    "bitcoin", "ethereum", "airdrop", "cuzdan", "token", "defi", "nft",
+    "mainnet", "testnet", "staking", "snapshot", "whitelist", "blockchain",
+    "liquidity", "bridge", "oracle", "wallet", "mining", "validator",
+    "protocol", "governance", "stablecoin", "altcoin", "memecoin", "hodl",
+    "bullrun", "whitepaper", "roadmap", "ankara", "istanbul", "izmir",
+    "trabzon", "bursa", "antalya", "kitap", "kalem", "defter", "okul",
+    "bilgisayar", "telefon", "internet", "yazilim", "algoritma", "bulut",
+    "sunucu", "guvenlik", "anahtar", "kahve", "cay", "simit", "baklava",
+    "kebap", "futbol", "basketbol", "yuzme", "kosu", "bisiklet", "modem",
+]
+_ADAM_CIGIM = [
+    "```\n  +---+\n  |   |\n      |\n      |\n      |\n      |\n=========```",
+    "```\n  +---+\n  |   |\n  O   |\n      |\n      |\n      |\n=========```",
+    "```\n  +---+\n  |   |\n  O   |\n  |   |\n      |\n      |\n=========```",
+    "```\n  +---+\n  |   |\n  O   |\n /|   |\n      |\n      |\n=========```",
+    "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n      |\n      |\n=========```",
+    "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n /    |\n      |\n=========```",
+    "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n / \\  |\n      |\n=========```",
 ]
 
 
-async def _adam_bekle(bot, chat_id):
+def _adam_gorunum(oy):
+    k = oy.get("kelime") or ""
+    ac = oy.get("acilan") or set()
+    satir = " ".join(ch.upper() if ch in ac else "_" for ch in k)
+    yanlis = int(oy.get("yanlis") or 0)
+    maxh = int(oy.get("max") or 6)
+    kullanilan = " ".join(sorted(oy.get("kullanilan") or set())) or "—"
+    cigim = _ADAM_CIGIM[min(yanlis, 6)]
+    return (
+        f"🎮 <b>Adam Asmaca</b>\n{cigim}\n"
+        f"<code>{satir}</code>\nHarfler: {html.escape(kullanilan)}\n"
+        f"Hak: {maxh - yanlis}/{maxh}"
+    )
+
+
+async def _adam_bekle(bot, chat_id, baslatan_id=None):
     oy = _oyun_adam.get(str(chat_id))
     if oy and oy.get("durum") in ("bekle", "oyna"):
         try:
@@ -3800,30 +3871,55 @@ async def _adam_bekle(bot, chat_id):
         except Exception:
             pass
         return
-    _oyun_adam[str(chat_id)] = {
-        "durum": "bekle",
-        "oyuncular": set(),
-        "ts": time.time(),
-    }
+    oyuncular = set()
+    if baslatan_id:
+        oyuncular.add(baslatan_id)
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"✅ Katıl ({len(oyuncular)})", callback_data=f"adam:kat:{chat_id}")
+    ]])
     try:
-        await bot.send_message(
+        m = await bot.send_message(
             chat_id,
-            "🎮 <b>Adam asmaca</b>\nKatılmak için <code>katıl</code> yaz.\n"
-            "En az 2 kişi gerek (60 sn).",
+            "🎮 <b>Adam Asmaca</b>\nKatılmak için butona bas.\n⏳ 60 sn · en az 2 kişi",
             parse_mode="HTML",
+            reply_markup=kb,
         )
-    except Exception:
-        pass
-    await asyncio.sleep(60)
+        mid = m.message_id
+    except Exception as e:
+        log.warning("adam bekle: %s", e)
+        return
+    _oyun_adam[str(chat_id)] = {
+        "durum": "bekle", "oyuncular": oyuncular, "ts": time.time(), "mid": mid,
+    }
+    for sn in range(55, 0, -5):
+        await asyncio.sleep(5)
+        oy = _oyun_adam.get(str(chat_id))
+        if not oy or oy.get("durum") != "bekle":
+            return
+        n = len(oy.get("oyuncular") or [])
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=mid,
+                text=f"🎮 <b>Adam Asmaca</b>\nKatılmak için butona bas.\n⏳ {sn} sn · {n} kişi",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"✅ Katıl ({n})", callback_data=f"adam:kat:{chat_id}")
+                ]]),
+            )
+        except Exception:
+            pass
     oy = _oyun_adam.get(str(chat_id))
     if not oy or oy.get("durum") != "bekle":
         return
     if len(oy.get("oyuncular") or []) < 2:
         _oyun_adam.pop(str(chat_id), None)
         try:
-            await bot.send_message(chat_id, "🎮 Yeterli katılım yok, oyun iptal.")
+            await bot.edit_message_text(chat_id=chat_id, message_id=mid, text="🎮 Yeterli katılım yok, oyun iptal.")
         except Exception:
-            pass
+            try:
+                await bot.send_message(chat_id, "🎮 Yeterli katılım yok, oyun iptal.")
+            except Exception:
+                pass
         return
     await _adam_baslat_oyna(bot, chat_id)
 
@@ -3835,54 +3931,133 @@ async def _adam_baslat_oyna(bot, chat_id):
         return
     kelime = random.choice(_ADAM_KELIME)
     oy.update({
-        "durum": "oyna",
-        "kelime": kelime,
-        "acilan": set(),
-        "yanlis": 0,
-        "max": 6,
+        "durum": "oyna", "kelime": kelime, "acilan": set(), "kullanilan": set(),
+        "yanlis": 0, "max": 6, "ts": time.time(),
     })
     _oyun_adam[str(chat_id)] = oy
     try:
-        await bot.send_message(chat_id, f"🎮 Oyun başladı!\n{_adam_gorunum(oy)}\nHarf yaz.")
+        if oy.get("mid"):
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=oy["mid"],
+                text=_adam_gorunum(oy) + "\n\nHarf veya kelime yaz (sadece katılanlar).",
+                parse_mode="HTML",
+            )
+        else:
+            m = await bot.send_message(chat_id, _adam_gorunum(oy) + "\n\nHarf yaz.", parse_mode="HTML")
+            oy["mid"] = m.message_id
+    except Exception as e:
+        log.warning("adam baslat: %s", e)
+
+
+async def _adam_harf(update, context, tahmin):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.effective_message
+    oy = _oyun_adam.get(str(chat.id))
+    if not oy or oy.get("durum") != "oyna":
+        return
+    if time.time() - float(oy.get("ts") or 0) > 300:
+        _oyun_adam.pop(str(chat.id), None)
+        try:
+            await context.bot.send_message(chat.id, "🎮 Oyun süre aşımı ile bitti.")
+        except Exception:
+            pass
+        return
+    if user.id not in (oy.get("oyuncular") or set()):
+        return
+    k = (oy.get("kelime") or "").lower()
+    tahmin = (tahmin or "").lower().strip()
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    if len(tahmin) > 1:
+        if tahmin == k:
+            _oyun_adam.pop(str(chat.id), None)
+            try:
+                guven_ekle(chat.id, user.id, 5)
+            except Exception:
+                pass
+            try:
+                await context.bot.send_message(
+                    chat.id,
+                    f"🏆 <a href=\"tg://user?id={user.id}\">{html.escape(user.first_name or 'Üye')}</a> "
+                    f"bildi: <b>{html.escape(k)}</b>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
+        oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
+    else:
+        harf = tahmin
+        if harf in (oy.get("kullanilan") or set()):
+            return
+        oy.setdefault("kullanilan", set()).add(harf)
+        if harf in k:
+            oy.setdefault("acilan", set()).add(harf)
+            if all(c in oy["acilan"] for c in k):
+                _oyun_adam.pop(str(chat.id), None)
+                try:
+                    guven_ekle(chat.id, user.id, 5)
+                except Exception:
+                    pass
+                try:
+                    await context.bot.send_message(
+                        chat.id,
+                        f"🏆 <a href=\"tg://user?id={user.id}\">{html.escape(user.first_name or 'Üye')}</a> "
+                        f"kazandı: <b>{html.escape(k)}</b>",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                return
+        else:
+            oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
+    oy["ts"] = time.time()
+    if int(oy.get("yanlis") or 0) >= int(oy.get("max") or 6):
+        _oyun_adam.pop(str(chat.id), None)
+        try:
+            await context.bot.send_message(chat.id, f"💀 Bitti. Kelime: <b>{html.escape(k)}</b>", parse_mode="HTML")
+        except Exception:
+            pass
+        return
+    try:
+        if oy.get("mid"):
+            await context.bot.edit_message_text(
+                chat_id=chat.id, message_id=oy["mid"],
+                text=_adam_gorunum(oy) + "\n\nHarf veya kelime yaz.",
+                parse_mode="HTML",
+            )
     except Exception:
         pass
 
 
-def _adam_gorunum(oy):
-    k = oy.get("kelime") or ""
-    ac = oy.get("acilan") or set()
-    satir = " ".join(ch.upper() if ch in ac else "_" for ch in k)
-    return f"`{satir}`  (yanlış {oy.get('yanlis',0)}/{oy.get('max',6)})"
-
-
-async def _adam_harf(update, context, harf):
-    chat = update.effective_chat
-    oy = _oyun_adam.get(str(chat.id))
-    if not oy or oy.get("durum") != "oyna":
+async def adam_katil_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data or not q.data.startswith("adam:kat:"):
         return
-    k = oy["kelime"]
-    if harf in oy["acilan"]:
-        return
-    if harf in k:
-        oy["acilan"].add(harf)
-        if all(c in oy["acilan"] for c in k):
-            _oyun_adam.pop(str(chat.id), None)
-            try:
-                await update.effective_message.reply_text(f"🏆 Bildiniz: <b>{k}</b>", parse_mode="HTML")
-            except Exception:
-                pass
-            return
-    else:
-        oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
-        if oy["yanlis"] >= oy.get("max", 6):
-            _oyun_adam.pop(str(chat.id), None)
-            try:
-                await update.effective_message.reply_text(f"💀 Bitti. Kelime: <b>{k}</b>", parse_mode="HTML")
-            except Exception:
-                pass
-            return
     try:
-        await update.effective_message.reply_text(f"🎮 {_adam_gorunum(oy)}")
+        cid = int(q.data.split(":")[2])
+    except Exception:
+        return
+    oy = _oyun_adam.get(str(cid))
+    if not oy or oy.get("durum") != "bekle":
+        await q.answer("Oyun yok / başladı", show_alert=True)
+        return
+    uid = q.from_user.id
+    oyuncular = set(oy.get("oyuncular") or [])
+    if uid in oyuncular:
+        await q.answer("Zaten katıldın")
+        return
+    oyuncular.add(uid)
+    oy["oyuncular"] = oyuncular
+    await q.answer("Katıldın!")
+    n = len(oyuncular)
+    try:
+        await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Katıl ({n})", callback_data=f"adam:kat:{cid}")
+        ]]))
     except Exception:
         pass
 
@@ -5657,8 +5832,14 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
                     return
-            # flood
-            if cget(cid, "flood"):
+            # flood (adam asmaca harfi sayilmasin)
+            oy_aktif = False
+            try:
+                _oy = _oyun_adam.get(str(cid)) or {}
+                oy_aktif = _oy.get("durum") == "oyna" and metin and len(metin.strip()) <= 12
+            except Exception:
+                pass
+            if cget(cid, "flood") and not oy_aktif:
                 key = (cid, user.id)
                 now = time.time()
                 adet = int(cget(cid, "flood_adet") or 5)
@@ -6046,7 +6227,24 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sn = int(cget(cid, "konusma_sn") or 90)
             _konusma_aktif[ck] = time.time() + max(30, min(sn, 300))
 
-    # Fiyat: once ticker dene (yapay yazilsa bile "yapay 1 btc" -> fiyat)
+    # Adam asmaca (yapay yazmadan da)
+    if not ozel and ("adam asmaca" in low or "adamasmaca" in low.replace(" ", "")):
+        asyncio.create_task(_adam_bekle(context.bot, cid, baslatan_id=user.id))
+        return
+
+    # --- adam asmaca tahmini ---
+    if not ozel and str(cid) in _oyun_adam:
+        oy = _oyun_adam.get(str(cid)) or {}
+        if oy.get("durum") == "oyna":
+            t0 = (metin or "").strip()
+            if user.id in (oy.get("oyuncular") or set()) and t0 and (
+                (len(t0) == 1 and t0.isalpha())
+                or (len(t0) > 1 and t0.isalpha())
+            ):
+                await _adam_harf(update, context, t0.lower())
+                return
+
+    # Fiyat: niyet veya top-300
     fiyat_ok = False
     adaylar = [metin]
     if "yapay" in low:
@@ -6056,27 +6254,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
         kt = kisa_token(aday)
         if kt:
-            if await fiyat_gonder(update, kt[0], kt[1]):
+            miktar, sembol = kt[0], kt[1]
+            niyetli = kt[2] if len(kt) > 2 else False
+            if await fiyat_gonder(update, miktar, sembol, niyetli=niyetli):
                 fiyat_ok = True
                 break
     if fiyat_ok:
         return
-
-    # --- adam asmaca tahmini (oyun aciksa herkese) ---
-    if not ozel and str(cid) in _oyun_adam:
-        oy = _oyun_adam[str(cid)]
-        if oy.get("durum") == "oyna" and metin and len(metin.strip()) == 1 and metin.strip().isalpha():
-            await _adam_harf(update, context, metin.strip().lower())
-            return
-        if oy.get("durum") == "bekle" and kucult(metin) in ("katıl", "katil", "ben", "+"):
-            oy.setdefault("oyuncular", set()).add(user.id)
-            try:
-                await msg.reply_text(f"🎮 Katıldın ({len(oy['oyuncular'])}/2+)")
-            except Exception:
-                pass
-            if len(oy["oyuncular"]) >= 2:
-                await _adam_baslat_oyna(context.bot, cid)
-            return
 
     # gizli kelime — yapay demeden de yakala
     if not ozel and metin:
@@ -6128,9 +6312,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # adam asmaca baslat
-    if kucult(soru) in ("adam asmaca", "oyun", "adamasmaca"):
-        await _adam_bekle(context.bot, cid)
+    # gündem/haber — uydurma engeli
+    low_soru = kucult(soru)
+    if any(x in low_soru for x in ("gündem", "gundem", "son dakika", "haber", "bugün ne oldu", "bugun ne oldu", "gündemde ne", "gundemde ne")):
+        try:
+            await msg.reply_text("🔆 Canlı haber akışına erişimim yok.")
+        except Exception:
+            pass
         return
 
     # kriz / etkinlik
@@ -6553,7 +6741,10 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 zor=True,
                 soru_metin=proje,
             )
-            await msg.reply_text(f"🔍 {ozet or 'Yeterli bilgi bulamadım.'}\n(Finansal tavsiye değildir.)")
+            met = ozet or "Yeterli bilgi bulamadım."
+            if "tavsiye değildir" not in met.lower() and "tavsiye degildir" not in met.lower():
+                met = met.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
+            await msg.reply_text(f"🔍 {met}")
             return
 
     # mini ders
@@ -6942,50 +7133,49 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(cid, "typing")
     except Exception:
         pass
-    # akilli konuskanlik: hizli sohbette kisa/az
     hiz = _mesaj_hiz.get(cid) or deque()
-    if len(hiz) >= 12 and not zor:
-        # grup hizli — daha kisa tut
-        max_len_hiz = 100
-    else:
-        max_len_hiz = None
-    yanit = sor(hist, ek=ek, zor=zor, duygu=duygu, soru_metin=soru, chat_id=cid)
-    if not yanit or "Forbidden" in yanit[:30]:
-        yanit = "Anlamadım, tekrar söyler misin?"
-    # uzunluk: zor ise biraz daha serbest
-    max_len = 420 if zor else 220
-    if max_len_hiz:
-        max_len = max_len_hiz
-    if len(yanit) > max_len:
-        kes = yanit[:max_len]
-        yanit = (kes.rsplit(".", 1)[0] + ".") if "." in kes else kes.rsplit(" ", 1)[0] + "..."
-    yanit = yanit.strip()
-    goster = yanit if yanit.startswith("🔆") else f"🔆 {yanit}"
-    hist.append({"role": "assistant", "content": yanit})
-    h["hist"] = hist
-    h["ts"] = time.time()
-    _hafiza[key] = h
-    gecmis[key] = hist  # eski yapiya da yaz
-    if len(hist) >= 12:
+    max_len_hiz = 120 if (len(hiz) >= 12 and not zor) else None
+
+    async def _ai_cevap_arka():
         try:
-            _hafiza_ozetle(key)
-        except Exception:
-            pass
-    # ara sira sticker yerine (telegram sticker id yoksa emoji mesaj)
-    import random
-    if len(yanit) < 40 and random.random() < 0.12 and not zor:
-        try:
-            await msg.reply_text(random.choice(["👍", "🔥", "😄", "🤝", "✨"]))
-            return
-        except Exception:
-            pass
-    try:
-        await msg.reply_text(goster)
-    except Exception:
-        try:
-            await context.bot.send_message(cid, goster)
+            yanit = await asyncio.to_thread(sor, hist, ek, zor, duygu, soru, cid)
+            if not yanit or "Forbidden" in (yanit[:30] if yanit else ""):
+                yanit = "Anlamadım, tekrar söyler misin?"
+            max_len = 500 if zor else 280
+            if max_len_hiz:
+                max_len = max_len_hiz
+            if len(yanit) > max_len:
+                kes = yanit[:max_len]
+                yanit = (kes.rsplit(".", 1)[0] + ".") if "." in kes else kes.rsplit(" ", 1)[0] + "..."
+            yanit = yanit.strip()
+            goster = yanit if yanit.startswith("🔆") else f"🔆 {yanit}"
+            hist2 = list(hist)
+            hist2.append({"role": "assistant", "content": yanit})
+            h2 = _hafiza_al(key)
+            h2["hist"] = hist2[-14:]
+            h2["ts"] = time.time()
+            _hafiza[key] = h2
+            gecmis[key] = hist2[-14:]
+            if len(hist2) >= 12:
+                try:
+                    _hafiza_ozetle(key)
+                except Exception:
+                    pass
+            try:
+                await msg.reply_text(goster)
+            except Exception:
+                try:
+                    await context.bot.send_message(cid, goster)
+                except Exception as e:
+                    log.warning("AI: %s", e)
         except Exception as e:
-            log.warning("AI: %s", e)
+            log.warning("AI arka: %s", e)
+            try:
+                await msg.reply_text("🔆 Biraz yoğunum, tekrar dener misin?")
+            except Exception:
+                pass
+
+    asyncio.create_task(_ai_cevap_arka())
 
 
 async def hata(update, ctx):
@@ -7160,6 +7350,7 @@ def main():
     app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^p:"))
     app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
     app.add_handler(CallbackQueryHandler(ceza_oy_callback, pattern=r"^cz:"))
+    app.add_handler(CallbackQueryHandler(adam_katil_callback, pattern=r"^adam:"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
     app.add_handler(
