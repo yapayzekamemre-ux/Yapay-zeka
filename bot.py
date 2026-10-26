@@ -1784,6 +1784,16 @@ def panel_kb(cid):
                 InlineKeyboardButton(f"🔒 Locks", callback_data="p:locks"),
             ],
             [
+                InlineKeyboardButton(
+                    f"🔗 Link/Reklam {'🚫' if cget(cid,'link_engel') else '✅'}",
+                    callback_data="p:link",
+                ),
+                InlineKeyboardButton(
+                    f"🖼 Medya {'🚫' if cget(cid,'medya_engel') else '✅'}",
+                    callback_data="p:medya",
+                ),
+            ],
+            [
                 InlineKeyboardButton("🚫 Blocklists", callback_data="p:blocklist"),
                 InlineKeyboardButton("⚠ Warns", callback_data="p:uyari"),
             ],
@@ -2104,10 +2114,6 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cset(cid, "medya_engel", not bool(cget(cid, "medya_engel")))
         await yenile()
         return
-    if data == "link":
-        cset(cid, "link_engel", not bool(cget(cid, "link_engel")))
-        await yenile()
-        return
     if data == "flood":
         cset(cid, "flood", not bool(cget(cid, "flood")))
         await yenile()
@@ -2167,11 +2173,32 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             f"🔒 <b>Locks</b>\n"
             f"Medya: {_ok(cget(cid,'medya_engel'))}\n"
-            f"Link: {_ok(cget(cid,'link_engel'))}\n",
+            f"Link/Reklam/Buton: {_ok(cget(cid,'link_engel'))}\n\n"
+            f"<i>Link açıkken üye t.me, url ve mavi buton paylaşamaz.</i>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"Medya {_ok(cget(cid,'medya_engel'))}", callback_data="p:medya"),
-                 InlineKeyboardButton(f"Link {_ok(cget(cid,'link_engel'))}", callback_data="p:link")],
+                 InlineKeyboardButton(f"Link/Reklam {_ok(cget(cid,'link_engel'))}", callback_data="p:link")],
+                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
+            ]),
+        )
+        return
+    if data == "link":
+        # toggle + aninda goster
+        cset(cid, "link_engel", not bool(cget(cid, "link_engel")))
+        acik = bool(cget(cid, "link_engel"))
+        await q.edit_message_text(
+            f"🔗 <b>Link / Reklam engeli</b>\n"
+            f"Durum: <b>{'AÇIK — üyeler link/buton atamaz' if acik else 'KAPALI — serbest'}</b>\n\n"
+            f"Kapsam: http, t.me, gizli link, URL butonu, WebApp, via_bot.\n"
+            f"Adminler etkilenmez.\n"
+            f"İzinli domain: <code>/izinlink t.me/kanal</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"{'Kapat (serbest bırak)' if acik else 'Aç (yasakla)'}",
+                    callback_data="p:link",
+                )],
                 [InlineKeyboardButton("« Geri", callback_data="p:geri")],
             ]),
         )
@@ -4758,8 +4785,54 @@ async def itiraz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+KOMUT_LISTESI = (
+    "📌 <b>Sahip komutları (özelde)</b>\n\n"
+    "<b>Grup seç / yayın</b>\n"
+    "• <code>/gruplar</code> — botun bildiği gruplar\n"
+    "• <code>/grup 1</code> — aktif yönetim grubu seç\n"
+    "• <code>/send metin</code> — tüm gruplara duyuru\n"
+    "• <code>gruba gönder metin</code> — aynı\n"
+    "• <code>bakım aç</code> / <code>bakım kapat</code> — bakım + gruba bilgi\n\n"
+    "<b>Moderasyon (önce /grup seç)</b>\n"
+    "• <code>/ban @user sebep</code> — ban\n"
+    "• <code>/unban id/@user</code> — ban kaldır\n"
+    "• <code>/kick @user</code> — gruptan at\n"
+    "• <code>/mute @user 30</code> — dk sustur\n"
+    "• <code>/unmute @user</code>\n"
+    "• <code>/warn @user</code> · <code>/unwarn</code>\n"
+    "• <code>/yasaklilar</code> — ban listesi\n\n"
+    "<b>Link / reklam</b>\n"
+    "• <code>link engel aç</code> — üye link/buton atamaz\n"
+    "• <code>link engel kapat</code> — serbest\n"
+    "• <code>/izinlink t.me/kanal</code> — istisna domain\n"
+    "• Panel: <b>Link/Reklam</b> butonu\n\n"
+    "<b>Panel & ayar</b>\n"
+    "• <code>/panel</code> veya <code>/ayarlar</code> — butonlu panel\n"
+    "• <code>/setwelcome metin</code> · <code>/setrules</code>\n"
+    "• <code>/setlog</code> · <code>/unsetlog</code>\n"
+    "• <code>/duyuru</code> · <code>/ipucu</code> ayarları\n"
+    "• <code>/ozellik</code> · <code>/durum</code> · <code>/log</code>\n"
+    "• <code>/bakim</code> · <code>/mod</code>\n\n"
+    "<b>Sohbet</b>\n"
+    "• Grupta <code>yapay ...</code> — AI cevap\n"
+    "• <code>btc</code> / <code>1 eth</code> — fiyat\n"
+    "• <code>adam asmaca</code> — oyun\n"
+    "• <code>/komutlar</code> — bu listeyi tekrar getir\n"
+)
+
+
+async def komutlar_komut(update, context):
+    user = update.effective_user
+    if not sahip_mi(user):
+        return
+    try:
+        await update.effective_message.reply_text(KOMUT_LISTESI, parse_mode="HTML")
+    except Exception:
+        pass
+
+
 async def sabah_brifing(context: ContextTypes.DEFAULT_TYPE):
-    """Sahibe sabah ozet."""
+    """Sahibe sabah ozet + komut listesi (gunde 1)."""
     now = datetime.now(TR)
     if now.hour != 9:
         return
@@ -4777,13 +4850,18 @@ async def sabah_brifing(context: ContextTypes.DEFAULT_TYPE):
             f"• Spam sil: {st.get('spam', 0)} · Mesaj: {st.get('mesaj', 0)}\n"
             f"• Giren/çıkan: {st.get('giren', 0)}/{st.get('cikan', 0)}\n"
             f"• Bugün ceza: {cg.get('say', 0)}/{conf.get('ceza_tavan', 10)}\n"
-            f"• Gölge: {'açık' if conf.get('golge') else 'kapalı'}\n"
+            f"• Link engel: {'açık' if conf.get('link_engel') else 'kapalı'}\n"
         )
     lines.append("Bekleyen: /log ile son hatalar")
     try:
         await context.bot.send_message(SAHIP_ID, "\n".join(lines)[:3500], parse_mode="HTML")
     except Exception as e:
         log.warning("brifing: %s", e)
+    # komut hatirlatma (ayri mesaj)
+    try:
+        await context.bot.send_message(SAHIP_ID, KOMUT_LISTESI, parse_mode="HTML")
+    except Exception as e:
+        log.warning("komut listesi dm: %s", e)
     durum["brif_son"] = key
     durum_kaydet()
 
@@ -5856,13 +5934,30 @@ LINK_RE = re.compile(r"(https?://|t\.me/|telegram\.me/|www\.)", re.I)
 
 
 def mesajda_link_var(msg, metin: str) -> bool:
-    """Metin veya entity icinde link var mi?"""
+    """Metin, entity, inline buton (url/web_app) veya iletilmis reklam."""
     if metin and LINK_RE.search(metin):
         return True
-    for ent in list(msg.entities or []) + list(msg.caption_entities or []):
+    for ent in list(getattr(msg, "entities", None) or []) + list(getattr(msg, "caption_entities", None) or []):
         t = getattr(ent, "type", None)
         if t in ("url", "text_link"):
             return True
+    # Chicken Land tarzi: altinda URL / WebApp butonu
+    rm = getattr(msg, "reply_markup", None)
+    if rm and getattr(rm, "inline_keyboard", None):
+        for row in rm.inline_keyboard:
+            for btn in row:
+                if getattr(btn, "url", None) or getattr(btn, "web_app", None):
+                    return True
+                if getattr(btn, "login_url", None):
+                    return True
+    # baska kanaldan iletilmis reklam
+    if getattr(msg, "forward_origin", None) or getattr(msg, "forward_from_chat", None):
+        if metin and LINK_RE.search(metin or ""):
+            return True
+        if rm and getattr(rm, "inline_keyboard", None):
+            return True
+    if getattr(msg, "via_bot", None):
+        return True
     return False
 
 
@@ -5977,6 +6072,34 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     fail_n += 1
             await msg.reply_text(f"📢 Gönderildi: {ok_n} grup" + (f" · hata: {fail_n}" if fail_n else ""))
+            return
+        # link engel ac/kapat (aktif grup veya tum gruplar)
+        if low0 in ("link engel aç", "link engel ac", "link aç", "link ac", "reklam kapat", "link yasak"):
+            hedefler = []
+            ag = _aktif_grup_id()
+            if ag:
+                hedefler = [ag]
+            else:
+                hedefler = [int(x) for x in (durum.get("grup") or {}).keys()]
+            for gid in hedefler:
+                cset(gid, "link_engel", True)
+            await msg.reply_text(
+                f"🔗 Link/buton engeli <b>AÇIK</b> ({len(hedefler)} grup)\n"
+                f"Üye link, t.me, url buton, webapp paylaşamaz.\n"
+                f"İzinli domain: <code>/izinlink t.me/senin</code>",
+                parse_mode="HTML",
+            )
+            return
+        if low0 in ("link engel kapat", "link kapat", "reklam aç", "reklam ac", "link serbest"):
+            hedefler = []
+            ag = _aktif_grup_id()
+            if ag:
+                hedefler = [ag]
+            else:
+                hedefler = [int(x) for x in (durum.get("grup") or {}).keys()]
+            for gid in hedefler:
+                cset(gid, "link_engel", False)
+            await msg.reply_text(f"🔗 Link engeli <b>KAPALI</b> — üyeler link paylaşabilir ({len(hedefler)} grup).", parse_mode="HTML")
             return
     else:
         # grup: sadece sahip bu grubun uyesi/yoneticisiyse calis
@@ -7494,6 +7617,8 @@ def main():
     app.add_handler(CommandHandler("send", send_komut))
     app.add_handler(CommandHandler("gruplar", gruplar_komut))
     app.add_handler(CommandHandler("grup", grup_sec_komut))
+    app.add_handler(CommandHandler("komutlar", komutlar_komut))
+    app.add_handler(CommandHandler("yardim", komutlar_komut))
     app.add_handler(CommandHandler("durum", durum_komut))
     app.add_handler(CommandHandler("log", log_komut))
     app.add_handler(CommandHandler("rozet", rozet_komut))
