@@ -2751,23 +2751,44 @@ async def boost_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def boost_komut(update, context):
+    """Grupta yazilirsa o gruba; ozelde aktif_grup."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
     if not msg or not user:
         return
-    if sahip_mi(user) and context.args:
-        hedef = await hedef_kullanici(update, context)
+    if chat and chat.type != ChatType.PRIVATE:
+        cid = chat.id
+        try:
+            g = durum.setdefault("grup", {}).setdefault(str(cid), {})
+            if chat.title:
+                g["title"] = chat.title
+        except Exception:
+            pass
+    else:
+        cid = _aktif_grup_id() or 0
+
+    ver_mi = sahip_mi(user) and (
+        (context.args and len(context.args) > 0)
+        or (msg.reply_to_message and msg.reply_to_message.from_user)
+    )
+    if ver_mi:
         adet = 1
-        for a in context.args:
+        isim_parca = []
+        for a in (context.args or []):
             if a.isdigit():
                 adet = max(1, min(int(a), 30))
-        cid = chat.id if chat and chat.type != ChatType.PRIVATE else (_aktif_grup_id() or 0)
-        if not cid or not hedef:
+            else:
+                isim_parca.append(a)
+        hedef = await hedef_kullanici(update, context, isim_args=isim_parca or None)
+        if not cid:
             await msg.reply_text(
-                "Kullanım: /grup seç → <code>/boost @user 5</code>\n"
-                "1 Lite · 2 Bronze · 3 Silver · 4 Gold · 5 Platin · 7 Premium · 10 Mythic …",
-                parse_mode="HTML",
+                "Özelde önce /gruplar sonra /grup 1 yaz.\nVeya komutu doğrudan grupta yaz.",
+            )
+            return
+        if not hedef:
+            await msg.reply_text(
+                "Üye bulunamadı.\nMesajına yanıtla: /boost 1\nveya: /boost @kullaniciadi 1",
             )
             return
         u = boost_bilgi(cid, hedef.id)
@@ -2776,26 +2797,30 @@ async def boost_komut(update, context):
         u = boost_bilgi(cid, hedef.id)
         await boost_etiket_dene(context.bot, cid, hedef.id, boost_etiket_text(u))
         await msg.reply_text(
-            "✅ %s → <b>%s</b> (x%s) · %s link / %s mute"
+            "✅ %s → <b>%s</b> (x%s) · %s link / %s mute\n"
+            "<i>Sadece bu grup için.</i>"
             % (_ad(hedef), boost_etiket_text(u) or "yok", u["adet"], u["link_max"], u["mute_max"]),
             parse_mode="HTML",
         )
         return
-    cid = chat.id if chat and chat.type != ChatType.PRIVATE else (_aktif_grup_id() or (chat.id if chat else 0))
+
+    if not cid:
+        await msg.reply_text("Grupta yaz veya /grup 1 seç.")
+        return
     u = await boost_senkron(context.bot, cid, user.id)
     if not u.get("etiket"):
-        lines = ["🚀 <b>Boost etiketleri</b>"]
+        lines = ["🚀 <b>Boost etiketleri</b> (bu grup)"]
         for a in sorted(_BOOST_KADEME.keys()):
             et, em, l, m = _BOOST_KADEME[a]
             lines.append("%s <b>%s</b> — %s boost → %s link + %s mute" % (em, et, a, l, m))
-        lines.append("\nGrubu güçlendir veya <code>/boost @sen 1</code>")
+        lines.append("\nYanıtla: /boost 1")
         await msg.reply_text("\n".join(lines), parse_mode="HTML")
         return
     await msg.reply_text(
         "🏷 Etiket: <b>%s</b> (boost x%s)\n"
         "Bugün link: <b>%s/%s</b>\n"
         "Bugün mute: <b>%s/%s</b>\n"
-        "<i>Haklar her gün sıfırlanır.</i>"
+        "<i>Bu gruba özel · günlük sıfırlanır.</i>"
         % (
             boost_etiket_text(u),
             u["adet"],
@@ -2833,37 +2858,61 @@ class _FakeUser:
         self.is_bot = False
 
 
-async def hedef_kullanici(update, context):
+async def hedef_kullanici(update, context, isim_args=None):
+    """Reply, @username, id veya isim ile uye bul. isim_args: boost icin birlesik isim."""
     msg = update.effective_message
     chat = update.effective_chat
     if msg and msg.reply_to_message and msg.reply_to_message.from_user:
         u = msg.reply_to_message.from_user
         if not u.is_bot:
             return u
-    args = list(context.args or [])
+    args = list(isim_args if isim_args is not None else (context.args or []))
     if not args:
         return None
     a0 = args[0].lstrip("@")
-    if a0.isdigit():
+    if a0.isdigit() and len(args) == 1:
         return _FakeUser(a0)
-    # once mevcut chat uyeleri
-    if chat:
+    isim = " ".join(a.lstrip("@") for a in args if not a.isdigit()).strip().lower()
+    if not isim:
+        isim = a0.lower()
+
+    def _esles(bil, uid):
+        kul = (bil.get("kullanici") or "").lower()
+        ad = (bil.get("ad") or "").lower()
+        if kul and kul == isim.lstrip("@"):
+            return _FakeUser(uid, bil.get("ad") or kul, kul)
+        if ad and (ad == isim or isim in ad or ad.startswith(isim)):
+            return _FakeUser(uid, bil.get("ad") or ad, kul)
+        return None
+
+    # 1) bu grup
+    if chat and chat.type != ChatType.PRIVATE:
         for uid, bil in (uyeler.get(str(chat.id)) or {}).items():
-            if (bil.get("kullanici") or "").lower() == a0.lower():
-                return _FakeUser(uid, bil.get("ad") or a0, a0)
-    # ozelden yonetim: aktif grup + tum gruplar
+            r = _esles(bil or {}, uid)
+            if r:
+                return r
+    # 2) aktif grup + digerleri (ozel yonetim)
     arama = []
     ag = _aktif_grup_id()
     if ag:
         arama.append(str(ag))
+    if chat and chat.type != ChatType.PRIVATE:
+        arama.append(str(chat.id))
     arama.extend(list(uyeler.keys()))
+    seen = set()
     for gid in arama:
+        if gid in seen:
+            continue
+        seen.add(gid)
         for uid, bil in (uyeler.get(str(gid)) or {}).items():
-            if (bil.get("kullanici") or "").lower() == a0.lower():
-                return _FakeUser(uid, bil.get("ad") or a0, a0)
+            r = _esles(bil or {}, uid)
+            if r:
+                return r
+    # 3) @username api
     try:
-        c = await context.bot.get_chat("@" + a0)
-        return _FakeUser(c.id, getattr(c, "full_name", None) or a0, a0)
+        uname = isim.split()[0].lstrip("@")
+        c = await context.bot.get_chat("@" + uname)
+        return _FakeUser(c.id, getattr(c, "full_name", None) or uname, uname)
     except Exception:
         return None
 
