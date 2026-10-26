@@ -2751,76 +2751,118 @@ async def boost_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def boost_komut(update, context):
-    """Grupta yazilirsa o gruba; ozelde aktif_grup."""
+    """Grupta yazilirsa o gruba boost verir."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
-    if not msg or not user:
+    if not msg or not user or not chat:
         return
-    if chat and chat.type != ChatType.PRIVATE:
+
+    # --- hangi grup ---
+    if chat.type != ChatType.PRIVATE:
         cid = chat.id
         try:
             g = durum.setdefault("grup", {}).setdefault(str(cid), {})
-            if chat.title:
+            if getattr(chat, "title", None):
                 g["title"] = chat.title
+                durum_kaydet()
         except Exception:
             pass
     else:
         cid = _aktif_grup_id() or 0
 
-    ver_mi = sahip_mi(user) and (
-        (context.args and len(context.args) > 0)
-        or (msg.reply_to_message and msg.reply_to_message.from_user)
+    # --- adet ---
+    adet = 1
+    isim_parca = []
+    for a in (context.args or []):
+        if str(a).isdigit():
+            adet = max(1, min(int(a), 30))
+        else:
+            isim_parca.append(a)
+
+    # --- hedef: once yanit ---
+    hedef = None
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        ru = msg.reply_to_message.from_user
+        if not ru.is_bot:
+            hedef = ru
+    if hedef is None and isim_parca:
+        hedef = await hedef_kullanici(update, context, isim_args=isim_parca)
+
+    # yetki: sahip veya grup admin
+    yetkili = sahip_mi(user)
+    if not yetkili and chat.type != ChatType.PRIVATE:
+        try:
+            yetkili = await admin_mi(cid, user, context.bot)
+        except Exception:
+            yetkili = False
+
+    # veri verme istegi mi?
+    ver_istegi = bool(
+        (msg.reply_to_message and msg.reply_to_message.from_user)
+        or isim_parca
+        or (context.args and any(str(a).isdigit() for a in context.args) and msg.reply_to_message)
     )
-    if ver_mi:
-        adet = 1
-        isim_parca = []
-        for a in (context.args or []):
-            if a.isdigit():
-                adet = max(1, min(int(a), 30))
-            else:
-                isim_parca.append(a)
-        hedef = await hedef_kullanici(update, context, isim_args=isim_parca or None)
+
+    if ver_istegi and yetkili:
         if not cid:
-            await msg.reply_text(
-                "Özelde önce /gruplar sonra /grup 1 yaz.\nVeya komutu doğrudan grupta yaz.",
-            )
+            await msg.reply_text("Özelde /gruplar → /grup 1 veya komutu grupta yaz.")
             return
         if not hedef:
             await msg.reply_text(
-                "Üye bulunamadı.\nMesajına yanıtla: /boost 1\nveya: /boost @kullaniciadi 1",
+                "Üye bulunamadı.\n"
+                "Birinin mesajına yanıt verip yaz: /boost 1\n"
+                "veya: /boost @kullaniciadi 1"
             )
             return
-        u = boost_bilgi(cid, hedef.id)
-        u["adet"] = adet
-        boost_kaydet(cid, hedef.id, u)
-        u = boost_bilgi(cid, hedef.id)
-        await boost_etiket_dene(context.bot, cid, hedef.id, boost_etiket_text(u))
-        await msg.reply_text(
-            "✅ %s → <b>%s</b> (x%s) · %s link / %s mute\n"
-            "<i>Sadece bu grup için.</i>"
-            % (_ad(hedef), boost_etiket_text(u) or "yok", u["adet"], u["link_max"], u["mute_max"]),
-            parse_mode="HTML",
-        )
+        try:
+            u = boost_bilgi(cid, hedef.id)
+            u["adet"] = adet
+            boost_kaydet(cid, hedef.id, u)
+            u = boost_bilgi(cid, hedef.id)
+            try:
+                await boost_etiket_dene(context.bot, cid, hedef.id, boost_etiket_text(u))
+            except Exception:
+                pass
+            await msg.reply_text(
+                "✅ %s → <b>%s</b> (x%s)\n"
+                "Hak: %s link / %s mute (bu grup)"
+                % (
+                    _ad(hedef),
+                    boost_etiket_text(u) or "yok",
+                    u["adet"],
+                    u["link_max"],
+                    u["mute_max"],
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            log.exception("boost ver")
+            await msg.reply_text("Boost kaydı hata: %s" % e)
         return
 
+    # sadece kendi durumunu goster
     if not cid:
-        await msg.reply_text("Grupta yaz veya /grup 1 seç.")
+        await msg.reply_text("Grupta /boost yaz veya /grup 1 seç.")
         return
-    u = await boost_senkron(context.bot, cid, user.id)
+    try:
+        u = await boost_senkron(context.bot, cid, user.id)
+    except Exception:
+        u = boost_bilgi(cid, user.id)
     if not u.get("etiket"):
         lines = ["🚀 <b>Boost etiketleri</b> (bu grup)"]
         for a in sorted(_BOOST_KADEME.keys()):
             et, em, l, m = _BOOST_KADEME[a]
             lines.append("%s <b>%s</b> — %s boost → %s link + %s mute" % (em, et, a, l, m))
-        lines.append("\nYanıtla: /boost 1")
+        lines.append("")
+        lines.append("Admin: mesaja yanıtla → /boost 1")
         await msg.reply_text("\n".join(lines), parse_mode="HTML")
         return
     await msg.reply_text(
         "🏷 Etiket: <b>%s</b> (boost x%s)\n"
         "Bugün link: <b>%s/%s</b>\n"
         "Bugün mute: <b>%s/%s</b>\n"
-        "<i>Bu gruba özel · günlük sıfırlanır.</i>"
+        "<i>Bu gruba özel.</i>"
         % (
             boost_etiket_text(u),
             u["adet"],
