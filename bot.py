@@ -39,6 +39,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     ChatMemberHandler,
     filters,
+    # ChatBoostHandler runtime'da denenir
+
     ContextTypes,
 )
 from telegram.constants import ChatType, ChatMemberStatus
@@ -2565,6 +2567,247 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await yenile()
 
 
+
+# ---------- boost / guclendirme haklari ----------
+# Her boost sayisi ayri etiket + artan hak
+# adet -> (etiket, emoji, link_max, mute_max)
+_BOOST_KADEME = {
+    1:  ("Lite", "⭐", 1, 1),
+    2:  ("Bronze", "🥉", 1, 1),
+    3:  ("Silver", "🥈", 2, 1),
+    4:  ("Gold", "🥇", 2, 2),
+    5:  ("Platin", "🏆", 3, 2),
+    6:  ("Elmas", "💠", 3, 3),
+    7:  ("Premium", "💎", 4, 3),
+    8:  ("Elite", "👑", 4, 4),
+    9:  ("Legend", "🔥", 5, 4),
+    10: ("Mythic", "🌟", 5, 5),
+    12: ("Titan", "🛡", 6, 5),
+    15: ("Immortal", "♾️", 7, 6),
+    20: ("Godmode", "🚀", 10, 8),
+}
+
+
+def _boost_gun_key():
+    return datetime.now(TR).strftime("%Y-%m-%d")
+
+
+def _boost_kayit(chat_id) -> dict:
+    d = cget(chat_id, "boost_uyeler") or {}
+    return d if isinstance(d, dict) else {}
+
+
+def boost_seviye_bilgi(adet: int):
+    adet = int(adet or 0)
+    if adet <= 0:
+        return {"adet": 0, "etiket": None, "emoji": "", "link_max": 0, "mute_max": 0, "seviye": 0}
+    # en yuksek esik <= adet
+    sec = None
+    for min_a in sorted(_BOOST_KADEME.keys()):
+        if adet >= min_a:
+            sec = min_a
+        else:
+            break
+    if sec is None:
+        sec = 1
+    etiket, emoji, lmax, mmax = _BOOST_KADEME[sec]
+    # ara sayilar (orn. 11): bir onceki etiketi tut, haklari orantila
+    return {
+        "adet": adet,
+        "etiket": etiket,
+        "emoji": emoji,
+        "link_max": lmax,
+        "mute_max": mmax,
+        "seviye": sec,
+    }
+
+
+def boost_bilgi(chat_id, user_id) -> dict:
+    kayit = _boost_kayit(chat_id)
+    u = dict(kayit.get(str(user_id)) or {})
+    gun = _boost_gun_key()
+    if u.get("gun") != gun:
+        u["link_k"] = 0
+        u["mute_k"] = 0
+        u["gun"] = gun
+    bil = boost_seviye_bilgi(u.get("adet") or 0)
+    bil["link_k"] = int(u.get("link_k") or 0)
+    bil["mute_k"] = int(u.get("mute_k") or 0)
+    bil["gun"] = gun
+    return bil
+
+
+def boost_kaydet(chat_id, user_id, u: dict):
+    kayit = _boost_kayit(chat_id)
+    bil = boost_seviye_bilgi(u.get("adet") or 0)
+    kayit[str(user_id)] = {
+        "adet": int(u.get("adet") or 0),
+        "link_k": int(u.get("link_k") or 0),
+        "mute_k": int(u.get("mute_k") or 0),
+        "gun": u.get("gun") or _boost_gun_key(),
+        "etiket": bil.get("etiket"),
+    }
+    cset(chat_id, "boost_uyeler", kayit)
+
+
+def boost_link_hakki_var(chat_id, user_id) -> bool:
+    u = boost_bilgi(chat_id, user_id)
+    return bool(u.get("etiket")) and u["link_k"] < u["link_max"]
+
+
+def boost_link_kullan(chat_id, user_id) -> bool:
+    u = boost_bilgi(chat_id, user_id)
+    if not u.get("etiket") or u["link_k"] >= u["link_max"]:
+        return False
+    u["link_k"] += 1
+    boost_kaydet(chat_id, user_id, u)
+    return True
+
+
+def boost_mute_hakki_var(chat_id, user_id) -> bool:
+    u = boost_bilgi(chat_id, user_id)
+    return bool(u.get("etiket")) and u["mute_k"] < u["mute_max"]
+
+
+def boost_mute_kullan(chat_id, user_id) -> bool:
+    u = boost_bilgi(chat_id, user_id)
+    if not u.get("etiket") or u["mute_k"] >= u["mute_max"]:
+        return False
+    u["mute_k"] += 1
+    boost_kaydet(chat_id, user_id, u)
+    return True
+
+
+def boost_etiket_text(u: dict) -> str:
+    if not u or not u.get("etiket"):
+        return ""
+    return "%s %s" % (u.get("emoji") or "", u.get("etiket") or "").strip()
+
+
+async def boost_senkron(bot, chat_id, user_id) -> dict:
+    u = boost_bilgi(chat_id, user_id)
+    try:
+        r = await bot.get_user_chat_boosts(chat_id, user_id)
+        n = len(getattr(r, "boosts", None) or [])
+        if n > int(u.get("adet") or 0):
+            u["adet"] = n
+            boost_kaydet(chat_id, user_id, u)
+            u = boost_bilgi(chat_id, user_id)
+    except Exception:
+        pass
+    return u
+
+
+async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
+    if not etiket:
+        return
+    try:
+        m = await bot.get_chat_member(chat_id, user_id)
+        st = getattr(m, "status", None)
+        if st in (ChatMemberStatus.ADMINISTRATOR, "administrator"):
+            title = (etiket if len(etiket) <= 16 else etiket[:16])
+            await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
+    except Exception:
+        pass
+
+
+async def boost_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cb = getattr(update, "chat_boost", None)
+    if not cb:
+        return
+    chat = getattr(cb, "chat", None) or update.effective_chat
+    if not chat:
+        return
+    cid = chat.id
+    boost = getattr(cb, "boost", None) or cb
+    src = getattr(boost, "source", None)
+    uid = None
+    if src is not None:
+        uid = getattr(getattr(src, "user", None), "id", None) or getattr(src, "user_id", None)
+    if not uid:
+        return
+    u = boost_bilgi(cid, uid)
+    eski = u.get("etiket")
+    u["adet"] = max(int(u.get("adet") or 0) + 1, 1)
+    boost_kaydet(cid, uid, u)
+    u = boost_bilgi(cid, uid)
+    await boost_etiket_dene(context.bot, cid, uid, boost_etiket_text(u))
+    try:
+        et = boost_etiket_text(u) or "—"
+        txt = (
+            "🚀 <b>Grup güçlendirildi!</b>\n"
+            "Etiket: <b>%s</b> (boost x%s)\n"
+            "Bugün hak: %s link · %s mute"
+        ) % (et, u["adet"], u["link_max"], u["mute_max"])
+        await context.bot.send_message(cid, txt, parse_mode="HTML")
+        if u.get("etiket") and u.get("etiket") != eski:
+            await context.bot.send_message(
+                cid,
+                "🏷 Yeni etiket: <b>%s</b>" % boost_etiket_text(u),
+                parse_mode="HTML",
+            )
+    except Exception:
+        pass
+
+
+async def boost_komut(update, context):
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not user:
+        return
+    if sahip_mi(user) and context.args:
+        hedef = await hedef_kullanici(update, context)
+        adet = 1
+        for a in context.args:
+            if a.isdigit():
+                adet = max(1, min(int(a), 30))
+        cid = chat.id if chat and chat.type != ChatType.PRIVATE else (_aktif_grup_id() or 0)
+        if not cid or not hedef:
+            await msg.reply_text(
+                "Kullanım: /grup seç → <code>/boost @user 5</code>\n"
+                "1 Lite · 2 Bronze · 3 Silver · 4 Gold · 5 Platin · 7 Premium · 10 Mythic …",
+                parse_mode="HTML",
+            )
+            return
+        u = boost_bilgi(cid, hedef.id)
+        u["adet"] = adet
+        boost_kaydet(cid, hedef.id, u)
+        u = boost_bilgi(cid, hedef.id)
+        await boost_etiket_dene(context.bot, cid, hedef.id, boost_etiket_text(u))
+        await msg.reply_text(
+            "✅ %s → <b>%s</b> (x%s) · %s link / %s mute"
+            % (_ad(hedef), boost_etiket_text(u) or "yok", u["adet"], u["link_max"], u["mute_max"]),
+            parse_mode="HTML",
+        )
+        return
+    cid = chat.id if chat and chat.type != ChatType.PRIVATE else (_aktif_grup_id() or (chat.id if chat else 0))
+    u = await boost_senkron(context.bot, cid, user.id)
+    if not u.get("etiket"):
+        lines = ["🚀 <b>Boost etiketleri</b>"]
+        for a in sorted(_BOOST_KADEME.keys()):
+            et, em, l, m = _BOOST_KADEME[a]
+            lines.append("%s <b>%s</b> — %s boost → %s link + %s mute" % (em, et, a, l, m))
+        lines.append("\nGrubu güçlendir veya <code>/boost @sen 1</code>")
+        await msg.reply_text("\n".join(lines), parse_mode="HTML")
+        return
+    await msg.reply_text(
+        "🏷 Etiket: <b>%s</b> (boost x%s)\n"
+        "Bugün link: <b>%s/%s</b>\n"
+        "Bugün mute: <b>%s/%s</b>\n"
+        "<i>Haklar her gün sıfırlanır.</i>"
+        % (
+            boost_etiket_text(u),
+            u["adet"],
+            u["link_k"],
+            u["link_max"],
+            u["mute_k"],
+            u["mute_max"],
+        ),
+        parse_mode="HTML",
+    )
+
+
 # ---------- moderasyon komutlari ----------
 MUTE_PERMS = ChatPermissions(can_send_messages=False)
 FULL_PERMS = ChatPermissions(
@@ -2916,14 +3159,33 @@ async def kick_komut(update, context):
 
 
 async def mute_komut(update, context):
+    msg0, chat0, user0 = update.effective_message, update.effective_chat, update.effective_user
+    # boost üyesi ozel/grup: admin degilse boost mute hakki
+    boost_mute = False
+    if user0 and chat0 and not sahip_mi(user0):
+        cid_try = chat0.id if chat0.type != ChatType.PRIVATE else (_aktif_grup_id() or 0)
+        if cid_try and not await admin_mi(cid_try, user0, context.bot):
+            if boost_mute_hakki_var(cid_try, user0.id):
+                boost_mute = True
     g = await _mod_giris(update, context)
-    if not g:
+    if not g and not boost_mute:
         return
-    _, chat, _ = g
+    if g:
+        _, chat, _ = g
+    else:
+        chat = _ProxyChat(_aktif_grup_id() or chat0.id)
     hedef = await hedef_kullanici(update, context)
     if not hedef:
         await kisa_cevap(context.bot, chat.id, "Yanıtla <code>/mute 30</code>")
         return
+    if boost_mute:
+        if not boost_mute_kullan(chat.id, user0.id):
+            await kisa_cevap(context.bot, chat.id if chat0.type != ChatType.PRIVATE else user0.id,
+                             "🚀 Bugünkü boost mute hakkın bitti.")
+            return
+        # boost mute max 10 dk
+        if not context.args:
+            context.args = ["10"]
     args = list(context.args or [])
     dk = 60
     if update.effective_message.reply_to_message and args and args[0].isdigit():
@@ -6147,6 +6409,20 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_adm_erken and cget(cid, "link_engel") and mesajda_link_var(msg, metin):
                 izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
                 ok = any(d and d in (metin or "").lower() for d in izin)
+                # boost link hakki
+                if not ok and boost_link_hakki_var(cid, user.id):
+                    if boost_link_kullan(cid, user.id):
+                        ok = True
+                        try:
+                            u = boost_bilgi(cid, user.id)
+                            et = boost_etiket_text(u)
+                            await context.bot.send_message(
+                                cid,
+                                "🚀 %s link hakkı (%s/%s)" % (et or "Boost", u["link_k"], u["link_max"]),
+                                disable_notification=True,
+                            )
+                        except Exception:
+                            pass
                 if not ok:
                     try:
                         await msg.delete()
@@ -7690,6 +7966,8 @@ def main():
     app.add_handler(CommandHandler("gruplar", gruplar_komut))
     app.add_handler(CommandHandler("grup", grup_sec_komut))
     app.add_handler(CommandHandler("komutlar", komutlar_komut))
+    app.add_handler(CommandHandler("boost", boost_komut))
+    app.add_handler(CommandHandler("hakkim", boost_komut))
     app.add_handler(CommandHandler("yardim", komutlar_komut))
     app.add_handler(CommandHandler("durum", durum_komut))
     app.add_handler(CommandHandler("log", log_komut))
@@ -7701,6 +7979,11 @@ def main():
     app.add_handler(CallbackQueryHandler(tahmin_callback, pattern=r"^th:"))
     app.add_handler(CallbackQueryHandler(itiraz_callback, pattern=r"^it:"))
     app.add_handler(ChatMemberHandler(uye_guncelle, ChatMemberHandler.CHAT_MEMBER))
+    try:
+        from telegram.ext import ChatBoostHandler
+        app.add_handler(ChatBoostHandler(boost_handler))
+    except Exception as e:
+        log.warning("ChatBoostHandler yok: %s", e)
     try:
         from telegram.ext import MessageReactionHandler
         app.add_handler(MessageReactionHandler(reaksiyon_yonet))
