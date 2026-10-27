@@ -241,18 +241,18 @@ groq = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
 gem = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 SISTEM_TABAN = (
-    "Adın Yapay. Telegram grup asistanısın.\n"
+    "Adın Yapay. Bu gruptasın; sohbet eden samimi bir arkadaş gibisin, müşteri hizmeti değilsin.\n"
     "KURALLAR:\n"
     "- Kullanıcı hangi dilde yazarsa o dilde cevap ver.\n"
-    "- Basit soruya 1-2 net cümle; zor soruya en fazla 5 cümle. Cümleyi yarım bırakma.\n"
-    "- Bilmiyorsan açıkça 'bilmiyorum' de; uydurma, sahte link/fiyat/haber üretme.\n"
-    "- Canlı haber, gündem, skor, anlık piyasa verisine erişimin YOK. Uydurma; 'Canlı veriye erişimim yok' de.\n"
-    "- Harf/kelime oyunlarını kendin yürütme; oyun motoru ayrıca çalışır.\n"
-    "- Şaka bile olsa al-sat emri verme.\n"
-    "- Yatırım/sağlık/hukuk: kesin tavsiye verme. Kriptoda bir kez 'finansal tavsiye değildir' yeter.\n"
-    "- Olgun ve net ol; sulu/flörtöz olma.\n"
-    "- Dalga geçilirse zekice, kısa karşılık ver; küfür yağdırma.\n"
-    "- Bot/model ismi yazma. Grup üyelerini isimleriyle tanı.\n"
+    "- Kısa ve net: basit soruya 1-2 cümle, zor soruya en fazla 4-5 cümle. Yarım bırakma.\n"
+    "- ASLA şunları yazma: 'yardımcı olabilir miyim', 'başka bir konuda', 'nasıl yardımcı olabilirim', "
+    "'başka bir şey', 'size yardımcı olayım'. Soru bitince sus; ekstra kapanış cümlesi ekleme.\n"
+    "- Robot gibi konuşma. Doğal, içli dışlı, grubun argosuyla konuş.\n"
+    "- Bilmiyorsan 'bilmiyorum' de; uydurma.\n"
+    "- Canlı haber/skor uydurma.\n"
+    "- Al-sat emri verme. Kriptoda gerekirse bir kez 'finansal tavsiye değil' de.\n"
+    "- Olgun ol, sulu/flörtöz olma. Dalga geçilirse kısa zekice cevap ver.\n"
+    "- Bot/model adı yazma. Üyeleri isimleriyle tanı.\n"
 )
 
 SISTEM = SISTEM_TABAN  # geriye uyum
@@ -441,7 +441,7 @@ DEFAULT_G = {
     "forward_engel": False,
     "kural_onay": False,
     "yavas_mod_otomatik": False,
-    "emoji_tepki": True,
+    "emoji_tepki": False,
     "moderatorler": [],   # uid list — mute/warn, ban yok
     "bilgi_tabani": [],   # ogretilen bilgiler
     "admin_notlar": [],   # admin not defteri
@@ -2788,12 +2788,13 @@ async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
         if st in (ChatMemberStatus.OWNER, "creator"):
             return
         if st not in (ChatMemberStatus.ADMINISTRATOR, "administrator"):
+            # Telegram unvan icin en az bir gercek yetki ister — davet yeterli
             await bot.promote_chat_member(
                 chat_id,
                 user_id,
                 can_change_info=False,
                 can_delete_messages=False,
-                can_invite_users=False,
+                can_invite_users=True,
                 can_restrict_members=False,
                 can_pin_messages=False,
                 can_promote_members=False,
@@ -2801,8 +2802,15 @@ async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
                 can_manage_video_chats=False,
                 is_anonymous=False,
             )
-        await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
-        log.info("boost unvan: uid=%s title=%s", user_id, title)
+        try:
+            await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
+            log.info("boost unvan OK uid=%s title=%s", user_id, title)
+        except Exception as e2:
+            # bazen promote sonrasi kisa bekleme gerekir
+            import asyncio as _aio
+            await _aio.sleep(0.8)
+            await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
+            log.info("boost unvan retry OK uid=%s title=%s (%s)", user_id, title, e2)
     except Exception as e:
         log.warning("boost unvan yazilamadi uid=%s: %s", user_id, e)
 
@@ -4908,16 +4916,8 @@ async def yedek_komut(update, context):
 
 
 async def yedek_periyodik(context: ContextTypes.DEFAULT_TYPE):
-    """Gunluk yedek — sahibe DM."""
-    try:
-        path = "/tmp/bot_yedek.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"uyeler": uyeler, "durum": durum, "ts": time.time()}, f, ensure_ascii=False)
-        with open(path, "rb") as f:
-            await context.bot.send_document(SAHIP_ID, document=f, filename="bot_yedek_gunluk.json")
-        log.info("gunluk yedek gonderildi")
-    except Exception as e:
-        log.warning("yedek: %s", e)
+    """Gunluk yedek KAPALI — sahibe json atilmaz."""
+    return
 
 
 async def haftalik_rapor(context: ContextTypes.DEFAULT_TYPE):
@@ -6019,6 +6019,13 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if getattr(user, "is_bot", False):
         return
+    # kanal / otomatik iletim / anonim admin — ASLA silme
+    if getattr(msg, "sender_chat", None) is not None:
+        return
+    if getattr(msg, "is_automatic_forward", False):
+        return
+    if getattr(msg, "sender_boost_count", None):
+        pass
     metin = (msg.text or msg.caption or "") or ""
     try:
         var_link = mesajda_link_var(msg, metin)
@@ -6658,8 +6665,11 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+        # kanal postu / otomatik forward — filtre yok
+        if getattr(msg, "sender_chat", None) is not None or getattr(msg, "is_automatic_forward", False):
+            pass  # asagida admin gibi davran
         # LINK/REKLAM FILTRESI — bakim ve sahip kontrolunden ONCE (t.me/ChickenLandBot vb.)
-        if not sahip_mi(user):
+        if not sahip_mi(user) and not getattr(msg, "sender_chat", None) and not getattr(msg, "is_automatic_forward", False):
             is_adm_erken = await admin_mi(cid, user, context.bot)
             # link silme link_filtre_oncelik (-5) yaptı; burada sadece boost isaretle
             if mesajda_link_var(msg, metin) and boost_link_hakki_var(cid, user.id):
@@ -6683,6 +6693,8 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ozel:
         # admin degilse filtreler
         is_adm = await admin_mi(cid, user, context.bot)
+        if getattr(msg, "sender_chat", None) is not None or getattr(msg, "is_automatic_forward", False):
+            is_adm = True
         boostlu = False
         try:
             boostlu = (not is_adm) and boost_link_hakki_var(cid, user.id)
@@ -7619,19 +7631,8 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(ders, parse_mode="HTML")
             return
 
-    # emoji tepki — cok kisa/selam mesajlarina yazmak yerine reaksiyon
-    if cget(cid, "emoji_tepki") is not False and len(soru) < 25:
-        low_s = kucult(soru)
-        if any(x in low_s for x in ("sa", "as", "selam", "merhaba", "naber", "iyi geceler", "günaydın", "gunaydin", "teşekkür", "tesekkur", "saol", "eyw")):
-            try:
-                await msg.set_reaction("👍")
-            except Exception:
-                try:
-                    await msg.reply_text("🔆 👍")
-                except Exception:
-                    pass
-            _konusma_aktif[(cid, user.id)] = time.time() + int(cget(cid, "konusma_sn") or 90)
-            return
+    # emoji tepki KAPALI (parmak/👍 atmaz). Acmak icin panelden emoji_tepki.
+    # eski: kisa "sa" eslesmesi "sakin" icinde bile 👍 atiyordu — kaldirildi.
 
     # topic (forum) — konu bazli bot_mod / kurallar
     tid = getattr(msg, "message_thread_id", None)
@@ -8014,7 +8015,17 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 kes = yanit[:max_len]
                 yanit = (kes.rsplit(".", 1)[0] + ".") if "." in kes else kes.rsplit(" ", 1)[0] + "..."
             yanit = yanit.strip()
-            goster = yanit if yanit.startswith("🔆") else f"🔆 {yanit}"
+            goster = yanit.lstrip("🔆 ").strip() if yanit else yanit
+            # kapanis klişelerini at
+            try:
+                import re as _re
+                goster = _re.sub(
+                    r"(?is)(\n|^).{0,40}(yardımcı olabilir miyim|başka bir konuda|nasıl yardımcı|başka bir şey|size yardımcı).*$",
+                    "",
+                    goster or "",
+                ).strip()
+            except Exception:
+                pass
             hist2 = list(hist)
             hist2.append({"role": "assistant", "content": yanit})
             h2 = _hafiza_al(key)
@@ -8075,7 +8086,8 @@ async def baslat(app):
         if app.job_queue:
             app.job_queue.run_repeating(duyuru_periyodik, interval=600, first=60)
             app.job_queue.run_repeating(hatirlat_periyodik, interval=30, first=20)
-            app.job_queue.run_repeating(yedek_periyodik, interval=86400, first=3600)
+            # yedek_periyodik KAPALI — gunluk json atilmasin
+            # app.job_queue.run_repeating(yedek_periyodik, interval=86400, first=3600)
             app.job_queue.run_repeating(haftalik_rapor, interval=604800, first=7200)
             app.job_queue.run_repeating(sohbet_baslatici, interval=1800, first=300)
             app.job_queue.run_repeating(ozel_gun_job, interval=3600, first=120)
