@@ -1806,80 +1806,83 @@ async def _mesaj_sil_sn(m, sn):
 
 # ---------- panel ----------
 def panel_kb(cid):
-    """Rose tarzi ana panel — tum dugmeler islevsel."""
+    """Ana panel — Turkce dugmeler."""
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(f"👋 Greetings {_ok(cget(cid,'hosgeldin') or cget(cid,'hoscaakal'))}", callback_data="p:greet"),
-                InlineKeyboardButton(f"🌊 Antiflood {_ok(cget(cid,'flood'))}", callback_data="p:flood"),
+                InlineKeyboardButton(
+                    f"👋 Karsilama {_ok(cget(cid,'hosgeldin') or cget(cid,'hoscaakal'))}",
+                    callback_data="p:greet",
+                ),
+                InlineKeyboardButton(f"🌊 Flood koruma {_ok(cget(cid,'flood'))}", callback_data="p:flood"),
             ],
             [
-                InlineKeyboardButton(f"🛡 AntiRaid {_ok(cget(cid,'antiraid'))}", callback_data="p:antiraid"),
-                InlineKeyboardButton(f"✅ Approval {_ok(cget(cid,'approval'))}", callback_data="p:approval"),
+                InlineKeyboardButton(f"🛡 Baskin koruma {_ok(cget(cid,'antiraid'))}", callback_data="p:antiraid"),
+                InlineKeyboardButton(f"✅ Uye onayi {_ok(cget(cid,'approval'))}", callback_data="p:approval"),
             ],
             [
                 InlineKeyboardButton(f"🔐 CAPTCHA {_ok(cget(cid,'captcha'))}", callback_data="p:captcha"),
-                InlineKeyboardButton(f"🧹 Clean Cmd {_ok(cget(cid,'clean_cmd'))}", callback_data="p:cleancmd"),
+                InlineKeyboardButton(f"🧹 Komut sil {_ok(cget(cid,'clean_cmd'))}", callback_data="p:cleancmd"),
             ],
             [
-                InlineKeyboardButton(f"🧹 Clean Service {_ok(cget(cid,'servis_sil'))}", callback_data="p:servis"),
-                InlineKeyboardButton(f"🔒 Locks", callback_data="p:locks"),
+                InlineKeyboardButton(f"🧹 Servis sil {_ok(cget(cid,'servis_sil'))}", callback_data="p:servis"),
+                InlineKeyboardButton("🔒 Kilitler", callback_data="p:locks"),
             ],
             [
                 InlineKeyboardButton(
-                    f"🔗 Link/Reklam {'🚫' if cget(cid,'link_engel') else '✅'}",
-                    callback_data="p:link",
+                    f"🔗 Link engel: {'ACIK' if cget(cid,'link_engel') else 'KAPALI'}",
+                    callback_data=f"p:link:{cid}",
                 ),
                 InlineKeyboardButton(
-                    f"🖼 Medya {'🚫' if cget(cid,'medya_engel') else '✅'}",
-                    callback_data="p:medya",
+                    f"🖼 Medya engel: {'ACIK' if cget(cid,'medya_engel') else 'KAPALI'}",
+                    callback_data=f"p:medya:{cid}",
                 ),
             ],
             [
-                InlineKeyboardButton("🚫 Blocklists", callback_data="p:blocklist"),
-                InlineKeyboardButton("⚠ Warns", callback_data="p:uyari"),
+                InlineKeyboardButton("🚫 Yasak kelimeler", callback_data="p:blocklist"),
+                InlineKeyboardButton("⚠ Uyarilar", callback_data="p:uyari"),
             ],
             [
-                InlineKeyboardButton("📜 Rules", callback_data="p:kurallar"),
+                InlineKeyboardButton("📜 Kurallar", callback_data="p:kurallar"),
                 InlineKeyboardButton(f"📋 Log {_ok(bool(cget(cid,'log_kanal')))}", callback_data="p:log"),
             ],
             [
-                InlineKeyboardButton(f"🌙 Night {_ok(cget(cid,'gece'))}", callback_data="p:gece"),
-                InlineKeyboardButton(f"🔇 Silence {_ok(cget(cid,'sessizlik'))}", callback_data="p:sessiz"),
+                InlineKeyboardButton(f"🌙 Gece modu {_ok(cget(cid,'gece'))}", callback_data="p:gece"),
+                InlineKeyboardButton(f"🔇 Sessizlik {_ok(cget(cid,'sessizlik'))}", callback_data="p:sessiz"),
             ],
             [
-                InlineKeyboardButton("📝 Notes", callback_data="p:notes"),
-                InlineKeyboardButton("📏 Msg length", callback_data="p:uzun"),
+                InlineKeyboardButton("📝 Notlar", callback_data="p:notes"),
+                InlineKeyboardButton("📏 Mesaj uzunlugu", callback_data="p:uzun"),
             ],
             [
-                InlineKeyboardButton("🔧 Commands", callback_data="p:yardim"),
-                InlineKeyboardButton("🚫 Bot block", callback_data="p:engel"),
+                InlineKeyboardButton("🔧 Komutlar", callback_data="p:yardim"),
+                InlineKeyboardButton("🚫 Bot engel", callback_data="p:engel"),
             ],
             [
-                InlineKeyboardButton("🔤 Filters", callback_data="p:filters"),
-                InlineKeyboardButton("📌 Pin", callback_data="p:pin"),
+                InlineKeyboardButton("🔤 Filtreler", callback_data="p:filters"),
+                InlineKeyboardButton("📌 Sabitleme", callback_data="p:pin"),
             ],
             [
-                InlineKeyboardButton("🗑 Purges", callback_data="p:purges"),
-                InlineKeyboardButton("🌐 Federation", callback_data="p:fed"),
+                InlineKeyboardButton("🗑 Toplu silme", callback_data="p:purges"),
+                InlineKeyboardButton("🌐 Federasyon", callback_data="p:fed"),
             ],
             [
-                InlineKeyboardButton("📦 Import/Export", callback_data="p:imex"),
-                InlineKeyboardButton("💬 Topics", callback_data="p:topics"),
+                InlineKeyboardButton("📦 Ice/Disa aktar", callback_data="p:imex"),
+                InlineKeyboardButton("💬 Konular", callback_data="p:topics"),
             ],
             [
-                InlineKeyboardButton("👤 Admin", callback_data="p:admin"),
-                InlineKeyboardButton(f"📣 Reports {_ok(cget(cid,'reports'))}", callback_data="p:reports"),
+                InlineKeyboardButton("👤 Yoneticiler", callback_data="p:admin"),
+                InlineKeyboardButton(f"📣 Sikayetler {_ok(cget(cid,'reports'))}", callback_data="p:reports"),
             ],
             [
                 InlineKeyboardButton(f"📢 Duyuru {_ok(cget(cid,'duyuru_aktif'))}", callback_data="p:duyuru"),
-                InlineKeyboardButton(f"💡 İpucu {_ok(cget(cid,'ipucu_aktif'))}", callback_data="p:ipucu"),
+                InlineKeyboardButton(f"💡 Ipucu {_ok(cget(cid,'ipucu_aktif'))}", callback_data="p:ipucu"),
             ],
             [
-                InlineKeyboardButton("🚫 Disabling", callback_data="p:disable"),
-                InlineKeyboardButton(f"🔏 Privacy {_ok(cget(cid,'privacy_ai'))}", callback_data="p:privacy"),
+                InlineKeyboardButton("🚫 Komut kapat", callback_data="p:disable"),
+                InlineKeyboardButton(f"🔏 Gizlilik {_ok(cget(cid,'privacy_ai'))}", callback_data="p:privacy"),
             ],
-            [InlineKeyboardButton("🔒 Kapat", callback_data="p:kapat")],
+            [InlineKeyboardButton("🔒 Paneli kapat", callback_data="p:kapat")],
         ]
     )
 
@@ -2110,18 +2113,32 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data or not q.data.startswith("p:"):
         return
-    await q.answer()
     user = q.from_user
     data = q.data[2:]
+    # p:link:-100123 veya p:medya:-100123 → gid callback'ten
     cid = context.user_data.get("panel_gid")
+    if ":" in data:
+        par = data.split(":")
+        if len(par) >= 2 and par[0] in ("link", "medya") and par[1].lstrip("-").isdigit():
+            cid = int(par[1])
+            data = par[0]
+            context.user_data["panel_gid"] = cid
     if not cid:
         try:
-            await q.edit_message_text("Oturum düştü. Grupta tekrar /panel yaz.")
+            await q.answer("Oturum düştü — grupta /panel yaz", show_alert=True)
         except Exception:
             pass
         return
     if not await admin_mi(cid, user, context.bot) and not sahip_mi(user):
+        try:
+            await q.answer("Yetkin yok", show_alert=True)
+        except Exception:
+            pass
         return
+    try:
+        await q.answer()
+    except Exception:
+        pass
 
     async def yenile(extra=""):
         try:
@@ -2154,7 +2171,12 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "medya":
         cset(cid, "medya_engel", not bool(cget(cid, "medya_engel")))
-        await yenile()
+        acik = bool(cget(cid, "medya_engel"))
+        try:
+            await q.answer("Medya engel AÇIK" if acik else "Medya engel KAPALI")
+        except Exception:
+            pass
+        await yenile("Medya engel: %s\n" % ("AÇIK" if acik else "KAPALI"))
         return
     if data == "flood":
         cset(cid, "flood", not bool(cget(cid, "flood")))
@@ -2219,32 +2241,53 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<i>Link açıkken üye t.me, url ve mavi buton paylaşamaz.</i>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"Medya {_ok(cget(cid,'medya_engel'))}", callback_data="p:medya"),
-                 InlineKeyboardButton(f"Link/Reklam {_ok(cget(cid,'link_engel'))}", callback_data="p:link")],
+                [InlineKeyboardButton(
+                    f"Medya engel: {'AÇIK' if cget(cid,'medya_engel') else 'KAPALI'}",
+                    callback_data=f"p:medya:{cid}"),
+                 InlineKeyboardButton(
+                    f"Link engel: {'AÇIK' if cget(cid,'link_engel') else 'KAPALI'}",
+                    callback_data=f"p:link:{cid}")],
                 [InlineKeyboardButton("« Geri", callback_data="p:geri")],
             ]),
         )
         return
     if data == "link":
-        # toggle + aninda goster
-        cset(cid, "link_engel", not bool(cget(cid, "link_engel")))
+        yeni = not bool(cget(cid, "link_engel"))
+        cset(cid, "link_engel", yeni)
         acik = bool(cget(cid, "link_engel"))
-        await q.edit_message_text(
-            f"🔗 <b>Link / Reklam engeli</b>\n"
-            f"Durum: <b>{'AÇIK — üyeler link/buton atamaz' if acik else 'KAPALI — serbest'}</b>\n\n"
-            f"Kapsam: http, t.me, gizli link, URL butonu, WebApp, via_bot.\n"
-            f"Adminler etkilenmez.\n"
-            f"İzinli domain: <code>/izinlink t.me/kanal</code>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    f"{'Kapat (serbest bırak)' if acik else 'Aç (yasakla)'}",
-                    callback_data="p:link",
-                )],
-                [InlineKeyboardButton("« Geri", callback_data="p:geri")],
-            ]),
-        )
+        try:
+            await q.answer(
+                "Link engel AÇIK — üyeler atamaz" if acik else "Link engel KAPALI — serbest",
+                show_alert=False,
+            )
+        except Exception:
+            pass
+        txt = (
+            "🔗 <b>Link / Reklam engeli</b>\n"
+            "Grup: <code>%s</code>\n"
+            "Durum: <b>%s</b>\n\n"
+            "AÇIK = üyeler link/t.me/buton atamaz\n"
+            "KAPALI = herkes serbest\n"
+            "Adminler her zaman serbest.\n"
+            "İzin: <code>/izinlink t.me/kanal</code>"
+        ) % (cid, "AÇIK — yasak" if acik else "KAPALI — serbest")
+        try:
+            await q.edit_message_text(
+                txt,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "Kapat (serbest)" if acik else "Aç (yasakla)",
+                        callback_data="p:link:%s" % cid,
+                    )],
+                    [InlineKeyboardButton("« Ana panel", callback_data="p:geri")],
+                ]),
+            )
+        except Exception as e:
+            log.warning("panel link edit: %s", e)
+            await yenile("Link engel: %s\n" % ("AÇIK" if acik else "KAPALI"))
         return
+
     if data == "blocklist":
         bl = cget(cid, "blocklist") or []
         await q.edit_message_text(
