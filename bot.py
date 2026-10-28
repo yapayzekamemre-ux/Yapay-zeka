@@ -427,6 +427,8 @@ DEFAULT_G = {
     "privacy_ai": False,
     "reports": True,
     "duyuru_kanal": None,
+    "airdrop_yorum": True,  # kanal/airdrop paylasimlarina AI ozet
+
     "duyuru_aktif": False,
     "duyuru_saat": 5,
     "duyuru_posts": [],
@@ -2027,6 +2029,12 @@ def panel_kb(cid):
                 InlineKeyboardButton(f"💡 Ipucu {_ok(cget(cid,'ipucu_aktif'))}", callback_data="p:ipucu"),
             ],
             [
+                InlineKeyboardButton(
+                    f"🪂 Airdrop yorum: {'ACIK' if cget(cid,'airdrop_yorum') else 'KAPALI'}",
+                    callback_data=f"p:airdrop:{cid}",
+                ),
+            ],
+            [
                 InlineKeyboardButton("🚫 Komut kapat", callback_data="p:disable"),
                 InlineKeyboardButton(f"🔏 Gizlilik {_ok(cget(cid,'privacy_ai'))}", callback_data="p:privacy"),
             ],
@@ -2359,7 +2367,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = context.user_data.get("panel_gid")
     if ":" in data:
         par = data.split(":")
-        if len(par) >= 2 and par[0] in ("link", "medya", "forward") and par[1].lstrip("-").isdigit():
+        if len(par) >= 2 and par[0] in ("link", "medya", "forward", "airdrop") and par[1].lstrip("-").isdigit():
             cid = int(par[1])
             data = par[0]
             context.user_data["panel_gid"] = cid
@@ -2526,6 +2534,37 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning("panel link edit: %s", e)
             await yenile("Link engel: %s\n" % ("AÇIK" if acik else "KAPALI"))
+        return
+
+    if data == "airdrop":
+        yeni = not bool(cget(cid, "airdrop_yorum"))
+        cset(cid, "airdrop_yorum", yeni)
+        acik = bool(cget(cid, "airdrop_yorum"))
+        try:
+            await q.answer("Airdrop yorum AÇIK" if acik else "Airdrop yorum KAPALI")
+        except Exception:
+            pass
+        txt = (
+            "🪂 <b>Airdrop yorumu</b>\n"
+            "Durum: <b>%s</b>\n\n"
+            "AÇIK = kanaldan/gruba düşen airdrop paylaşımlarına bot kısa özet yazar:\n"
+            "nedir · yapılacaklar · risk\n\n"
+            "KAPALI = sessiz."
+        ) % ("AÇIK" if acik else "KAPALI")
+        try:
+            await q.edit_message_text(
+                txt,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "Kapat" if acik else "Ac",
+                        callback_data="p:airdrop:%s" % cid,
+                    )],
+                    [InlineKeyboardButton("« Ana panel", callback_data="p:geri")],
+                ]),
+            )
+        except Exception:
+            await yenile("Airdrop yorum: %s\n" % ("ACIK" if acik else "KAPALI"))
         return
 
     if data == "forward":
@@ -3409,6 +3448,39 @@ def _aktif_grup_id():
         return int(durum.get("aktif_grup") or 0) or None
     except Exception:
         return None
+
+
+def hedef_grup_id(update=None, context=None):
+    """Grupta: o grup. Ozelde: aktif_grup veya panel_gid."""
+    chat = update.effective_chat if update else None
+    if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
+        return chat.id
+    ag = _aktif_grup_id()
+    if ag:
+        return ag
+    if context is not None:
+        pg = (context.user_data or {}).get("panel_gid")
+        if pg:
+            try:
+                return int(pg)
+            except Exception:
+                pass
+    return None
+
+
+def wizard_sohbet_uygun(update, hedef_cid) -> bool:
+    """Sihirbaz cevabi: ayni grup VEYA sahip ozel sohbet."""
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return False
+    if chat.id == hedef_cid:
+        return True
+    if chat.type in (ChatType.PRIVATE, "private") and sahip_mi(user):
+        return True
+    return False
+
+
 
 
 async def _mod_giris(update, context, cmd_name: str = None):
@@ -4404,6 +4476,74 @@ def _duyuru_link(chat, msg_id: int) -> str:
 
 
 
+
+_AIRDROP_IPUCU = (
+    "airdrop", "claim", "snapshot", "galxe", "zealy", "layer3", "task",
+    "görev", "gorev", "retrodrop", "whitelist", "wl ", "mint", "points",
+    "puan", "quest", "kampanya", "testnet", "mainnet", "faucet",
+)
+
+
+def airdrop_metin_mi(metin: str) -> bool:
+    low = kucult(metin or "")
+    if not low or len(low) < 8:
+        return False
+    return any(k in low for k in _AIRDROP_IPUCU)
+
+
+def airdrop_analiz_uret(metin: str) -> str:
+    """Airdrop metnini ozetle: nedir, risk, ne yapilmali."""
+    metin = (metin or "").strip()
+    if not metin:
+        return ""
+    sistem = (
+        SISTEM_TABAN
+        + "\nSen kripto grup asistanisin. Kullanici bir airdrop/duyuru metni yapistirdi.\n"
+        "Kisa Turkce cevap ver (en fazla 6-7 satir). Format:\n"
+        "📌 Nedir: ...\n"
+        "✅ Yapilacaklar: 1) ... 2) ...\n"
+        "⚠ Risk: ... (gas/seed/cüzdan baglama uyarisi)\n"
+        "Kesin 'yap/alma' deme; finansal tavsiye degil. Esprili ama net ol."
+    )
+    mesajlar = [{"role": "user", "content": "Su airdrop/duyuruyu incele:\n\n" + metin[:2500]}]
+    try:
+        yanit = _sor_modeller(mesajlar, sistem, hizli=False)
+    except Exception as e:
+        log.warning("airdrop analiz: %s", e)
+        yanit = None
+    if not yanit:
+        yanit = (
+            "📌 Duyuru/airdrop paylasildi.\n"
+            "⚠ Resmi link disina cüzdan baglama; gas icin ETH isteme klasik tuzak.\n"
+            "Kendin arastir, finansal tavsiye degil."
+        )
+    return yanit.strip()
+
+
+async def airdrop_yorum_gonder(bot, chat_id, metin: str, reply_to_message_id=None):
+    if not cget(chat_id, "airdrop_yorum"):
+        return
+    if not airdrop_metin_mi(metin):
+        return
+    try:
+        yanit = await asyncio.to_thread(airdrop_analiz_uret, metin)
+    except Exception as e:
+        log.warning("airdrop thread: %s", e)
+        return
+    if not yanit:
+        return
+    try:
+        await bot.send_message(
+            chat_id,
+            yanit[:3500],
+            parse_mode=None,
+            reply_to_message_id=reply_to_message_id,
+            allow_sending_without_reply=True,
+        )
+    except Exception as e:
+        log.warning("airdrop yorum gonder: %s", e)
+
+
 async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kanal postlarini bagli gruba kaydet."""
     msg = update.effective_message or update.channel_post
@@ -4438,6 +4578,15 @@ async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE
         conf["duyuru_posts"] = keep[-40:]
         durum_kaydet()
         log.info("duyuru kayit grup=%s post=%s", gid_s, (entry["title"] or "")[:40])
+        # AI airdrop yorumu gruba
+        try:
+            govde = (msg.text or msg.caption or entry.get("title") or "").strip()
+            if conf.get("airdrop_yorum", True) and airdrop_metin_mi(govde):
+                asyncio.create_task(
+                    airdrop_yorum_gonder(context.bot, int(gid_s), govde)
+                )
+        except Exception as e:
+            log.warning("airdrop kanal yorum: %s", e)
 
 
 def duyuru_liste_metni(chat_id, bos_mesaj=False):
@@ -5348,17 +5497,28 @@ async def tekrar_periyodik(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def tekrarekle_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adim adim: saat → metin → buton → link → (baska buton?)."""
+    """Adim adim: saat → metin → buton → link. Grupta veya ozelde (aktif grup)."""
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
     if not msg or not user:
         return
-    if not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
+    ozel = chat and chat.type in (ChatType.PRIVATE, "private")
+    if ozel and not sahip_mi(user):
         return
-    await komut_sil(msg, context.bot)
-    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
-        await msg.reply_text("Bu komutu botun oldugu <b>grupta</b> yaz.", parse_mode="HTML")
+    if not ozel and not sahip_mi(user) and not await admin_mi(chat.id, user, context.bot):
+        return
+    if not ozel:
+        await komut_sil(msg, context.bot)
+    cid = hedef_grup_id(update, context)
+    if not cid:
+        await msg.reply_text(
+            "Once grup sec (ozelden):\n"
+            "<code>/gruplar</code>\n"
+            "<code>/grup 1</code>\n\n"
+            "Sonra: <code>/tekrarekle</code>",
+            parse_mode="HTML",
+        )
         return
     # hizli yol: arguman varsa eski format
     raw = " ".join(context.args or []).strip()
@@ -5371,8 +5531,8 @@ async def tekrarekle_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # yine de | ile devam etmek isterse asagidaki wizard-disi islem
         context.user_data["tekrar_hizli"] = raw
-        context.user_data["tekrar_wizard"] = {"adim": "hizli", "cid": chat.id}
-        await _tekrar_hizli_kaydet(update, context, chat.id, raw)
+        context.user_data["tekrar_wizard"] = {"adim": "hizli", "cid": cid}
+        await _tekrar_hizli_kaydet(update, context, cid, raw)
         return
     context.user_data["tekrar_wizard"] = {
         "adim": "saat",
@@ -5462,7 +5622,7 @@ async def wizard_devam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
     w = (context.user_data or {}).get("wizard")
     if not w or not msg or not user or not chat:
         return False
-    if chat.id != w.get("cid"):
+    if not wizard_sohbet_uygun(update, w.get("cid")):
         return False
     metin = (msg.text or msg.caption or "").strip()
     if not metin:
@@ -5544,7 +5704,7 @@ async def tekrar_wizard_devam(update: Update, context: ContextTypes.DEFAULT_TYPE
     w = (context.user_data or {}).get("tekrar_wizard")
     if not w or not msg or not user or not chat:
         return False
-    if chat.id != w.get("cid"):
+    if not wizard_sohbet_uygun(update, w.get("cid")):
         return False
     metin = (msg.text or msg.caption or "").strip()
     if not metin:
@@ -5632,9 +5792,11 @@ async def tekrarliste_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await komut_sil(msg, context.bot)
     if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
-        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+        pass
+    cid = hedef_grup_id(update, context)
+    if not cid:
+        await msg.reply_text("Once /gruplar → /grup 1")
         return
-    cid = chat.id
     liste = cget(cid, "tekrar_mesajlar") or []
     if not liste:
         await msg.reply_text("Tekrar mesaj yok. Ekle: /tekrarekle")
@@ -5662,10 +5824,10 @@ async def tekrarsil_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not user or not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
         return
     await komut_sil(msg, context.bot)
-    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
-        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+    cid = hedef_grup_id(update, context)
+    if not cid:
+        await msg.reply_text("Once /gruplar → /grup 1")
         return
-    cid = chat.id
     if not context.args:
         await msg.reply_text("Kullanim: /tekrarsil id")
         return
@@ -5684,10 +5846,10 @@ async def tekrardur_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
         return
     await komut_sil(msg, context.bot)
-    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
-        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+    cid = hedef_grup_id(update, context)
+    if not cid:
+        await msg.reply_text("Once /gruplar → /grup 1")
         return
-    cid = chat.id
     if not context.args:
         await msg.reply_text("Kullanim: /tekrardur id   veya /tekrarac id")
         return
@@ -5914,6 +6076,8 @@ async def grup_sec_komut(update, context):
         return
     # kaydet + title dene
     durum["aktif_grup"] = sec
+    if context.user_data is not None:
+        context.user_data["panel_gid"] = sec
     conf = (durum.get("grup") or {}).setdefault(str(sec), {})
     try:
         ch = await context.bot.get_chat(sec)
@@ -7549,6 +7713,21 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"🔗 Link engeli <b>KAPALI</b> — üyeler link paylaşabilir ({len(hedefler)} grup).", parse_mode="HTML")
             return
 
+        
+        if low0 in ("airdrop yorum ac", "airdrop yorum aç", "airdrop analiz ac", "airdrop analiz aç"):
+            ag = _aktif_grup_id()
+            hedefler = [ag] if ag else [int(x) for x in (durum.get("grup") or {}).keys()]
+            for gid in hedefler:
+                cset(gid, "airdrop_yorum", True)
+            await msg.reply_text("✅ Airdrop yorumu AÇIK (%s grup)." % len(hedefler))
+            return
+        if low0 in ("airdrop yorum kapat", "airdrop analiz kapat"):
+            ag = _aktif_grup_id()
+            hedefler = [ag] if ag else [int(x) for x in (durum.get("grup") or {}).keys()]
+            for gid in hedefler:
+                cset(gid, "airdrop_yorum", False)
+            await msg.reply_text("✅ Airdrop yorumu KAPALI.")
+            return
         if low0 in ("ilet engel ac", "ilet engel aç", "forward engel ac", "forward engel aç", "ileti yasak", "forward yasak"):
             hedefler = []
             ag = _aktif_grup_id()
@@ -7575,8 +7754,16 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # kanal postu / otomatik forward — filtre yok
+        # kanal postu / otomatik forward — filtre yok + airdrop yorum
         if getattr(msg, "sender_chat", None) is not None or getattr(msg, "is_automatic_forward", False):
+            try:
+                govde = (metin or "").strip()
+                if govde and airdrop_metin_mi(govde) and cget(cid, "airdrop_yorum"):
+                    asyncio.create_task(
+                        airdrop_yorum_gonder(context.bot, cid, govde, msg.message_id)
+                    )
+            except Exception:
+                pass
             pass  # asagida admin gibi davran
         # LINK/REKLAM FILTRESI — bakim ve sahip kontrolunden ONCE (t.me/ChickenLandBot vb.)
         if not sahip_mi(user) and not getattr(msg, "sender_chat", None) and not getattr(msg, "is_automatic_forward", False):
