@@ -439,6 +439,9 @@ DEFAULT_G = {
     "admin_adlar": [],    # cache admin isimleri
     "konusma_sn": 90,     # yapay dedikten sonra devam suresi
     "forward_engel": False,
+    "forward_izin": [],  # izinli kaynak chat id veya @username
+    "tekrar_mesajlar": [],  # [{id,text,btn,url,saat,last,aktif}]
+
     "kural_onay": False,
     "yavas_mod_otomatik": False,
     "emoji_tepki": False,
@@ -1839,7 +1842,13 @@ def panel_kb(cid):
                 ),
             ],
             [
+                InlineKeyboardButton(
+                    f"↪️ Ilet engel: {'ACIK' if cget(cid,'forward_engel') else 'KAPALI'}",
+                    callback_data=f"p:forward:{cid}",
+                ),
                 InlineKeyboardButton("🚫 Yasak kelimeler", callback_data="p:blocklist"),
+            ],
+            [
                 InlineKeyboardButton("⚠ Uyarilar", callback_data="p:uyari"),
             ],
             [
@@ -2119,7 +2128,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = context.user_data.get("panel_gid")
     if ":" in data:
         par = data.split(":")
-        if len(par) >= 2 and par[0] in ("link", "medya") and par[1].lstrip("-").isdigit():
+        if len(par) >= 2 and par[0] in ("link", "medya", "forward") and par[1].lstrip("-").isdigit():
             cid = int(par[1])
             data = par[0]
             context.user_data["panel_gid"] = cid
@@ -2286,6 +2295,44 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning("panel link edit: %s", e)
             await yenile("Link engel: %s\n" % ("AÇIK" if acik else "KAPALI"))
+        return
+
+    if data == "forward":
+        yeni = not bool(cget(cid, "forward_engel"))
+        cset(cid, "forward_engel", yeni)
+        acik = bool(cget(cid, "forward_engel"))
+        izin = cget(cid, "forward_izin") or []
+        try:
+            await q.answer("Ilet engel AÇIK" if acik else "Ilet engel KAPALI")
+        except Exception:
+            pass
+        txt = (
+            "↪️ <b>Ilet / Forward engeli</b>\n"
+            "Durum: <b>%s</b>\n\n"
+            "AÇIK = baska gruptan iletilen mesajlar silinir.\n"
+            "Bagli duyuru kanali otomatik mesajlari silinmez.\n"
+            "Adminler serbest.\n\n"
+            "Izinli kaynaklar: %s\n"
+            "Ekle: <code>/izinilet @kanal</code> veya <code>/izinilet -100xxx</code>\n"
+            "Sil: <code>/iziniletkaldir @kanal</code>"
+        ) % (
+            "AÇIK — ilet yasak" if acik else "KAPALI — serbest",
+            (", ".join(str(x) for x in izin) if izin else "yok"),
+        )
+        try:
+            await q.edit_message_text(
+                txt,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "Kapat (serbest)" if acik else "Ac (yasakla)",
+                        callback_data="p:forward:%s" % cid,
+                    )],
+                    [InlineKeyboardButton("« Ana panel", callback_data="p:geri")],
+                ]),
+            )
+        except Exception:
+            await yenile("Ilet engel: %s\n" % ("ACIK" if acik else "KAPALI"))
         return
 
     if data == "blocklist":
@@ -4940,6 +4987,300 @@ async def guven_komut(update, context):
     await kisa_cevap(context.bot, chat.id, f"🛡 {_ad(hedef)} güven: <b>{puan}/100</b>")
 
 
+
+async def izinilet_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Izinli ilet kaynak ekle: /izinilet @kanal veya -100id"""
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    if not sahip_mi(user) and not (chat and await admin_mi(chat.id, user, context.bot)):
+        return
+    await komut_sil(msg, context.bot)
+    cid = chat.id if chat and chat.type != ChatType.PRIVATE else _aktif_grup_id()
+    if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
+        cid = chat.id
+    if not cid:
+        await msg.reply_text("Once grupta kullan veya /grup sec.")
+        return
+    args = context.args or []
+    if not args:
+        liste = cget(cid, "forward_izin") or []
+        await msg.reply_text(
+            "Izinli ilet kaynaklari: %s\nKullanim: <code>/izinilet @kanal</code> veya <code>/izinilet -100xxx</code>"
+            % (", ".join(str(x) for x in liste) if liste else "yok"),
+            parse_mode="HTML",
+        )
+        return
+    val = args[0].strip().lstrip("@")
+    if val.startswith("https://t.me/"):
+        val = val.split("t.me/")[-1].split("/")[0]
+    if val.startswith("t.me/"):
+        val = val.split("/", 1)[-1]
+    liste = list(cget(cid, "forward_izin") or [])
+    if val not in liste and str(val) not in [str(x) for x in liste]:
+        liste.append(val)
+        cset(cid, "forward_izin", liste)
+    await msg.reply_text("✅ Ilet izni eklendi: <code>%s</code>\nListe: %s" % (html.escape(val), ", ".join(str(x) for x in liste)), parse_mode="HTML")
+
+
+async def iziniletkaldir_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    if not sahip_mi(user) and not (chat and await admin_mi(chat.id, user, context.bot)):
+        return
+    await komut_sil(msg, context.bot)
+    cid = chat.id if chat and chat.type != ChatType.PRIVATE else _aktif_grup_id()
+    if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
+        cid = chat.id
+    if not cid or not context.args:
+        await msg.reply_text("Kullanim: /iziniletkaldir @kanal")
+        return
+    val = context.args[0].strip().lstrip("@")
+    liste = [x for x in (cget(cid, "forward_izin") or []) if str(x).lower().lstrip("@") != val.lower()]
+    cset(cid, "forward_izin", liste)
+    await msg.reply_text("Kaldirildi. Kalan: %s" % (", ".join(str(x) for x in liste) if liste else "yok"))
+
+
+
+def _tekrar_normalize_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.startswith("@"):
+        return "https://t.me/" + u.lstrip("@")
+    if u.startswith("t.me/"):
+        return "https://" + u
+    if not u.startswith("http://") and not u.startswith("https://"):
+        return "https://" + u
+    return u
+
+
+async def tekrar_gonder_bir(bot, chat_id, item: dict):
+    """Tekrarlayan mesaj + url buton."""
+    text = (item.get("text") or "").strip()
+    if not text:
+        return False
+    kb = None
+    btn = (item.get("btn") or "").strip()
+    url = _tekrar_normalize_url(item.get("url") or "")
+    if btn and url:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(btn[:64], url=url)]])
+    try:
+        await bot.send_message(
+            chat_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=kb,
+            disable_web_page_preview=False,
+        )
+        return True
+    except Exception as e:
+        log.warning("tekrar gonder chat=%s: %s", chat_id, e)
+        return False
+
+
+async def tekrar_periyodik(context: ContextTypes.DEFAULT_TYPE):
+    bot = context.bot
+    now = time.time()
+    for gid_s, conf in list((durum.get("grup") or {}).items()):
+        if not isinstance(conf, dict):
+            continue
+        liste = list(conf.get("tekrar_mesajlar") or [])
+        if not liste:
+            continue
+        degisti = False
+        for it in liste:
+            if not it.get("aktif", True):
+                continue
+            saat = float(it.get("saat") or 1)
+            if saat < 0.1:
+                saat = 0.1
+            last = float(it.get("last") or 0)
+            if now - last < saat * 3600:
+                continue
+            try:
+                ok = await tekrar_gonder_bir(bot, int(gid_s), it)
+                if ok:
+                    it["last"] = now
+                    degisti = True
+            except Exception as e:
+                log.warning("tekrar job: %s", e)
+        if degisti:
+            conf["tekrar_mesajlar"] = liste
+            durum_kaydet()
+
+
+async def tekrarekle_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ /tekrarekle 1 | Mesaj | Buton adi | https://link
+    saat = kac saatte bir
+    """
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    if not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
+        return
+    await komut_sil(msg, context.bot)
+    # sadece botun eklendigi grup/kanal — /grup secimi yok
+    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
+        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+        return
+    cid = chat.id
+    raw = " ".join(context.args or []).strip()
+    if not raw and msg.reply_to_message:
+        # yanitlanan mesaji metin al, args'tan saat|btn|url
+        raw = (msg.reply_to_message.text or msg.reply_to_message.caption or "").strip()
+        if context.args:
+            raw = " ".join(context.args) + " | " + raw
+    if not raw:
+        await msg.reply_text(
+            "Kullanim:\n"
+            "<code>/tekrarekle 1 | Mesaj metni | Buton adi | https://t.me/xxx</code>\n\n"
+            "Ornek:\n"
+            "<code>/tekrarekle 1 | Airdroplara katil | Katil | https://t.me/seninbot</code>\n"
+            "1 = her 1 saatte bir\n"
+            "Liste: /tekrarliste · Sil: /tekrarsil 1 (hepsi bu grupta)",
+            parse_mode="HTML",
+        )
+        return
+    # ayirici |
+    par = [x.strip() for x in raw.split("|")]
+    if len(par) < 4:
+        # belki sadece bosluk: saat metin... zor
+        await msg.reply_text("4 parca lazim: <code>saat | metin | buton | link</code>", parse_mode="HTML")
+        return
+    try:
+        saat = float(par[0].replace(",", "."))
+    except Exception:
+        saat = 1.0
+    if saat < 0.25:
+        saat = 0.25
+    if saat > 168:
+        saat = 168
+    text, btn, url = par[1], par[2], par[3]
+    url = _tekrar_normalize_url(url)
+    if not text or not url:
+        await msg.reply_text("Metin ve link zorunlu.")
+        return
+    liste = list(cget(cid, "tekrar_mesajlar") or [])
+    tid = str(int(time.time()) % 100000)
+    item = {
+        "id": tid,
+        "text": text,
+        "btn": btn or "Git",
+        "url": url,
+        "saat": saat,
+        "last": 0,
+        "aktif": True,
+    }
+    liste.append(item)
+    cset(cid, "tekrar_mesajlar", liste[-20:])
+    # hemen bir kez gonder
+    await tekrar_gonder_bir(context.bot, cid, item)
+    item["last"] = time.time()
+    cset(cid, "tekrar_mesajlar", liste[-20:])
+    await msg.reply_text(
+        "✅ Tekrar mesaj eklendi (id <code>%s</code>)\n"
+        "Her <b>%s</b> saatte bir atilacak.\n"
+        "Buton: %s → %s\n"
+        "Liste: /tekrarliste · Durdur: /tekrardur %s · Sil: /tekrarsil %s"
+        % (tid, saat, html.escape(btn or "Git"), html.escape(url), tid, tid),
+        parse_mode="HTML",
+    )
+
+
+async def tekrarliste_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    if not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
+        return
+    await komut_sil(msg, context.bot)
+    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
+        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+        return
+    cid = chat.id
+    liste = cget(cid, "tekrar_mesajlar") or []
+    if not liste:
+        await msg.reply_text("Tekrar mesaj yok. Ekle: /tekrarekle")
+        return
+    lines = ["📋 <b>Tekrar mesajlar</b>\n"]
+    for it in liste:
+        lines.append(
+            "• id <code>%s</code> | her %s sa | %s | %s\n  %s\n  %s"
+            % (
+                it.get("id"),
+                it.get("saat"),
+                "ACIK" if it.get("aktif", True) else "KAPALI",
+                html.escape((it.get("btn") or "")[:30]),
+                html.escape((it.get("text") or "")[:80]),
+                html.escape((it.get("url") or "")[:60]),
+            )
+        )
+    await msg.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def tekrarsil_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user or not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
+        return
+    await komut_sil(msg, context.bot)
+    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
+        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+        return
+    cid = chat.id
+    if not context.args:
+        await msg.reply_text("Kullanim: /tekrarsil id")
+        return
+    tid = context.args[0].strip()
+    liste = [x for x in (cget(cid, "tekrar_mesajlar") or []) if str(x.get("id")) != tid]
+    cset(cid, "tekrar_mesajlar", liste)
+    await msg.reply_text("Silindi: %s" % tid)
+
+
+async def tekrardur_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not msg or not user:
+        return
+    if not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
+        return
+    await komut_sil(msg, context.bot)
+    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
+        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+        return
+    cid = chat.id
+    if not context.args:
+        await msg.reply_text("Kullanim: /tekrardur id   veya /tekrarac id")
+        return
+    tid = context.args[0].strip()
+    cmd = (msg.text or "").split()[0].lower().lstrip("/")
+    ac = "ac" in cmd or "aç" in cmd
+    liste = list(cget(cid, "tekrar_mesajlar") or [])
+    for it in liste:
+        if str(it.get("id")) == tid:
+            it["aktif"] = ac if "tekrarac" in cmd or cmd.startswith("tekrarac") else (not it.get("aktif", True) if cmd == "tekrardur" else False)
+            if cmd.startswith("tekrardur"):
+                it["aktif"] = False
+            if cmd.startswith("tekrarac"):
+                it["aktif"] = True
+            cset(cid, "tekrar_mesajlar", liste)
+            await msg.reply_text("id %s → %s" % (tid, "ACIK" if it["aktif"] else "KAPALI"))
+            return
+    await msg.reply_text("id bulunamadi")
+
+
 async def yedek_komut(update, context):
     user = update.effective_user
     if not sahip_mi(user):
@@ -6062,11 +6403,23 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if getattr(user, "is_bot", False):
         return
-    # kanal / otomatik iletim / anonim admin — ASLA silme
-    if getattr(msg, "sender_chat", None) is not None:
-        return
+    # kanal / otomatik iletim — bagli kanal serbest
     if getattr(msg, "is_automatic_forward", False):
         return
+    if getattr(msg, "sender_chat", None) is not None:
+        return
+    # baska gruptan ILET
+    if cget(chat.id, "forward_engel") and mesaj_iletildi_mi(msg):
+        try:
+            if not await admin_mi(chat.id, user, context.bot) and not sahip_mi(user):
+                if not ilet_izinli_mi(chat.id, msg):
+                    await msg.delete()
+                    log.info("ilet silindi (oncelik) uid=%s", user.id)
+                    raise ApplicationHandlerStop
+        except ApplicationHandlerStop:
+            raise
+        except Exception as e:
+            log.warning("ilet filtre: %s", e)
     if getattr(msg, "sender_boost_count", None):
         pass
     metin = (msg.text or msg.caption or "") or ""
@@ -6534,6 +6887,59 @@ def mesajda_buton_var(msg) -> bool:
     return bool(rows)
 
 
+
+def mesaj_iletildi_mi(msg) -> bool:
+    """Kullanicinin baska sohbetten ilettigi mesaj mi? (kanal otomatik baglanti haric)."""
+    if not msg:
+        return False
+    if getattr(msg, "is_automatic_forward", False):
+        return False  # bagli kanal — serbest
+    if getattr(msg, "forward_date", None):
+        return True
+    if getattr(msg, "forward_from_chat", None):
+        return True
+    if getattr(msg, "forward_from", None):
+        return True
+    fo = getattr(msg, "forward_origin", None)
+    if fo is not None:
+        return True
+    return False
+
+
+def ilet_kaynak_bilgi(msg):
+    """(chat_id veya None, username veya None, title)."""
+    ch = getattr(msg, "forward_from_chat", None)
+    if ch is not None:
+        return (getattr(ch, "id", None), getattr(ch, "username", None), getattr(ch, "title", None) or "")
+    fo = getattr(msg, "forward_origin", None)
+    if fo is not None:
+        # MessageOriginChannel / Chat
+        chat = getattr(fo, "chat", None) or getattr(fo, "sender_chat", None)
+        if chat is not None:
+            return (getattr(chat, "id", None), getattr(chat, "username", None), getattr(chat, "title", None) or "")
+        # MessageOriginUser — kisi iletimi
+        sender = getattr(fo, "sender_user", None)
+        if sender is not None:
+            return (None, getattr(sender, "username", None), getattr(sender, "full_name", None) or getattr(sender, "first_name", "") or "")
+    return (None, None, "")
+
+
+def ilet_izinli_mi(chat_id, msg) -> bool:
+    """forward_izin listesinde kaynak var mi?"""
+    izin = [str(x).lower().lstrip("@") for x in (cget(chat_id, "forward_izin") or []) if x]
+    if not izin:
+        return False
+    kid, uname, title = ilet_kaynak_bilgi(msg)
+    if kid is not None and str(kid) in izin:
+        return True
+    if uname and uname.lower() in izin:
+        return True
+    # t.me/xxx yazilmissa
+    if uname and any(uname.lower() in z or z.endswith("/" + uname.lower()) for z in izin):
+        return True
+    return False
+
+
 def mesajda_link_var(msg, metin: str) -> bool:
     """Metin, entity, inline buton, via_bot, reklam kalibi."""
     if metin and LINK_RE.search(metin):
@@ -6697,6 +7103,23 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for gid in hedefler:
                 cset(gid, "link_engel", False)
             await msg.reply_text(f"🔗 Link engeli <b>KAPALI</b> — üyeler link paylaşabilir ({len(hedefler)} grup).", parse_mode="HTML")
+            return
+
+        if low0 in ("ilet engel ac", "ilet engel aç", "forward engel ac", "forward engel aç", "ileti yasak", "forward yasak"):
+            hedefler = []
+            ag = _aktif_grup_id()
+            hedefler = [ag] if ag else [int(x) for x in (durum.get("grup") or {}).keys()]
+            for gid in hedefler:
+                cset(gid, "forward_engel", True)
+            await msg.reply_text("↪️ Ilet engeli <b>AÇIK</b> — baska gruptan iletim silinir (%s grup)." % len(hedefler), parse_mode="HTML")
+            return
+        if low0 in ("ilet engel kapat", "forward engel kapat", "ileti serbest", "forward serbest"):
+            hedefler = []
+            ag = _aktif_grup_id()
+            hedefler = [ag] if ag else [int(x) for x in (durum.get("grup") or {}).keys()]
+            for gid in hedefler:
+                cset(gid, "forward_engel", False)
+            await msg.reply_text("↪️ Ilet engeli <b>KAPALI</b> (%s grup)." % len(hedefler), parse_mode="HTML")
             return
     else:
         # grubu her zaman kaydet
@@ -7008,11 +7431,17 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             guven_ekle(cid, user.id, -20)
             return
 
-    # forward engeli (yeni / dusuk guven)
-    if not ozel and cget(cid, "forward_engel") and getattr(msg, "forward_date", None):
-        if guven_get(cid, user.id) < 60:
+    # ILET / FORWARD engeli — baska gruptan iletilen icerik
+    if not ozel and cget(cid, "forward_engel") and mesaj_iletildi_mi(msg):
+        is_adm_f = False
+        try:
+            is_adm_f = await admin_mi(cid, user, context.bot) or sahip_mi(user)
+        except Exception:
+            pass
+        if not is_adm_f and not ilet_izinli_mi(cid, msg):
             try:
                 await msg.delete()
+                log.info("ilet silindi chat=%s user=%s", cid, user.id)
             except Exception:
                 pass
             return
@@ -8128,6 +8557,7 @@ async def baslat(app):
     try:
         if app.job_queue:
             app.job_queue.run_repeating(duyuru_periyodik, interval=600, first=60)
+            app.job_queue.run_repeating(tekrar_periyodik, interval=300, first=90)
             app.job_queue.run_repeating(hatirlat_periyodik, interval=30, first=20)
             # yedek_periyodik KAPALI — gunluk json atilmasin
             # app.job_queue.run_repeating(yedek_periyodik, interval=86400, first=3600)
@@ -8233,6 +8663,13 @@ def main():
     app.add_handler(CommandHandler("davet", davet_komut))
     app.add_handler(CommandHandler("portfoy", portfoy_komut))
     app.add_handler(CommandHandler("guven", guven_komut))
+    app.add_handler(CommandHandler("tekrarekle", tekrarekle_komut))
+    app.add_handler(CommandHandler("tekrarliste", tekrarliste_komut))
+    app.add_handler(CommandHandler("tekrarsil", tekrarsil_komut))
+    app.add_handler(CommandHandler("tekrardur", tekrardur_komut))
+    app.add_handler(CommandHandler("tekrarac", tekrardur_komut))
+    app.add_handler(CommandHandler("izinilet", izinilet_komut))
+    app.add_handler(CommandHandler("iziniletkaldir", iziniletkaldir_komut))
     app.add_handler(CommandHandler("yedek", yedek_komut))
     app.add_handler(CommandHandler("not", not_komut))
     app.add_handler(CommandHandler("mod", mod_komut))
