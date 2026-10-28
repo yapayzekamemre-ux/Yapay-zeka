@@ -253,6 +253,10 @@ SISTEM_TABAN = (
     "- Al-sat emri verme. Kriptoda gerekirse bir kez 'finansal tavsiye değil' de.\n"
     "- Olgun ol, sulu/flörtöz olma. Dalga geçilirse kısa zekice cevap ver.\n"
     "- Bot/model adı yazma. Üyeleri isimleriyle tanı.\n"
+    "- ESPRİ: İsim veya cümleden komik bağlantı kur; cevap bitince sus.\n"
+    "- MATEMATİK: Oran, çarpma, bölme, yüzde sorularında ÖNCE doğru sayıyı hesapla, "
+    "sonra 1 kısa espri ekle. Yanlış sayı verme. Örnek: 10k→5 ise 600k→300.\n"
+    "- Canlı grup sohbeti gibi ol; kuru resmi dil yok.\n"
 )
 
 SISTEM = SISTEM_TABAN  # geriye uyum
@@ -287,6 +291,16 @@ flood_buf = defaultdict(lambda: deque())  # (chat,uid) -> timestamps
 join_times = defaultdict(lambda: deque())  # chat_id -> join timestamps
 pending_captcha = {}  # (chat_id, user_id) -> True
 ceza_oylari = {}  # mid -> {chat, hedef, baslatan, evet:set, hayir:set, bitis}
+_ceza_izle = {}  # (chat_id, uid) -> {until, count, max, ad}
+_CEZA_IZLE_LAF = [
+    "Cezadan yeni çıktın, artislik yapman şaşkınlık verici 😅",
+    "5 dk susup gelince turbo moda mı geçtin? Sakin ol.",
+    "Cezan biteli az oldu, yine aynı film mi?",
+    "Yeni çıktın cezadan, frene bas — grup da sen de rahat eder.",
+    "Az önce susturuldun, şimdi ders almış gibi davranırsan daha iyi olur.",
+    "Cezadan çıkış kutlaması ileri geri konuşmak değil bence.",
+]
+
 _konusma_aktif = {}  # (chat_id, user_id) -> expire_ts
 _fud_buf = defaultdict(lambda: deque())  # chat_id -> timestamps of fud words
 _mesaj_hiz = defaultdict(lambda: deque())  # chat_id -> msg timestamps for slow mode
@@ -1397,6 +1411,63 @@ def _re_sub_yapay(metin: str) -> str:
     return re.sub(r"(?i)\byapay\b", "", metin or "").strip()
 
 
+# Bot cagri kelimeleri (tam kelime eslesme)
+_YAPAY_TETIK = (
+    "yapay", "yapayım", "yapayim", "yapaydım", "yapaydim",
+    "yapayız", "yapayiz", "yapaya", "yapayı", "yapayi",
+    "yapayla", "yapaymı", "yapaymi", "yapaymis", "yapaymış",
+)
+
+
+def basit_oran_hesap(metin: str):
+    """10k hacime 5 gidiyor 600k kaç gider → 300 gibi oran sorulari."""
+    if not metin:
+        return None
+    low = kucult(metin)
+    if not any(x in low for x in ("kaç", "kac", "ne kadar", "kaçtır", "kactir", "gider", "eder", "olur")):
+        return None
+    # sayilari cek: 10k, 600k, 5, 10.5
+    def parse_num(s):
+        s = s.lower().replace(",", ".")
+        carp = 1
+        if s.endswith("k"):
+            carp = 1000
+            s = s[:-1]
+        if s.endswith("m"):
+            carp = 1000000
+            s = s[:-1]
+        try:
+            return float(s) * carp
+        except Exception:
+            return None
+    nums = re.findall(r"\d+(?:[.,]\d+)?[kKmM]?", metin)
+    vals = [parse_num(x) for x in nums]
+    vals = [v for v in vals if v is not None]
+    if len(vals) < 3:
+        return None
+    a, b, c = vals[0], vals[1], vals[2]
+    if a == 0:
+        return None
+    # a hacme b sonuç → c hacme ?
+    sonuc = b * (c / a)
+    if abs(sonuc - round(sonuc)) < 1e-6:
+        sonuc = int(round(sonuc))
+    else:
+        sonuc = round(sonuc, 2)
+    return sonuc
+
+
+def yapay_geciyor(metin: str) -> bool:
+    """yapay + ek cekim/yazimlar (yapayım, yapaydım...)."""
+    if not metin:
+        return False
+    low = kucult(metin)
+    for k in _YAPAY_TETIK:
+        if re.search(r"(?i)\b" + re.escape(k) + r"\b", low):
+            return True
+    return False
+
+
 def _coin_snapshot_top(sembol: str, max_rank: int = 300) -> bool:
     """API cagrisi yok; sadece snapshot rank."""
     q = (sembol or "").strip().lower()
@@ -1962,6 +2033,88 @@ async def ayarlar_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+def _artislik_mi(metin: str) -> bool:
+    low = kucult(metin or "")
+    if not low or len(low) < 2:
+        return False
+    # kufur / kasma / artislik
+    kel = (
+        "amk", "aq", "sg", "siktir", "orospu", "piç", "pic", "gerizekal", "salak",
+        "mal", "aptal", "ezik", "köpek", "kopek", "yarrak", "mk", "mq",
+        "ne bakıyon", "ne bakiyon", "lanet", "kahpe", "haysiyetsiz",
+    )
+    if any(k in low for k in kel):
+        return True
+    if any(k in low for k in ("sus lan", "kes sesini", "kimsin sen", "sen kimsin", "gel buraya")):
+        return True
+    # buyuk harf spam
+    harf = [c for c in (metin or "") if c.isalpha()]
+    if len(harf) >= 8 and sum(1 for c in harf if c.isupper()) / len(harf) > 0.7:
+        return True
+    return False
+
+
+async def ceza_izle_kontrol(update, context) -> bool:
+    """Cezadan yeni cikan: artislik yaparsa etiketleyip laf sok (max 5). Reply ile devam."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not chat or not user:
+        return False
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
+        return False
+    key = (chat.id, user.id)
+    bil = _ceza_izle.get(key)
+    if not bil:
+        return False
+    now = time.time()
+    if now > float(bil.get("until") or 0):
+        _ceza_izle.pop(key, None)
+        return False
+    metin = (msg.text or msg.caption or "").strip()
+    if not metin:
+        return False
+    # botun mesajina yanit → kisa sohbet surdur (1-2 cumle)
+    reply_bot = (
+        msg.reply_to_message
+        and msg.reply_to_message.from_user
+        and msg.reply_to_message.from_user.id == context.bot.id
+    )
+    if reply_bot and bil.get("count", 0) < int(bil.get("max") or 5):
+        bil["count"] = int(bil.get("count") or 0) + 1
+        try:
+            await msg.reply_text(
+                "Anladım — sakin devam edelim, grup da rahat etsin."
+                if not _artislik_mi(metin)
+                else "Cezadan yeni çıktın; bu tonla devam edersen yine aynı yerde buluşuruz."
+            )
+        except Exception:
+            pass
+        if bil["count"] >= int(bil.get("max") or 5):
+            _ceza_izle.pop(key, None)
+        return True
+    if not _artislik_mi(metin):
+        return False
+    if int(bil.get("count") or 0) >= int(bil.get("max") or 5):
+        _ceza_izle.pop(key, None)
+        return False
+    bil["count"] = int(bil.get("count") or 0) + 1
+    import random
+    laf = random.choice(_CEZA_IZLE_LAF)
+    mention = f'<a href="tg://user?id={user.id}">{html.escape(user.first_name or "Üye")}</a>'
+    try:
+        await msg.reply_text(f"{mention} {laf}", parse_mode="HTML")
+    except Exception:
+        try:
+            await msg.reply_text(laf)
+        except Exception:
+            pass
+    if bil["count"] >= int(bil.get("max") or 5):
+        _ceza_izle.pop(key, None)
+    return True
+
+
 async def ceza_baslat(update, context, hedef, baslatan):
     """Yapay ceza oylamasi — 5 dk mute, min 6 evet."""
     chat = update.effective_chat
@@ -2051,13 +2204,23 @@ async def ceza_oy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = data["chat"]
         ad = html.escape(data.get("hedef_ad") or str(hedef_id))
         try:
-            until = datetime.now(timezone.utc) + timedelta(minutes=5)
+            dk_ceza = int(cget(chat_id, "oy_mute_dk") or 5)
+            until = datetime.now(timezone.utc) + timedelta(minutes=dk_ceza)
             await context.bot.restrict_chat_member(
                 chat_id, hedef_id, permissions=MUTE_PERMS, until_date=until
             )
+            cez = dict(cget(chat_id, "gecici_ceza") or {})
+            cez[str(hedef_id)] = {
+                "tip": "mute",
+                "bitis": time.time() + dk_ceza * 60,
+                "uyari_gonderildi": False,
+                "sebep": "grup oylaması",
+                "ad": data.get("hedef_ad") or str(hedef_id),
+            }
+            cset(chat_id, "gecici_ceza", cez)
             txt = (
                 f"✅ Ceza onaylandı\n"
-                f"🔇 {ad} → <b>5 dk</b> mesaj atamaz\n"
+                f"🔇 {ad} → <b>{dk_ceza} dk</b> mesaj atamaz\n"
                 f"Oy: ✅{ne} ❌{nh}"
             )
         except Exception as e:
@@ -2068,7 +2231,7 @@ async def ceza_oy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         asyncio.create_task(sil_sonra(context.bot, chat_id, mid, 8))
         ceza_oylari.pop(mid, None)
-        await log_gonder(context.bot, chat_id, f"⚖️ Ceza oylaması: {ad} 5dk mute (✅{ne})")
+        await log_gonder(context.bot, chat_id, f"⚖️ Ceza oylaması: {ad} mute (✅{ne})")
         return
     # butonlari guncelle
     try:
@@ -3502,6 +3665,7 @@ async def mute_komut(update, context):
             "bitis": time.time() + dk * 60,
             "uyari_gonderildi": False,
             "sebep": sebep,
+            "ad": hedef.full_name or str(hedef.id),
         }
         cset(chat.id, "gecici_ceza", cez)
         _son_islem[str(chat.id)] = {"tip": "mute", "hedef_id": hedef.id, "ts": time.time()}
@@ -6128,7 +6292,7 @@ async def ekonomi_takvim_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def gecici_ceza_job(context: ContextTypes.DEFAULT_TYPE):
-    """Suresi biten mute kayitlarini temizle, isteğe uyari."""
+    """Suresi biten mute: gruba duyur + 5 dk izlemeye al."""
     now = time.time()
     for gid_s, conf in list((durum.get("grup") or {}).items()):
         if not isinstance(conf, dict):
@@ -6140,18 +6304,28 @@ async def gecici_ceza_job(context: ContextTypes.DEFAULT_TYPE):
             if bitis and now >= bitis:
                 cezalar.pop(uid, None)
                 degisti = True
-                if not (bil or {}).get("uyari_gonderildi"):
-                    try:
-                        await context.bot.send_message(
-                            int(gid_s),
-                            f"⏳ <a href=\"tg://user?id={uid}\">Üye</a> susturması bitti. Kurallara uy.",
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        pass
+                ad = html.escape((bil or {}).get("ad") or "Üye")
+                try:
+                    await context.bot.send_message(
+                        int(gid_s),
+                        f"✅ <a href='tg://user?id={uid}'>{ad}</a> cezası bitti — tekrar yazabilir.",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                try:
+                    _ceza_izle[(int(gid_s), int(uid))] = {
+                        "until": now + 300,
+                        "count": 0,
+                        "max": 5,
+                        "ad": (bil or {}).get("ad") or "",
+                    }
+                except Exception:
+                    pass
         if degisti:
             conf["gecici_ceza"] = cezalar
             durum_kaydet()
+
 
 
 def _cuzdan_eth(addr: str):
@@ -7256,7 +7430,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         # bakim modu — AI susar ama spam filtresi yukarda calisti
         if cget(cid, "bakim") and not sahip_mi(user):
-            if metin and ("yapay" in kucult(metin) or ozel):
+            if metin and (yapay_geciyor(metin) or ozel):
                 try:
                     await msg.reply_text(cget(cid, "bakim_metin") or "🔧 Bakımdayım, birazdan dönerim.")
                 except Exception:
@@ -7437,7 +7611,11 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 return
 
-        uye_kaydi(cid, user)
+        _uy = uye_kaydi(cid, user)
+        try:
+            await kademe_tebrik(context.bot, cid, user, _uy)
+        except Exception:
+            pass
         # mesaj arsivi (arama icin)
         if metin and len(metin) < 500:
             _mesaj_arsiv[cid].append({
@@ -7627,7 +7805,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # yapay ceza / susturalim oylamasi
     if not ozel and metin:
         low_c = kucult(metin)
-        if ("yapay" in low_c and "ceza" in low_c) or "susturalım" in low_c or "susturalim" in low_c or "mute oyla" in low_c:
+        if (yapay_geciyor(metin) and "ceza" in low_c) or "susturalım" in low_c or "susturalim" in low_c or "mute oyla" in low_c:
             hedef = None
             if msg.reply_to_message and msg.reply_to_message.from_user:
                 hedef = msg.reply_to_message.from_user
@@ -7678,9 +7856,9 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cget(cid, "privacy_ai"):
             cagrildi = bool(reply_bot or mention_bot or cagrildi)
         else:
-            if "yapay" in low or reply_bot or mention_bot:
+            if yapay_geciyor(metin) or reply_bot or mention_bot:
                 cagrildi = True
-        if cagrildi and ("yapay" in low or reply_bot or mention_bot):
+        if cagrildi and (yapay_geciyor(metin) or reply_bot or mention_bot):
             sn = int(cget(cid, "konusma_sn") or 90)
             _konusma_aktif[ck] = time.time() + max(30, min(sn, 300))
 
@@ -7704,7 +7882,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Fiyat: niyet veya top-300
     fiyat_ok = False
     adaylar = [metin]
-    if "yapay" in low:
+    if yapay_geciyor(metin):
         adaylar.append(_re_sub_yapay(metin))
     for aday in adaylar:
         if not aday:
@@ -8279,17 +8457,21 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if kucult(soru) in ("profilim", "profil", "profilim nedir", "kartım", "kartim"):
         uy = (uyeler.get(str(cid)) or {}).get(str(user.id)) or {}
         mesaj_s = int(uy.get("mesaj") or 0)
-        seviye = 1 + mesaj_s // 50
+        lakap, min_m, sonraki = mesaj_kademe(mesaj_s)
         puan = guven_get(cid, user.id)
         gun = durum.setdefault("gunluk", {}).setdefault(str(cid), {}).get(str(user.id), {})
         seri = int(gun.get("seri") or 0)
         rz = (cget(cid, "rozetler") or {}).get(str(user.id))
         rozet_satir = f"\n• Rozet: <b>{html.escape(rz)}</b>" if rz else ""
-        lakap = lakap_hesapla(cid, user.id)
+        if sonraki:
+            kalan = max(0, sonraki - mesaj_s)
+            ilerleme = f"Sonraki kademe için {kalan} mesaj"
+        else:
+            ilerleme = "En üst kademe"
         await msg.reply_text(
             f"🪪 <b>Profil — {html.escape(user.first_name or 'Üye')}</b>\n"
-            f"• Lakap: <b>{html.escape(lakap)}</b>\n"
-            f"• Seviye: <b>{seviye}</b> ({mesaj_s} mesaj)\n"
+            f"• Kademe: <b>{html.escape(lakap)}</b>\n"
+            f"• Mesaj: <b>{mesaj_s}</b> — {ilerleme}\n"
             f"• Güven: <b>{puan}/100</b>\n"
             f"• Günlük seri: <b>{seri}</b> gün{rozet_satir}\n"
             f"• ID: <code>{user.id}</code>",
@@ -8571,6 +8753,18 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Bu grubun konuşma tarzına uy (örnekler): "
                 + " || ".join(ornek[-8:])
             )
+    try:
+        ad_u = (user.first_name or "")[:40]
+        if ad_u:
+            ek_parts.append("Konusan üye adı: " + ad_u)
+        low_m = kucult(metin or "")
+        if "yapay" in low_m and not re.search(r"(?i)\byapay\b", metin or ""):
+            ek_parts.append(
+                "Üye bilerek çağırmadı; cümlede yanlışlıkla yapay geçti. "
+                "1 cümle muzip takıl (isminden espri), kaba olma."
+            )
+    except Exception:
+        pass
     ek = "\n".join(ek_parts)
     if dil_ipucu:
         ek = (ek + "\n" + dil_ipucu).strip()
@@ -8584,7 +8778,29 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async def _ai_cevap_arka():
         try:
-            yanit = await asyncio.to_thread(sor, hist, ek, zor, duygu, soru, cid)
+            yanit = None
+            # RESIM OKUMA — foto varsa Gemini vision
+            try:
+                foto = await mesajdan_foto_indir(context.bot, msg)
+            except Exception as e:
+                log.warning("foto al: %s", e)
+                foto = None
+            if foto:
+                img_bytes, mime = foto
+                prompt = soru if soru and kucult(soru) not in ("yapay", "bot", "ai") else (
+                    "Bu görseli incele. Ne gösteriyor, önemli rakam/yazılar neler? "
+                    "Kısa, samimi ve mantıklı Türkçe yorum yap."
+                )
+                sist = (ek + "\n" + SISTEM_TABAN) if ek else SISTEM_TABAN
+                yanit = await asyncio.to_thread(gemini_gorsel_sor, prompt, img_bytes, mime, sist)
+                if not yanit:
+                    yanit = await asyncio.to_thread(
+                        sor, hist,
+                        (ek or "") + "\nKullanici resim gonderdi ama okuyamadim; metne gore cevap ver.",
+                        zor, duygu, soru or "bu resim ne", cid,
+                    )
+            if not yanit:
+                yanit = await asyncio.to_thread(sor, hist, ek, zor, duygu, soru, cid)
             if not yanit or "Forbidden" in (yanit[:30] if yanit else ""):
                 yanit = "Anlamadım, tekrar söyler misin?"
             max_len = 500 if zor else 280
@@ -8630,6 +8846,22 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("🔆 Biraz yoğunum, tekrar dener misin?")
             except Exception:
                 pass
+
+    # basit matematik oran — dogru sayi + kisa espri
+    try:
+        oran_s = basit_oran_hesap(soru or metin or "")
+        if oran_s is not None and cagrildi:
+            import random
+            espriler = [
+                f"Cevap <b>{oran_s}</b>. Cüzdana şimdiden bir bardak soğuk su ısmarla.",
+                f"Matematik can çekişiyor ama sonuç <b>{oran_s}</b>.",
+                f"<b>{oran_s}</b> — hesap makinesi de aynı diyor, inanmazsan bir daha say.",
+                f"Oran net: <b>{oran_s}</b>. Hayırlı olsun, cüzdan yorulmasın.",
+            ]
+            await msg.reply_text(random.choice(espriler), parse_mode="HTML")
+            return
+    except Exception as e:
+        log.warning("oran hesap: %s", e)
 
     asyncio.create_task(_ai_cevap_arka())
 
