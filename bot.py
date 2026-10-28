@@ -4307,7 +4307,7 @@ async def duyuruekle_komut(update, context):
         parts = (update.effective_message.text or "").split(maxsplit=1)
         metin = parts[1].strip() if len(parts) > 1 else ""
     if not metin:
-        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/duyuruekle metin...</code>")
+        await wizard_baslat(update, context, "duyuru", chat.id, "📢 Duyuru metnini yaz:")
         return
     posts = list(cget(chat.id, "duyuru_posts") or [])
     bugun = datetime.now(TR).strftime("%Y-%m-%d")
@@ -4819,7 +4819,7 @@ async def ipucuekle_komut(update, context):
         return
     _, chat, _ = g
     if not context.args:
-        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/ipucuekle metin...</code>")
+        await wizard_baslat(update, context, "ipucu", chat.id, "💡 İpucu metnini yaz:")
         return
     metin = " ".join(context.args)
     lst = list(cget(chat.id, "ipucu_liste") or [])
@@ -5116,9 +5116,7 @@ async def tekrar_periyodik(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def tekrarekle_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ /tekrarekle 1 | Mesaj | Buton adi | https://link
-    saat = kac saatte bir
-    """
+    """Adim adim: saat → metin → buton → link → (baska buton?)."""
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
@@ -5127,72 +5125,174 @@ async def tekrarekle_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sahip_mi(user) and not (chat and chat.type != ChatType.PRIVATE and await admin_mi(chat.id, user, context.bot)):
         return
     await komut_sil(msg, context.bot)
-    # sadece botun eklendigi grup/kanal — /grup secimi yok
     if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL, "group", "supergroup", "channel"):
-        await msg.reply_text("Bu komutu botun oldugu grupta yaz.")
+        await msg.reply_text("Bu komutu botun oldugu <b>grupta</b> yaz.", parse_mode="HTML")
         return
-    cid = chat.id
+    # hizli yol: arguman varsa eski format
     raw = " ".join(context.args or []).strip()
-    if not raw and msg.reply_to_message:
-        # yanitlanan mesaji metin al, args'tan saat|btn|url
-        raw = (msg.reply_to_message.text or msg.reply_to_message.caption or "").strip()
-        if context.args:
-            raw = " ".join(context.args) + " | " + raw
-    if not raw:
+    if raw and "|" in raw:
+        # eski | formati — asagidaki parse'a dusmesin, basitce kullaniciyi yonlendir
         await msg.reply_text(
-            "Kullanim:\n"
-            "<code>/tekrarekle 1 | Mesaj metni | Buton adi | https://t.me/xxx</code>\n\n"
-            "Ornek:\n"
-            "<code>/tekrarekle 1 | Airdroplara katil | Katil | https://t.me/seninbot</code>\n"
-            "1 = her 1 saatte bir\n"
-            "Liste: /tekrarliste · Sil: /tekrarsil 1 (hepsi bu grupta)",
+            "Kolay yol icin sadece <code>/tekrarekle</code> yaz, adim adim sorayim.\n"
+            "Hizli format: <code>/tekrarekle 1 | metin | buton | link</code>",
             parse_mode="HTML",
         )
+        # yine de | ile devam etmek isterse asagidaki wizard-disi islem
+        context.user_data["tekrar_hizli"] = raw
+        context.user_data["tekrar_wizard"] = {"adim": "hizli", "cid": chat.id}
+        await _tekrar_hizli_kaydet(update, context, chat.id, raw)
         return
-    # ayirici |
+    context.user_data["tekrar_wizard"] = {
+        "adim": "saat",
+        "cid": chat.id,
+        "buttons": [],
+    }
+    await msg.reply_text(
+        "🔁 <b>Tekrar mesaj kurulum</b>\n\n"
+        "1️⃣ Kac <b>saatte bir</b> atilsin?\n"
+        "Ornek: <code>1</code> veya <code>0.5</code> (30 dk)\n\n"
+        "Iptal: <code>iptal</code>",
+        parse_mode="HTML",
+    )
+
+
+async def _tekrar_hizli_kaydet(update, context, cid, raw: str):
     par = [x.strip() for x in raw.split("|")]
     if len(par) < 4:
-        # belki sadece bosluk: saat metin... zor
-        await msg.reply_text("4 parca lazim: <code>saat | metin | buton | link</code>", parse_mode="HTML")
+        await update.effective_message.reply_text("Eksik. Kolay yol: sadece /tekrarekle yaz.")
         return
     try:
         saat = float(par[0].replace(",", "."))
     except Exception:
         saat = 1.0
-    if saat < 0.25:
-        saat = 0.25
-    if saat > 168:
-        saat = 168
-    text, btn, url = par[1], par[2], par[3]
-    url = _tekrar_normalize_url(url)
-    if not text or not url:
-        await msg.reply_text("Metin ve link zorunlu.")
+    saat = max(0.25, min(168.0, saat))
+    text = par[1]
+    buttons = []
+    rest = par[2:]
+    i = 0
+    while i + 1 < len(rest):
+        bt, bu = rest[i].strip(), _tekrar_normalize_url(rest[i + 1])
+        if bt and bu:
+            buttons.append({"text": bt[:64], "url": bu})
+        i += 2
+    if not text or not buttons:
+        await update.effective_message.reply_text("Metin ve buton lazim.")
         return
+    await _tekrar_kaydet_bitir(context.bot, update.effective_message, cid, saat, text, buttons)
+
+
+async def _tekrar_kaydet_bitir(bot, msg, cid, saat, text, buttons):
     liste = list(cget(cid, "tekrar_mesajlar") or [])
     tid = str(int(time.time()) % 100000)
     item = {
         "id": tid,
         "text": text,
-        "btn": btn or "Git",
-        "url": url,
+        "btn": buttons[0]["text"],
+        "url": buttons[0]["url"],
+        "buttons": buttons,
         "saat": saat,
         "last": 0,
         "aktif": True,
     }
     liste.append(item)
     cset(cid, "tekrar_mesajlar", liste[-20:])
-    # hemen bir kez gonder
-    await tekrar_gonder_bir(context.bot, cid, item)
+    await tekrar_gonder_bir(bot, cid, item)
     item["last"] = time.time()
     cset(cid, "tekrar_mesajlar", liste[-20:])
+    btn_ozet = " · ".join(html.escape(b["text"]) for b in buttons)
     await msg.reply_text(
-        "✅ Tekrar mesaj eklendi (id <code>%s</code>)\n"
-        "Her <b>%s</b> saatte bir atilacak.\n"
-        "Buton: %s → %s\n"
-        "Liste: /tekrarliste · Durdur: /tekrardur %s · Sil: /tekrarsil %s"
-        % (tid, saat, html.escape(btn or "Git"), html.escape(url), tid, tid),
+        "✅ Kaydedildi (id <code>%s</code>)\n"
+        "Her <b>%s</b> saatte · %s buton: %s\n"
+        "/tekrarliste · /tekrardur %s · /tekrarsil %s"
+        % (tid, saat, len(buttons), btn_ozet, tid, tid),
         parse_mode="HTML",
     )
+
+
+async def tekrar_wizard_devam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Wizard aktifse True (mesaj islenmis)."""
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    w = (context.user_data or {}).get("tekrar_wizard")
+    if not w or not msg or not user or not chat:
+        return False
+    if chat.id != w.get("cid"):
+        return False
+    metin = (msg.text or msg.caption or "").strip()
+    if not metin:
+        return False
+    low = kucult(metin)
+    if low in ("iptal", "vazgec", "iptal et"):
+        context.user_data.pop("tekrar_wizard", None)
+        await msg.reply_text("Iptal edildi.")
+        return True
+    adim = w.get("adim")
+    if adim == "saat":
+        try:
+            saat = float(metin.replace(",", ".").replace("saat", "").strip())
+        except Exception:
+            await msg.reply_text("Sayi yaz. Ornek: <code>1</code>", parse_mode="HTML")
+            return True
+        saat = max(0.25, min(168.0, saat))
+        w["saat"] = saat
+        w["adim"] = "metin"
+        context.user_data["tekrar_wizard"] = w
+        await msg.reply_text(
+            "2️⃣ <b>Mesaj metnini</b> yaz (grupta gorunecek yazi):\n\nIptal: <code>iptal</code>",
+            parse_mode="HTML",
+        )
+        return True
+    if adim == "metin":
+        w["text"] = metin
+        w["adim"] = "btn"
+        context.user_data["tekrar_wizard"] = w
+        await msg.reply_text(
+            "3️⃣ <b>Buton yazisi</b> ne olsun?\nOrnek: <code>Katil</code> / <code>Telegram</code>\n\nIptal: <code>iptal</code>",
+            parse_mode="HTML",
+        )
+        return True
+    if adim == "btn":
+        w["btn_tmp"] = metin[:64]
+        w["adim"] = "url"
+        context.user_data["tekrar_wizard"] = w
+        await msg.reply_text(
+            "4️⃣ Bu butonun <b>linki</b>?\nOrnek: <code>https://t.me/kanal</code>\n\nIptal: <code>iptal</code>",
+            parse_mode="HTML",
+        )
+        return True
+    if adim == "url":
+        url = _tekrar_normalize_url(metin)
+        if not url.startswith("http"):
+            await msg.reply_text("Gecerli link yaz. Ornek: https://t.me/xxx")
+            return True
+        buttons = list(w.get("buttons") or [])
+        buttons.append({"text": w.get("btn_tmp") or "Git", "url": url})
+        w["buttons"] = buttons
+        w["adim"] = "daha"
+        context.user_data["tekrar_wizard"] = w
+        await msg.reply_text(
+            f"✅ Buton eklendi ({len(buttons)}. buton).\n\n"
+            "5️⃣ Baska buton eklemek ister misin?\n"
+            "<b>evet</b> veya <b>hayir</b>",
+            parse_mode="HTML",
+        )
+        return True
+    if adim == "daha":
+        if low in ("evet", "e", "yes", "y", "başka", "baska", "+"):
+            w["adim"] = "btn"
+            context.user_data["tekrar_wizard"] = w
+            await msg.reply_text("Yeni <b>buton yazisini</b> yaz:", parse_mode="HTML")
+            return True
+        if low in ("hayir", "h", "no", "n", "tamam", "bitir", "ok"):
+            context.user_data.pop("tekrar_wizard", None)
+            await _tekrar_kaydet_bitir(
+                context.bot, msg, w["cid"], w.get("saat", 1), w.get("text", ""), w.get("buttons") or []
+            )
+            return True
+        await msg.reply_text("<b>evet</b> veya <b>hayir</b> yaz.", parse_mode="HTML")
+        return True
+    return False
 
 
 async def tekrarliste_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7013,6 +7113,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = chat.id
 
     # --- KILIT ---
+    # tekrar mesaj wizard (adim adim)
+    try:
+        if await tekrar_wizard_devam(update, context):
+            return
+    except Exception as e:
+        log.warning("tekrar wizard: %s", e)
+
     if ozel:
         if not sahip_mi(user):
             if metin:
