@@ -1042,6 +1042,74 @@ def gemini_sor(m, sistem):
     return None
 
 
+
+def gemini_gorsel_sor(prompt: str, image_bytes: bytes, mime: str = "image/jpeg", sistem: str = None):
+    """Resim + metin → Gemini vision."""
+    if not gem or not image_bytes:
+        return None
+    sistem = sistem or SISTEM_TABAN
+    prompt = (prompt or "Bu görseli kısa ve net açıkla. Türkçe cevap ver.").strip()
+    for model in (
+        "gemini-2.5-flash",
+        "gemini-flash-latest",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ):
+        try:
+            r = gem.models.generate_content(
+                model=model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_bytes(data=image_bytes, mime_type=mime),
+                            types.Part.from_text(text=prompt),
+                        ],
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=str(sistem)
+                    + "\nKullanıcı resim gönderdi. Resmi gerçekten incele, uydurma. Kısa ve samimi Türkçe cevap ver.",
+                    temperature=0.6,
+                    max_output_tokens=500,
+                ),
+            )
+            out = (getattr(r, "text", None) or "").strip()
+            if out:
+                return out
+        except Exception as e:
+            log.warning("Gemini vision %s: %s", model, e)
+    return None
+
+
+async def mesajdan_foto_indir(bot, msg):
+    """Mesaj veya yanitlanan fotoyu indir. (bytes, mime) veya None."""
+    if not msg:
+        return None
+    hedef = msg
+    if not getattr(msg, "photo", None) and msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
+        hedef = msg.reply_to_message
+    if not getattr(hedef, "photo", None):
+        doc = getattr(hedef, "document", None)
+        if doc and (getattr(doc, "mime_type", None) or "").startswith("image/"):
+            try:
+                f = await bot.get_file(doc.file_id)
+                raw = bytes(await f.download_as_bytearray())
+                return raw, doc.mime_type or "image/jpeg"
+            except Exception as e:
+                log.warning("doc foto: %s", e)
+                return None
+        return None
+    try:
+        ph = hedef.photo[-1]
+        f = await bot.get_file(ph.file_id)
+        raw = bytes(await f.download_as_bytearray())
+        return raw, "image/jpeg"
+    except Exception as e:
+        log.warning("foto indir: %s", e)
+        return None
+
+
 def deepseek_sor(m, sistem):
     if not DEEPSEEK_KEY:
         return None
@@ -5373,6 +5441,101 @@ async def _tekrar_kaydet_bitir(bot, msg, cid, saat, text, buttons):
     )
 
 
+
+async def wizard_baslat(update, context, tip: str, cid: int, ilk_soru: str, veri=None):
+    context.user_data["wizard"] = {"tip": tip, "adim": 1, "cid": cid, "veri": veri or {}}
+    await update.effective_message.reply_text(
+        ilk_soru + "\n\nIptal: <code>iptal</code>", parse_mode="HTML"
+    )
+
+
+async def wizard_devam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Genel adim adim sihirbaz. True = mesaj tuketildi."""
+    try:
+        if await tekrar_wizard_devam(update, context):
+            return True
+    except Exception as e:
+        log.warning("tekrar wizard: %s", e)
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    w = (context.user_data or {}).get("wizard")
+    if not w or not msg or not user or not chat:
+        return False
+    if chat.id != w.get("cid"):
+        return False
+    metin = (msg.text or msg.caption or "").strip()
+    if not metin:
+        return False
+    low = kucult(metin)
+    if low in ("iptal", "vazgec", "iptal et"):
+        context.user_data.pop("wizard", None)
+        await msg.reply_text("Iptal.")
+        return True
+    tip = w.get("tip")
+    cid = w["cid"]
+
+    if tip == "welcome":
+        cset(cid, "hosgeldin_metin", metin)
+        cset(cid, "hosgeldin", True)
+        context.user_data.pop("wizard", None)
+        await msg.reply_text(
+            "✅ Karsilama kaydedildi.\nOnizleme: "
+            + metin.replace("{ad}", user.first_name or "Uye")[:200]
+        )
+        return True
+    if tip == "block":
+        bl = list(cget(cid, "blocklist") or [])
+        kel = metin.strip().lower()
+        if kel and kel not in bl:
+            bl.append(kel)
+            cset(cid, "blocklist", bl[-80:])
+        context.user_data.pop("wizard", None)
+        await msg.reply_text("✅ Yasak kelime: <code>%s</code>" % html.escape(kel), parse_mode="HTML")
+        return True
+    if tip == "izinlink":
+        doms = metin.replace(",", " ").split()
+        cur = list(cget(cid, "link_izin") or [])
+        for d in doms:
+            d = d.strip().lower().replace("https://", "").replace("http://", "").strip("/")
+            if d and d not in cur:
+                cur.append(d)
+        cset(cid, "link_izin", cur)
+        context.user_data.pop("wizard", None)
+        await msg.reply_text("✅ Izinli linkler: %s" % (", ".join(cur) if cur else "yok"))
+        return True
+    if tip == "izinilet":
+        val = metin.strip().lstrip("@")
+        if val.startswith("https://t.me/"):
+            val = val.split("t.me/")[-1].split("/")[0]
+        liste = list(cget(cid, "forward_izin") or [])
+        if val and val not in [str(x) for x in liste]:
+            liste.append(val)
+            cset(cid, "forward_izin", liste)
+        context.user_data.pop("wizard", None)
+        await msg.reply_text(
+            "✅ Ilet izni: <code>%s</code>" % html.escape(val), parse_mode="HTML"
+        )
+        return True
+    if tip == "ipucu":
+        liste = list(cget(cid, "ipucu_liste") or [])
+        liste.append(metin)
+        cset(cid, "ipucu_liste", liste[-50:])
+        cset(cid, "ipucu_aktif", True)
+        context.user_data.pop("wizard", None)
+        await msg.reply_text("✅ Ipucu eklendi. Toplam: %s" % len(liste))
+        return True
+    if tip == "duyuru":
+        posts = list(cget(cid, "duyuru_posts") or [])
+        posts.append({"title": metin[:80], "text": metin, "link": "", "ts": time.time()})
+        cset(cid, "duyuru_posts", posts[-40:])
+        cset(cid, "duyuru_aktif", True)
+        context.user_data.pop("wizard", None)
+        await msg.reply_text("✅ Duyuru metni eklendi.")
+        return True
+    return False
+
+
 async def tekrar_wizard_devam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Wizard aktifse True (mesaj islenmis)."""
     msg = update.effective_message
@@ -7287,12 +7450,12 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = chat.id
 
     # --- KILIT ---
-    # tekrar mesaj wizard (adim adim)
+    # adim adim sihirbazlar
     try:
-        if await tekrar_wizard_devam(update, context):
+        if await wizard_devam(update, context):
             return
     except Exception as e:
-        log.warning("tekrar wizard: %s", e)
+        log.warning("wizard: %s", e)
 
     if ozel:
         if not sahip_mi(user):
