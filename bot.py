@@ -3519,6 +3519,41 @@ class _ProxyChat:
         self.title = ""
 
 
+
+def gercek_grup_listesi():
+    """Sadece gercek grup/supergroup (id < 0). Ozel sohbet / kullanici id elenir."""
+    out = []
+    temizle = []
+    for gid, conf in list((durum.get("grup") or {}).items()):
+        try:
+            i = int(gid)
+        except Exception:
+            temizle.append(gid)
+            continue
+        if i >= 0:
+            # kullanici id veya ozel chat — grup degil
+            temizle.append(gid)
+            continue
+        out.append((i, conf if isinstance(conf, dict) else {}))
+    for gid in temizle:
+        try:
+            (durum.get("grup") or {}).pop(str(gid), None)
+            (durum.get("grup") or {}).pop(gid, None)
+        except Exception:
+            pass
+    if temizle:
+        # aktif_grup yanlis ise sifirla
+        try:
+            ag = int(durum.get("aktif_grup") or 0)
+            if ag >= 0:
+                durum["aktif_grup"] = None
+        except Exception:
+            pass
+        durum_kaydet()
+    out.sort(key=lambda x: x[0])
+    return out
+
+
 def _aktif_grup_id():
     try:
         return int(durum.get("aktif_grup") or 0) or None
@@ -6353,49 +6388,66 @@ async def gruplar_komut(update, context):
     user = update.effective_user
     if not sahip_mi(user):
         return
-    gruplar = durum.get("grup") or {}
-    if not gruplar:
-        await update.effective_message.reply_text("Kayıtlı grup yok. Botu gruba ekle, bir kez mesaj atsın.")
+    liste = gercek_grup_listesi()
+    if not liste:
+        await update.effective_message.reply_text(
+            "Kayıtlı <b>grup</b> yok.\nBotu gruba ekle, grupta bir mesaj atsın, sonra tekrar /gruplar.",
+            parse_mode="HTML",
+        )
         return
     aktif = _aktif_grup_id()
-    lines = ["📋 <b>Grupların</b> (özelden yönetim)\n"]
-    for i, gid in enumerate(list(gruplar.keys())[:40], 1):
-        conf = gruplar.get(gid) or {}
+    lines = ["📋 <b>Grupların</b> (özelden yönetim)", ""]
+    for i, (gid, conf) in enumerate(liste[:40], 1):
         title = conf.get("title") or conf.get("baslik") or ""
-        mark = " ✅" if aktif and str(gid) == str(aktif) else ""
+        mark = " ✅" if aktif and int(aktif) == int(gid) else ""
         lines.append(f"{i}. <code>{gid}</code> {html.escape(str(title)[:40])}{mark}")
-    lines.append("\nSeç: <code>/grup 1</code> veya <code>/grup -100...</code>")
-    lines.append("Sonra: <code>/ban @user</code> · <code>/mute @user 30</code> · <code>/kick</code> …")
+    lines.append("")
+    lines.append("Seç: <code>/grup 1</code> veya <code>/grup -100...</code>")
+    lines.append("Bu gruptaysan: <code>/grup burasi</code>")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+
 
 
 async def grup_sec_komut(update, context):
     """Sahip: aktif yonetim grubunu sec."""
     user = update.effective_user
+    chat = update.effective_chat
     if not sahip_mi(user):
         return
     args = context.args or []
-    if not args:
+    # /grup burasi veya grup icinde /grup
+    if (not args and chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup")) or (
+        args and kucult(args[0]) in ("burasi", "burada", "this", "bu")
+    ):
+        if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
+            sec = chat.id
+        else:
+            await update.effective_message.reply_text("Bu komutu grupta yaz veya /gruplar ile sec.")
+            return
+    elif not args:
         a = _aktif_grup_id()
         await update.effective_message.reply_text(
-            f"Aktif grup: <code>{a or 'yok'}</code>\n<code>/gruplar</code> · <code>/grup 1</code>",
+            f"Aktif grup: <code>{a or 'yok'}</code>\n<code>/gruplar</code> · <code>/grup 1</code> · grupta <code>/grup burasi</code>",
             parse_mode="HTML",
         )
         return
-    key = args[0].strip()
-    gruplar = list((durum.get("grup") or {}).keys())
-    sec = None
-    if key.isdigit() and 1 <= int(key) <= len(gruplar):
-        sec = int(gruplar[int(key) - 1])
     else:
-        try:
-            sec = int(key)
-        except Exception:
-            sec = None
-    if sec is None:
-        await update.effective_message.reply_text("Geçersiz. <code>/gruplar</code> ile bak.", parse_mode="HTML")
-        return
-    # kaydet + title dene
+        key = args[0].strip()
+        liste = gercek_grup_listesi()
+        sec = None
+        if key.isdigit() and 1 <= int(key) <= len(liste):
+            sec = liste[int(key) - 1][0]
+        else:
+            try:
+                sec = int(key)
+            except Exception:
+                sec = None
+        if sec is None or sec >= 0:
+            await update.effective_message.reply_text(
+                "Geçersiz. <code>/gruplar</code> ile bak. Grup id negatif olur (-100...).",
+                parse_mode="HTML",
+            )
+            return
     durum["aktif_grup"] = sec
     if context.user_data is not None:
         context.user_data["panel_gid"] = sec
@@ -6409,9 +6461,10 @@ async def grup_sec_komut(update, context):
     durum_kaydet()
     await update.effective_message.reply_text(
         f"✅ Aktif grup: <code>{sec}</code> {html.escape(str(conf.get('title') or ''))}\n"
-        f"Artık <code>/ban</code> <code>/mute</code> <code>/kick</code> <code>/warn</code> buraya uygulanır.",
+        f"Artık /ban /mute /kick /welcome buraya uygulanır.",
         parse_mode="HTML",
     )
+
 
 
 async def durum_komut(update, context):
