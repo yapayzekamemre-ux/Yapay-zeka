@@ -88,6 +88,7 @@ DEFAULT_IPUCU = [
     "💡 <b>Likidite kilidi:</b> Unlocked LP = yüksek risk.",
     "💡 <b>Vesting:</b> Ekip token açılış takvimine bak; ani satış baskısı olabilir.",
     "💡 <b>Bridge:</b> Resmi köprü kullan; sahte bridge fonları yer.",
+    "💡 <b>Köprü riski:</b> Akıllı sözleşme açıkları nedeniyle köprüler risk taşır; fon kaybına yol açabilir.",
     "💡 <b>NFT airdrop:</b> “Free mint” linkleri çoğu zaman zararlı sözleşme.",
     "💡 <b>Destek DM:</b> Gerçek ekipler önce seed/cüzdan istemez.",
     "💡 <b>Stop-loss / plan:</b> Duyguyla değil kuralınla işlem yap.",
@@ -2035,6 +2036,12 @@ def panel_kb(cid):
                 ),
             ],
             [
+                InlineKeyboardButton(
+                    "🔁 Tekrar mesaj ekle",
+                    callback_data=f"p:tekrar:{cid}",
+                ),
+            ],
+            [
                 InlineKeyboardButton("🚫 Komut kapat", callback_data="p:disable"),
                 InlineKeyboardButton(f"🔏 Gizlilik {_ok(cget(cid,'privacy_ai'))}", callback_data="p:privacy"),
             ],
@@ -2367,7 +2374,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = context.user_data.get("panel_gid")
     if ":" in data:
         par = data.split(":")
-        if len(par) >= 2 and par[0] in ("link", "medya", "forward", "airdrop") and par[1].lstrip("-").isdigit():
+        if len(par) >= 2 and par[0] in ("link", "medya", "forward", "airdrop", "tekrar") and par[1].lstrip("-").isdigit():
             cid = int(par[1])
             data = par[0]
             context.user_data["panel_gid"] = cid
@@ -2534,6 +2541,30 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning("panel link edit: %s", e)
             await yenile("Link engel: %s\n" % ("AÇIK" if acik else "KAPALI"))
+        return
+
+    if data == "tekrar":
+        context.user_data["panel_gid"] = cid
+        context.user_data["tekrar_wizard"] = {
+            "adim": "saat",
+            "cid": cid,
+            "buttons": [],
+        }
+        try:
+            await q.answer()
+            await q.edit_message_text(
+                "🔁 <b>Tekrar mesaj kurulum</b>\n"
+                "Grup: <code>%s</code>\n\n"
+                "1️⃣ Kac <b>saatte bir</b> atilsin?\n"
+                "Ornek: <code>1</code> veya <code>12</code>\n\n"
+                "Iptal: <code>iptal</code>" % cid,
+                parse_mode="HTML",
+            )
+        except Exception:
+            await context.bot.send_message(
+                q.from_user.id if q.from_user else cid,
+                "🔁 Tekrar mesaj: kac saatte bir? Ornek: 12\nIptal: iptal",
+            )
         return
 
     if data == "airdrop":
@@ -4492,32 +4523,41 @@ def airdrop_metin_mi(metin: str) -> bool:
 
 
 def airdrop_analiz_uret(metin: str) -> str:
-    """Airdrop metnini ozetle: nedir, risk, ne yapilmali."""
+    """Airdrop metnini TAM ozetle — yarim birakma."""
     metin = (metin or "").strip()
     if not metin:
         return ""
     sistem = (
-        SISTEM_TABAN
-        + "\nSen kripto grup asistanisin. Kullanici bir airdrop/duyuru metni yapistirdi.\n"
-        "Kisa Turkce cevap ver (en fazla 6-7 satir). Format:\n"
-        "📌 Nedir: ...\n"
-        "✅ Yapilacaklar: 1) ... 2) ...\n"
-        "⚠ Risk: ... (gas/seed/cüzdan baglama uyarisi)\n"
-        "Kesin 'yap/alma' deme; finansal tavsiye degil. Esprili ama net ol."
+        "Sen kripto grup asistanisin. Airdrop/duyuru metnini ozetle.\n"
+        "ZORUNLU format (hepsini doldur, yarim cumle YASAK):\n"
+        "📌 Nedir: (2-3 cumle)\n"
+        "✅ Yapilacaklar: 1) ... 2) ... 3) ...\n"
+        "⚠ Risk: 1-2 cumle (gas/seed/sahte link)\n"
+        "Turkce. Finansal tavsiye degil. 6-15 satir. Cumleyi ortada kesme."
     )
-    mesajlar = [{"role": "user", "content": "Su airdrop/duyuruyu incele:\n\n" + metin[:2500]}]
+    mesajlar = [{"role": "user", "content": "Su metni eksiksiz ozetle:\n\n" + metin[:3500]}]
+    yanit = None
     try:
         yanit = _sor_modeller(mesajlar, sistem, hizli=False)
     except Exception as e:
         log.warning("airdrop analiz: %s", e)
-        yanit = None
-    if not yanit:
+    if yanit:
+        yanit = yanit.strip()
+        if yanit and yanit[-1].isalnum():
+            yanit = yanit.rstrip() + "."
+    if not yanit or len(yanit) < 40:
+        satirlar = [x.strip() for x in metin.splitlines() if x.strip()][:12]
+        govde = "\n".join(satirlar)
+        if len(govde) > 1200:
+            govde = govde[:1200].rsplit(".", 1)[0] + "."
         yanit = (
-            "📌 Duyuru/airdrop paylasildi.\n"
-            "⚠ Resmi link disina cüzdan baglama; gas icin ETH isteme klasik tuzak.\n"
-            "Kendin arastir, finansal tavsiye degil."
+            "📌 Nedir: Kanal duyurusu / airdrop paylasimi.\n"
+            "✅ Detay:\n" + govde + "\n"
+            "⚠ Risk: Resmi link disina cüzdan baglama; seed/gas tuzaklarina dikkat. "
+            "Finansal tavsiye degil."
         )
     return yanit.strip()
+
 
 
 async def airdrop_yorum_gonder(bot, chat_id, metin: str, reply_to_message_id=None):
@@ -4559,9 +4599,11 @@ async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE
             continue
         posts = list(conf.get("duyuru_posts") or [])
         bugun = datetime.now(TR).strftime("%Y-%m-%d")
+        govde_txt = (msg.text or msg.caption or "").strip()
         entry = {
             "id": msg.message_id,
             "title": _duyuru_baslik(msg),
+            "text": govde_txt[:1500],
             "date": bugun,
             "link": _duyuru_link(chat, msg.message_id),
         }
@@ -4571,11 +4613,11 @@ async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE
         for p in posts:
             try:
                 d = datetime.strptime(p.get("date", bugun), "%Y-%m-%d").date()
-                if (datetime.now(TR).date() - d).days <= 3:
+                if (datetime.now(TR).date() - d).days <= 14:
                     keep.append(p)
             except Exception:
                 keep.append(p)
-        conf["duyuru_posts"] = keep[-40:]
+        conf["duyuru_posts"] = keep[-80:]
         durum_kaydet()
         log.info("duyuru kayit grup=%s post=%s", gid_s, (entry["title"] or "")[:40])
         # AI airdrop yorumu gruba
@@ -4606,6 +4648,76 @@ def duyuru_liste_metni(chat_id, bos_mesaj=False):
         else:
             lines.append(f"{i}. {title}")
     return "\n".join(lines)
+
+
+
+def duyuru_ara(chat_id, sorgu: str, limit: int = 3):
+    """Grup duyuru havuzunda kelime ara (title+text)."""
+    posts = list(cget(chat_id, "duyuru_posts") or [])
+    if not posts or not sorgu:
+        return []
+    # temizle: yapay, duyuru, airdrop, link, ne, nedir
+    q = kucult(sorgu)
+    for at in ("yapay", "duyuru", "duyurusu", "airdrop", "nedir", "neydi", "hakkinda", "hakkında",
+               "link", "var mi", "var mı", "goster", "göster", "bul", "ara"):
+        q = q.replace(at, " ")
+    q = re.sub(r"\s+", " ", q).strip()
+    kelimeler = [k for k in q.split() if len(k) >= 2]
+    if not kelimeler:
+        # sadece "duyuru" dediyse bugunku son postlar
+        bugun = datetime.now(TR).strftime("%Y-%m-%d")
+        bugunku = [p for p in posts if p.get("date") == bugun]
+        return (bugunku or posts)[-limit:][::-1]
+    skorlu = []
+    for p in posts:
+        blob = kucult((p.get("title") or "") + " " + (p.get("text") or ""))
+        skor = sum(1 for k in kelimeler if k in blob)
+        if skor:
+            skorlu.append((skor, p))
+    skorlu.sort(key=lambda x: (-x[0], x[1].get("id") or 0))
+    return [p for _, p in skorlu[:limit]]
+
+
+async def duyuru_sorgu_cevap(bot, chat_id, sorgu: str, reply_to=None):
+    """Eslsen duyuruyu ozetle + Duyuruya Git butonu."""
+    bulunan = duyuru_ara(chat_id, sorgu, limit=1)
+    if not bulunan:
+        return False
+    p = bulunan[0]
+    title = p.get("title") or "Duyuru"
+    text = (p.get("text") or title).strip()
+    link = p.get("link") or ""
+    # kisa ozet AI
+    ozet = None
+    try:
+        ozet = await asyncio.to_thread(airdrop_analiz_uret, text[:1200])
+    except Exception:
+        pass
+    if not ozet:
+        # dusuk fallback: ilk 2-3 satir
+        satirlar = [x.strip() for x in text.splitlines() if x.strip()][:4]
+        ozet = "\n".join(satirlar)[:400] if satirlar else title
+    # cok uzunsa kisalt
+    if len(ozet) > 700:
+        ozet = ozet[:680].rsplit(" ", 1)[0] + "..."
+    kb = None
+    if link:
+        kb = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📌 Duyuruya Git", url=link)]]
+        )
+    try:
+        await bot.send_message(
+            chat_id,
+            ozet,
+            reply_to_message_id=reply_to,
+            reply_markup=kb,
+            allow_sending_without_reply=True,
+            disable_web_page_preview=True,
+        )
+        return True
+    except Exception as e:
+        log.warning("duyuru sorgu cevap: %s", e)
+        return False
 
 
 async def duyuru_gonder_grup(bot, chat_id, zorla=False):
@@ -5094,30 +5206,35 @@ def _ipucu_havuz(chat_id):
 
 
 def _ipucu_ai_uret():
-    """Ara sira AI ile kisa, yeni ipucu — ayni kaliba dusmesin."""
+    """Ara sira AI ipucu — cumle yarim kalmasin."""
     import random
     konular = [
         "airdrop guvenligi", "cüzdan guvenligi", "rugpull belirtileri",
         "sybil riski", "phishing", "likidite riski", "FOMO", "gas ucreti",
-        "token unlock", "sahte admin DM", "bridge riski", "honeypot",
+        "token unlock", "sahte admin DM", "bridge / köprü riski", "honeypot",
         "DYOR adimlari", "approve/revoke", "testnet vs mainnet",
+        "akilli sozlesme riski", "seed phrase",
     ]
     konu = random.choice(konular)
     sistem = (
-        "Turkce, tek satir, max 120 karakter. Kripto egitim ipucu yaz. "
-        "Basina emoji koyma, sadece metin. Abarti yok, net ve ciddi."
+        "Turkce tek ipucu yaz. 1 veya 2 tam cumle. "
+        "Cumleyi ortada kesme; nokta ile bitir. "
+        "Max 200 karakter. Basina emoji koyma. Net ve ciddi."
     )
-    m = [{"role": "user", "content": f"Konu: {konu}. Kisa ipucu yaz."}]
+    m = [{"role": "user", "content": f"Konu: {konu}. Tam cumleli kisa ipucu yaz."}]
     for fn in (groq_sor, gemini_sor, deepseek_sor, mistral_sor, openrouter_sor):
         try:
-            t = fn(m, sistem)
+            out = fn(m, sistem)
         except Exception:
-            t = None
-        if t:
-            t = t.strip().strip('"').replace("\n", " ")
-            if 20 <= len(t) <= 180:
-                return "💡 " + html.escape(t)
+            out = None
+        if out:
+            out = out.strip().strip('"').replace("\n", " ")
+            if out and out[-1] not in ".!?…":
+                out = out.rstrip(" ,;") + "."
+            if 25 <= len(out) <= 220:
+                return "💡 " + html.escape(out)
     return None
+
 
 
 async def ipucu_gonder_grup(bot, chat_id):
@@ -8282,6 +8399,30 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     soru = re.sub(r"(?i)\byapay\b", "", metin).strip() or metin
+
+    # Kanal duyuru ara: "yapay folk duyuru" / "yapay neopod"
+    try:
+        if cagrildi and not ozel and (duyuru_posts := (cget(cid, "duyuru_posts") or [])):
+            low_s = kucult(soru or metin or "")
+            iste_duyuru = any(
+                x in low_s
+                for x in (
+                    "duyuru", "airdrop", "kampanya", "etkinlik", "kayit", "kayıt",
+                    "link var", "nedir", "ne o", "ne bu",
+                )
+            )
+            # veya havuzda eslesen kelime
+            eslesen = duyuru_ara(cid, soru or metin or "", limit=1)
+            if iste_duyuru or eslesen:
+                if eslesen or iste_duyuru:
+                    ok = await duyuru_sorgu_cevap(
+                        context.bot, cid, soru or metin or "", msg.message_id
+                    )
+                    if ok:
+                        return
+    except Exception as e:
+        log.warning("duyuru ara hook: %s", e)
+
     ad = (user.first_name or user.full_name or "dostum").split()[0]
 
     # hatirlatici: "yarin 17:00 hatirlat X" / "5 dakika sonra hatirlat X"
