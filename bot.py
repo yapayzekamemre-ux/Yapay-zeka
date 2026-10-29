@@ -4548,38 +4548,88 @@ def airdrop_metin_mi(metin: str) -> bool:
 
 
 def airdrop_analiz_uret(metin: str) -> str:
-    """Airdrop metnini TAM ozetle — yarim birakma."""
+    """Airdrop ozeti — 3 bolum TAM, token limiti yuksek."""
     metin = (metin or "").strip()
     if not metin:
         return ""
     sistem = (
-        "Sen kripto grup asistanisin. Airdrop/duyuru metnini ozetle.\n"
-        "ZORUNLU format (hepsini doldur, yarim cumle YASAK):\n"
-        "📌 Nedir: (2-3 cumle)\n"
-        "✅ Yapilacaklar: 1) ... 2) ... 3) ...\n"
-        "⚠ Risk: 1-2 cumle (gas/seed/sahte link)\n"
-        "Turkce. Finansal tavsiye degil. 6-15 satir. Cumleyi ortada kesme."
+        "Sen kripto asistanisin. Verilen duyuru/airdrop metnini ozetle.\n"
+        "SADECE su format, 3 bolumu de doldur, yarim cumle YASAK:\n\n"
+        "📌 Nedir: (2-3 tam cumle)\n"
+        "✅ Yapılacaklar: 1) ... 2) ... 3) ...\n"
+        "⚠ Risk: (1-2 tam cumle; seed/gas/sahte link)\n\n"
+        "Turkce yaz. Finansal tavsiye degil. En az 8 satir."
     )
-    mesajlar = [{"role": "user", "content": "Su metni eksiksiz ozetle:\n\n" + metin[:3500]}]
+    user = "Metni eksiksiz ozetle:\n\n" + metin[:3500]
+    mesajlar = [{"role": "user", "content": user}]
     yanit = None
-    try:
-        yanit = _sor_modeller(mesajlar, sistem, hizli=False)
-    except Exception as e:
-        log.warning("airdrop analiz: %s", e)
+
+    # yuksek token ile dogrudan dene
+    if gem:
+        for model in ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"):
+            try:
+                r = gem.models.generate_content(
+                    model=model,
+                    contents=_gem_parts(mesajlar),
+                    config=types.GenerateContentConfig(
+                        system_instruction=sistem,
+                        temperature=0.4,
+                        max_output_tokens=900,
+                    ),
+                )
+                yanit = (getattr(r, "text", None) or "").strip()
+                if yanit and len(yanit) > 60:
+                    break
+            except Exception as e:
+                log.warning("airdrop gemini %s: %s", model, e)
+                yanit = None
+
+    if (not yanit or len(yanit) < 60) and GROQ_KEY:
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "system", "content": sistem}] + mesajlar,
+                    "max_tokens": 900,
+                    "temperature": 0.4,
+                },
+                timeout=45,
+            )
+            if r.status_code == 200:
+                yanit = (r.json()["choices"][0]["message"]["content"] or "").strip()
+        except Exception as e:
+            log.warning("airdrop groq: %s", e)
+
+    if not yanit or len(yanit) < 60:
+        try:
+            yanit = _sor_modeller(mesajlar, sistem, hizli=False)
+        except Exception as e:
+            log.warning("airdrop fallback: %s", e)
+            yanit = None
+
     if yanit:
         yanit = yanit.strip()
-        if yanit and yanit[-1].isalnum():
-            yanit = yanit.rstrip() + "."
+        if yanit[-1].isalnum():
+            yanit += "."
+        # eksik bolum varsa kaynak metinden tamamla
+        low = yanit.lower()
+        if "yap" not in low and "görev" not in low and "gorev" not in low:
+            yanit += "\n✅ Yapılacaklar: Duyurudaki adımları takip edin; resmi link kullanın."
+        if "risk" not in low and "⚠" not in yanit:
+            yanit += "\n⚠ Risk: Seed/cüzdan bağlama ve sahte linklere dikkat. Finansal tavsiye değil."
+
     if not yanit or len(yanit) < 40:
-        satirlar = [x.strip() for x in metin.splitlines() if x.strip()][:12]
+        satirlar = [x.strip() for x in metin.splitlines() if x.strip()][:10]
         govde = "\n".join(satirlar)
-        if len(govde) > 1200:
-            govde = govde[:1200].rsplit(".", 1)[0] + "."
+        if len(govde) > 900:
+            govde = govde[:900].rsplit(".", 1)[0] + "."
         yanit = (
-            "📌 Nedir: Kanal duyurusu / airdrop paylasimi.\n"
-            "✅ Detay:\n" + govde + "\n"
-            "⚠ Risk: Resmi link disina cüzdan baglama; seed/gas tuzaklarina dikkat. "
-            "Finansal tavsiye degil."
+            "📌 Nedir: Kanal airdrop / etkinlik duyurusu.\n"
+            f"✅ Detay:\n{govde}\n"
+            "⚠ Risk: Resmi link dışı cüzdan bağlama; seed/gas tuzaklarına dikkat. "
+            "Finansal tavsiye değil."
         )
     return yanit.strip()
 
@@ -4587,6 +4637,13 @@ def airdrop_analiz_uret(metin: str) -> str:
 
 async def airdrop_yorum_gonder(bot, chat_id, metin: str, reply_to_message_id=None):
     if not cget(chat_id, "airdrop_yorum"):
+        return
+    metin = (metin or "").strip()
+    low = kucult(metin)
+    # "Bugünkü Duyurular" listesini asla yorumlama
+    if "bugünkü duyuru" in low or "bugunku duyuru" in low or "bugünkü duyurular" in low:
+        return
+    if low.startswith("📣") and "duyuru" in low and len(metin) < 800:
         return
     if not airdrop_metin_mi(metin):
         return
@@ -7926,17 +7983,10 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # kanal postu / otomatik forward — filtre yok + airdrop yorum
+        # kanal postu / otomatik forward — filtre yok
+        # airdrop yorumu SADECE kanal_duyuru_yakala'dan (listeye yorum yok)
         if getattr(msg, "sender_chat", None) is not None or getattr(msg, "is_automatic_forward", False):
-            try:
-                govde = (metin or "").strip()
-                if govde and airdrop_metin_mi(govde) and cget(cid, "airdrop_yorum"):
-                    asyncio.create_task(
-                        airdrop_yorum_gonder(context.bot, cid, govde, msg.message_id)
-                    )
-            except Exception:
-                pass
-            pass  # asagida admin gibi davran
+            pass
         # LINK/REKLAM FILTRESI — bakim ve sahip kontrolunden ONCE (t.me/ChickenLandBot vb.)
         if not sahip_mi(user) and not getattr(msg, "sender_chat", None) and not getattr(msg, "is_automatic_forward", False):
             is_adm_erken = await admin_mi(cid, user, context.bot)
