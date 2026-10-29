@@ -763,6 +763,51 @@ def yasakli_sil(chat_id, uid):
     cset(chat_id, "yasaklilar", lst)
 
 
+
+# Mesaj sayisi kademeleri
+_MESAJ_KADEMELER = [
+    (0, "Yeni Yüz"),
+    (30, "Çaylak"),
+    (200, "Aktif"),
+    (500, "Deneyimli"),
+    (1000, "Usta"),
+    (3000, "Efsane"),
+]
+
+
+def mesaj_kademe(mesaj_s: int):
+    """(kademe_adi, min_esik, sonraki_esik|None)"""
+    n = int(mesaj_s or 0)
+    cur_name, cur_min = _MESAJ_KADEMELER[0]
+    sonraki = _MESAJ_KADEMELER[1][0] if len(_MESAJ_KADEMELER) > 1 else None
+    for i, (thr, name) in enumerate(_MESAJ_KADEMELER):
+        if n >= thr:
+            cur_name, cur_min = name, thr
+            sonraki = _MESAJ_KADEMELER[i + 1][0] if i + 1 < len(_MESAJ_KADEMELER) else None
+        else:
+            break
+    return cur_name, cur_min, sonraki
+
+
+async def kademe_tebrik(bot, chat_id, user, uy):
+    """Belirli mesaj esigine ulasinca gruba kisa tebrik."""
+    if not user or not uy:
+        return
+    n = int(uy.get("mesaj") or 0)
+    for thr, name in _MESAJ_KADEMELER:
+        if thr > 0 and n == thr:
+            ad = html.escape(user.first_name or user.full_name or "Üye")
+            try:
+                await bot.send_message(
+                    chat_id,
+                    f"🏅 <b>{ad}</b> kademe atladı: <b>{html.escape(name)}</b> ({n} mesaj)!",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                log.warning("kademe tebrik: %s", e)
+            break
+
+
 def lakap_hesapla(chat_id, uid) -> str:
     uy = (uyeler.get(str(chat_id)) or {}).get(str(uid)) or {}
     m = int(uy.get("mesaj") or 0)
