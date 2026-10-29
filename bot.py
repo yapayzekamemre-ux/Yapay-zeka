@@ -763,51 +763,6 @@ def yasakli_sil(chat_id, uid):
     cset(chat_id, "yasaklilar", lst)
 
 
-
-# Mesaj sayisi kademeleri
-_MESAJ_KADEMELER = [
-    (0, "Yeni Yüz"),
-    (30, "Çaylak"),
-    (200, "Aktif"),
-    (500, "Deneyimli"),
-    (1000, "Usta"),
-    (3000, "Efsane"),
-]
-
-
-def mesaj_kademe(mesaj_s: int):
-    """(kademe_adi, min_esik, sonraki_esik|None)"""
-    n = int(mesaj_s or 0)
-    cur_name, cur_min = _MESAJ_KADEMELER[0]
-    sonraki = _MESAJ_KADEMELER[1][0] if len(_MESAJ_KADEMELER) > 1 else None
-    for i, (thr, name) in enumerate(_MESAJ_KADEMELER):
-        if n >= thr:
-            cur_name, cur_min = name, thr
-            sonraki = _MESAJ_KADEMELER[i + 1][0] if i + 1 < len(_MESAJ_KADEMELER) else None
-        else:
-            break
-    return cur_name, cur_min, sonraki
-
-
-async def kademe_tebrik(bot, chat_id, user, uy):
-    """Belirli mesaj esigine ulasinca gruba kisa tebrik."""
-    if not user or not uy:
-        return
-    n = int(uy.get("mesaj") or 0)
-    for thr, name in _MESAJ_KADEMELER:
-        if thr > 0 and n == thr:
-            ad = html.escape(user.first_name or user.full_name or "Üye")
-            try:
-                await bot.send_message(
-                    chat_id,
-                    f"🏅 <b>{ad}</b> kademe atladı: <b>{html.escape(name)}</b> ({n} mesaj)!",
-                    parse_mode="HTML",
-                )
-            except Exception as e:
-                log.warning("kademe tebrik: %s", e)
-            break
-
-
 def lakap_hesapla(chat_id, uid) -> str:
     uy = (uyeler.get(str(chat_id)) or {}).get(str(uid)) or {}
     m = int(uy.get("mesaj") or 0)
@@ -3519,41 +3474,6 @@ class _ProxyChat:
         self.title = ""
 
 
-
-def gercek_grup_listesi():
-    """Sadece gercek grup/supergroup (id < 0). Ozel sohbet / kullanici id elenir."""
-    out = []
-    temizle = []
-    for gid, conf in list((durum.get("grup") or {}).items()):
-        try:
-            i = int(gid)
-        except Exception:
-            temizle.append(gid)
-            continue
-        if i >= 0:
-            # kullanici id veya ozel chat — grup degil
-            temizle.append(gid)
-            continue
-        out.append((i, conf if isinstance(conf, dict) else {}))
-    for gid in temizle:
-        try:
-            (durum.get("grup") or {}).pop(str(gid), None)
-            (durum.get("grup") or {}).pop(gid, None)
-        except Exception:
-            pass
-    if temizle:
-        # aktif_grup yanlis ise sifirla
-        try:
-            ag = int(durum.get("aktif_grup") or 0)
-            if ag >= 0:
-                durum["aktif_grup"] = None
-        except Exception:
-            pass
-        durum_kaydet()
-    out.sort(key=lambda x: x[0])
-    return out
-
-
 def _aktif_grup_id():
     try:
         return int(durum.get("aktif_grup") or 0) or None
@@ -4042,64 +3962,17 @@ async def setrules_komut(update, context):
     await kisa_cevap(context.bot, chat.id, "✅ Kurallar kaydedildi.")
 
 
-
-async def welcomemute_komut(update, context):
-    """Yeni uye susturma suresi (dakika). 0 = kapali."""
-    g = await _mod_giris(update, context)
-    if not g:
-        return
-    _, chat, _ = g
-    if not context.args:
-        cur = int(cget(chat.id, "hosgeldin_mute") or 0)
-        await kisa_cevap(
-            context.bot, chat.id,
-            f"Şu an: <b>{cur}</b> dk\nKullanım: <code>/welcomemute 15</code> · kapat: <code>/welcomemute 0</code>",
-        )
-        return
-    try:
-        dk = int(context.args[0])
-    except Exception:
-        await kisa_cevap(context.bot, chat.id, "Sayı yaz: <code>/welcomemute 15</code>")
-        return
-    dk = max(0, min(1440, dk))
-    cset(chat.id, "hosgeldin_mute", dk)
-    if dk > 0:
-        cset(chat.id, "hosgeldin", True)
-        await kisa_cevap(context.bot, chat.id, f"✅ Yeni üyeler <b>{dk}</b> dk susturulacak.")
-    else:
-        await kisa_cevap(context.bot, chat.id, "✅ Giriş susturması kapatıldı.")
-
-
 async def setwelcome_komut(update, context):
     g = await _mod_giris(update, context)
     if not g:
         return
     _, chat, _ = g
     if not context.args:
-        await kisa_cevap(
-            context.bot, chat.id,
-            "Kullanım:\n<code>/setwelcome metin</code>\n"
-            "Mute: <code>/welcomemute 15</code>\n"
-            "{ad} = üye adı",
-        )
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/setwelcome metin</code> ({ad})")
         return
-    metin = " ".join(context.args)
-    cset(chat.id, "hosgeldin_metin", metin)
+    cset(chat.id, "hosgeldin_metin", " ".join(context.args))
     cset(chat.id, "hosgeldin", True)
-    # metinde "15 dakika" varsa mute otomatik
-    m = re.search(r"(\d+)\s*(?:dk|dakika|min)", metin, re.I)
-    if m:
-        dk = max(1, min(1440, int(m.group(1))))
-        cset(chat.id, "hosgeldin_mute", dk)
-        extra = f" + {dk} dk susturma"
-    else:
-        extra = ""
-        if int(cget(chat.id, "hosgeldin_mute") or 0) == 0:
-            extra = " (mute yok — /welcomemute 15)"
-    await kisa_cevap(
-        context.bot, chat.id,
-        f"✅ Karşılama kaydedildi ve açıldı{extra}.",
-    )
+    await kisa_cevap(context.bot, chat.id, "✅ Karşılama kaydedildi ve açıldı.")
 
 
 async def setlog_komut(update, context):
@@ -6388,66 +6261,49 @@ async def gruplar_komut(update, context):
     user = update.effective_user
     if not sahip_mi(user):
         return
-    liste = gercek_grup_listesi()
-    if not liste:
-        await update.effective_message.reply_text(
-            "Kayıtlı <b>grup</b> yok.\nBotu gruba ekle, grupta bir mesaj atsın, sonra tekrar /gruplar.",
-            parse_mode="HTML",
-        )
+    gruplar = durum.get("grup") or {}
+    if not gruplar:
+        await update.effective_message.reply_text("Kayıtlı grup yok. Botu gruba ekle, bir kez mesaj atsın.")
         return
     aktif = _aktif_grup_id()
-    lines = ["📋 <b>Grupların</b> (özelden yönetim)", ""]
-    for i, (gid, conf) in enumerate(liste[:40], 1):
+    lines = ["📋 <b>Grupların</b> (özelden yönetim)\n"]
+    for i, gid in enumerate(list(gruplar.keys())[:40], 1):
+        conf = gruplar.get(gid) or {}
         title = conf.get("title") or conf.get("baslik") or ""
-        mark = " ✅" if aktif and int(aktif) == int(gid) else ""
+        mark = " ✅" if aktif and str(gid) == str(aktif) else ""
         lines.append(f"{i}. <code>{gid}</code> {html.escape(str(title)[:40])}{mark}")
-    lines.append("")
-    lines.append("Seç: <code>/grup 1</code> veya <code>/grup -100...</code>")
-    lines.append("Bu gruptaysan: <code>/grup burasi</code>")
+    lines.append("\nSeç: <code>/grup 1</code> veya <code>/grup -100...</code>")
+    lines.append("Sonra: <code>/ban @user</code> · <code>/mute @user 30</code> · <code>/kick</code> …")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
-
 
 
 async def grup_sec_komut(update, context):
     """Sahip: aktif yonetim grubunu sec."""
     user = update.effective_user
-    chat = update.effective_chat
     if not sahip_mi(user):
         return
     args = context.args or []
-    # /grup burasi veya grup icinde /grup
-    if (not args and chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup")) or (
-        args and kucult(args[0]) in ("burasi", "burada", "this", "bu")
-    ):
-        if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup"):
-            sec = chat.id
-        else:
-            await update.effective_message.reply_text("Bu komutu grupta yaz veya /gruplar ile sec.")
-            return
-    elif not args:
+    if not args:
         a = _aktif_grup_id()
         await update.effective_message.reply_text(
-            f"Aktif grup: <code>{a or 'yok'}</code>\n<code>/gruplar</code> · <code>/grup 1</code> · grupta <code>/grup burasi</code>",
+            f"Aktif grup: <code>{a or 'yok'}</code>\n<code>/gruplar</code> · <code>/grup 1</code>",
             parse_mode="HTML",
         )
         return
+    key = args[0].strip()
+    gruplar = list((durum.get("grup") or {}).keys())
+    sec = None
+    if key.isdigit() and 1 <= int(key) <= len(gruplar):
+        sec = int(gruplar[int(key) - 1])
     else:
-        key = args[0].strip()
-        liste = gercek_grup_listesi()
-        sec = None
-        if key.isdigit() and 1 <= int(key) <= len(liste):
-            sec = liste[int(key) - 1][0]
-        else:
-            try:
-                sec = int(key)
-            except Exception:
-                sec = None
-        if sec is None or sec >= 0:
-            await update.effective_message.reply_text(
-                "Geçersiz. <code>/gruplar</code> ile bak. Grup id negatif olur (-100...).",
-                parse_mode="HTML",
-            )
-            return
+        try:
+            sec = int(key)
+        except Exception:
+            sec = None
+    if sec is None:
+        await update.effective_message.reply_text("Geçersiz. <code>/gruplar</code> ile bak.", parse_mode="HTML")
+        return
+    # kaydet + title dene
     durum["aktif_grup"] = sec
     if context.user_data is not None:
         context.user_data["panel_gid"] = sec
@@ -6461,10 +6317,9 @@ async def grup_sec_komut(update, context):
     durum_kaydet()
     await update.effective_message.reply_text(
         f"✅ Aktif grup: <code>{sec}</code> {html.escape(str(conf.get('title') or ''))}\n"
-        f"Artık /ban /mute /kick /welcome buraya uygulanır.",
+        f"Artık <code>/ban</code> <code>/mute</code> <code>/kick</code> <code>/warn</code> buraya uygulanır.",
         parse_mode="HTML",
     )
-
 
 
 async def durum_komut(update, context):
@@ -6548,10 +6403,6 @@ async def uye_guncelle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "member", "restricted", ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED
     ):
         uye_kaydi(chat.id, new.user)
-        try:
-            await yeni_uye_karsila(context.bot, chat, new.user, context)
-        except Exception as e:
-            log.warning("uye_guncelle karsila: %s", e)
         il = getattr(res, "invite_link", None)
         if il and getattr(il, "name", None):
             name = (il.name or "").lower()
@@ -7589,130 +7440,6 @@ async def etkinlik_kapat(chat_id):
     return True
 
 
-
-def hosgeldin_metin_hazirla(sablon: str, ad_esc: str) -> str:
-    """Markdown kalintilarini HTML yap; {ad}/{name} degistir."""
-    s = sablon or DEFAULT_G.get("hosgeldin_metin") or "Hos geldin {ad}"
-    s = s.replace("{ad}", ad_esc).replace("{name}", ad_esc).replace("{Name}", ad_esc)
-    s = s.replace("{KullanıcıAdı}", ad_esc).replace("{KullaniciAdi}", ad_esc)
-    # **kalin** -> <b>
-    s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
-    s = re.sub(r"__([^_]+)__", r"<b>\1</b>", s)
-    return s
-
-
-
-# Ayni uye 30sn icinde 2 kez karsilanmasin (Message + ChatMember cift tetik)
-_join_lock = {}
-
-
-async def yeni_uye_karsila(bot, chat, u, context=None):
-    """Mute + hosgeldin mesaji. hosgeldin() ve uye_guncelle() ortak."""
-    if not chat or not u or getattr(u, "is_bot", False):
-        return
-    key = (chat.id, u.id)
-    now = time.time()
-    son = _join_lock.get(key) or 0
-    if now - son < 25:
-        return
-    _join_lock[key] = now
-    # temizlik
-    if len(_join_lock) > 500:
-        for k in list(_join_lock.keys())[:200]:
-            if now - _join_lock[k] > 120:
-                _join_lock.pop(k, None)
-
-    uye_kaydi(chat.id, u)
-
-    # Mute
-    mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
-    if cget(chat.id, "approval") or cget(chat.id, "captcha"):
-        mute_dk = max(mute_dk, 60)
-    if mute_dk > 0:
-        try:
-            until = datetime.now(timezone.utc) + timedelta(minutes=mute_dk)
-            await bot.restrict_chat_member(
-                chat.id, u.id, permissions=MUTE_PERMS, until_date=until
-            )
-            log.info("join mute OK %sdk uid=%s chat=%s", mute_dk, u.id, chat.id)
-        except Exception as e:
-            log.warning("join mute FAIL: %s", e)
-            try:
-                await bot.send_message(
-                    SAHIP_ID,
-                    f"⚠️ Mute basarisiz (chat {chat.id}, uid {u.id}):\n<code>{html.escape(str(e)[:200])}</code>\n"
-                    "Botta \"kullanicilari kisitla\" yetkisi var mi?",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-
-    # Captcha
-    if cget(chat.id, "captcha"):
-        pending_captcha[(chat.id, u.id)] = True
-        if cget(chat.id, "captcha_math"):
-            import random
-            a, b = random.randint(2, 9), random.randint(2, 9)
-            pending_captcha[(chat.id, u.id)] = a + b
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton(str(a + b), callback_data=f"cap:{chat.id}:{u.id}:{a+b}"),
-                InlineKeyboardButton(str(a + b + 2), callback_data=f"cap:{chat.id}:{u.id}:x"),
-                InlineKeyboardButton(str(max(1, a + b - 3)), callback_data=f"cap:{chat.id}:{u.id}:y"),
-            ]])
-            txt = f"🔐 {html.escape(u.full_name or 'Üye')}, {a}+{b} = ?"
-        else:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ İnsanım", callback_data=f"cap:{chat.id}:{u.id}:ok")]])
-            txt = f"🔐 {html.escape(u.full_name or 'Üye')}, gruba yazmak için butona bas."
-        try:
-            gonder = await bot.send_message(chat.id, txt, parse_mode="HTML", reply_markup=kb)
-            asyncio.create_task(sil_sonra(bot, chat.id, gonder.message_id, 120))
-        except Exception as e:
-            log.warning("captcha: %s", e)
-        return
-
-    # Hosgeldin mesaji
-    if not (cget(chat.id, "hosgeldin") or cget(chat.id, "kural_onay") or cget(chat.id, "hg_test")):
-        return
-    ad_esc = html.escape(u.full_name or u.first_name or "üye")
-    if cget(chat.id, "hg_test"):
-        ver = "a" if (u.id % 2 == 0) else "b"
-        sablon = cget(chat.id, f"hg_{ver}") or DEFAULT_G.get(f"hg_{ver}") or DEFAULT_G["hosgeldin_metin"]
-        metin = hosgeldin_metin_hazirla(sablon, ad_esc)
-    else:
-        metin = hosgeldin_metin_hazirla(
-            cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"],
-            ad_esc,
-        )
-    kb = None
-    if cget(chat.id, "kural_onay"):
-        kur = html.escape(str(cget(chat.id, "kurallar") or DEFAULT_G.get("kurallar") or "")[:400])
-        metin += f"\n\n📜 <b>Kurallar</b>\n{kur}\n\nYazmak için butona bas."
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Kuralları kabul ediyorum", callback_data=f"ko:{chat.id}:{u.id}")
-        ]])
-    try:
-        try:
-            gonder = await bot.send_message(chat.id, metin, parse_mode="HTML", reply_markup=kb)
-        except Exception:
-            gonder = await bot.send_message(
-                chat.id, re.sub(r"<[^>]+>", "", metin), reply_markup=kb
-            )
-        sil = int(cget(chat.id, "hosgeldin_sil") or 0)
-        if sil > 0 and not cget(chat.id, "kural_onay"):
-            asyncio.create_task(sil_sonra(bot, chat.id, gonder.message_id, sil))
-        log.info("hosgeldin OK uid=%s chat=%s", u.id, chat.id)
-    except Exception as e:
-        log.warning("hosgeldin send: %s", e)
-        try:
-            await bot.send_message(
-                SAHIP_ID,
-                f"⚠️ Hosgeldin mesaji gitmedi (chat {chat.id}):\n<code>{html.escape(str(e)[:200])}</code>",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-
 async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg, chat = update.effective_message, update.effective_chat
     if not msg or not chat or not msg.new_chat_members:
@@ -7845,11 +7572,68 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await log_gonder(context.bot, chat.id, "🛡 AntiRaid tetiklendi")
                 except Exception as e:
                     log.warning("antiraid: %s", e)
-        try:
-            await yeni_uye_karsila(context.bot, chat, u, context)
-        except Exception as e:
-            log.warning("hosgeldin karsila: %s", e)
-
+        # Mute: sadece bu grupta ayar aciksa (varsayilan 0 = kapali)
+        mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
+        if cget(chat.id, "approval") or cget(chat.id, "captcha"):
+            mute_dk = max(mute_dk, 60)
+        if mute_dk > 0 and (cget(chat.id, "hosgeldin") or cget(chat.id, "approval") or cget(chat.id, "captcha")):
+            try:
+                until = datetime.now(timezone.utc) + timedelta(minutes=mute_dk)
+                await context.bot.restrict_chat_member(chat.id, u.id, permissions=MUTE_PERMS, until_date=until)
+            except Exception as e:
+                log.warning("join mute: %s", e)
+        if cget(chat.id, "captcha"):
+            pending_captcha[(chat.id, u.id)] = True
+            if cget(chat.id, "captcha_math"):
+                import random
+                a, b = random.randint(2, 9), random.randint(2, 9)
+                pending_captcha[(chat.id, u.id)] = a + b
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(str(a + b), callback_data=f"cap:{chat.id}:{u.id}:{a+b}"),
+                    InlineKeyboardButton(str(a + b + 2), callback_data=f"cap:{chat.id}:{u.id}:x"),
+                    InlineKeyboardButton(str(max(1, a + b - 3)), callback_data=f"cap:{chat.id}:{u.id}:y"),
+                ]])
+                txt = f"🔐 {html.escape(u.full_name or 'Üye')}, {a}+{b} = ?"
+            else:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ İnsanım", callback_data=f"cap:{chat.id}:{u.id}:ok")]])
+                txt = f"🔐 {html.escape(u.full_name or 'Üye')}, gruba yazmak için butona bas."
+            try:
+                gonder = await context.bot.send_message(chat.id, txt, parse_mode="HTML", reply_markup=kb)
+                asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, 120))
+            except Exception as e:
+                log.warning("captcha: %s", e)
+        elif cget(chat.id, "hosgeldin") or cget(chat.id, "kural_onay") or cget(chat.id, "hg_test"):
+            ad_esc = html.escape(u.full_name or u.first_name or "üye")
+            if cget(chat.id, "hg_test"):
+                # A/B: cift uid -> A, tek -> B
+                ver = "a" if (u.id % 2 == 0) else "b"
+                sablon = cget(chat.id, f"hg_{ver}") or DEFAULT_G[f"hg_{ver}"]
+                metin = sablon.replace("{ad}", ad_esc)
+                sc = dict(cget(chat.id, "hg_sayac") or {})
+                sc[ver] = int(sc.get(ver) or 0) + 1
+                cset(chat.id, "hg_sayac", sc)
+                hv = dict(cget(chat.id, "hg_uye_versiyon") or {})
+                hv[str(u.id)] = ver
+                cset(chat.id, "hg_uye_versiyon", hv)
+            else:
+                metin = (cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"]).replace(
+                    "{ad}", ad_esc
+                )
+            if cget(chat.id, "kural_onay"):
+                kur = html.escape(str(cget(chat.id, "kurallar") or DEFAULT_G["kurallar"])[:400])
+                metin += f"\n\n📜 <b>Kurallar</b>\n{kur}\n\nYazmak için butona bas."
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Kuralları kabul ediyorum", callback_data=f"ko:{chat.id}:{u.id}")
+                ]])
+            else:
+                kb = None
+            try:
+                gonder = await context.bot.send_message(chat.id, metin, parse_mode="HTML", reply_markup=kb)
+                sil = int(cget(chat.id, "hosgeldin_sil") or 0)
+                if sil > 0 and not cget(chat.id, "kural_onay"):
+                    asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, sil))
+            except Exception as e:
+                log.warning("hosgeldin: %s", e)
         # istatistik giren
         st = dict(cget(chat.id, "istatistik") or {})
         st["giren"] = int(st.get("giren") or 0) + 1
@@ -9774,8 +9558,6 @@ def main():
     app.add_handler(CommandHandler("id", id_komut))
     app.add_handler(CommandHandler("setrules", setrules_komut))
     app.add_handler(CommandHandler("setwelcome", setwelcome_komut))
-    app.add_handler(CommandHandler("welcomemute", welcomemute_komut))
-    app.add_handler(CommandHandler("hgmute", welcomemute_komut))
     app.add_handler(CommandHandler("setlog", setlog_komut))
     app.add_handler(CommandHandler("unsetlog", unsetlog_komut))
     app.add_handler(CommandHandler("izinlink", izinlink_komut))
