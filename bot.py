@@ -3962,17 +3962,64 @@ async def setrules_komut(update, context):
     await kisa_cevap(context.bot, chat.id, "✅ Kurallar kaydedildi.")
 
 
+
+async def welcomemute_komut(update, context):
+    """Yeni uye susturma suresi (dakika). 0 = kapali."""
+    g = await _mod_giris(update, context)
+    if not g:
+        return
+    _, chat, _ = g
+    if not context.args:
+        cur = int(cget(chat.id, "hosgeldin_mute") or 0)
+        await kisa_cevap(
+            context.bot, chat.id,
+            f"Şu an: <b>{cur}</b> dk\nKullanım: <code>/welcomemute 15</code> · kapat: <code>/welcomemute 0</code>",
+        )
+        return
+    try:
+        dk = int(context.args[0])
+    except Exception:
+        await kisa_cevap(context.bot, chat.id, "Sayı yaz: <code>/welcomemute 15</code>")
+        return
+    dk = max(0, min(1440, dk))
+    cset(chat.id, "hosgeldin_mute", dk)
+    if dk > 0:
+        cset(chat.id, "hosgeldin", True)
+        await kisa_cevap(context.bot, chat.id, f"✅ Yeni üyeler <b>{dk}</b> dk susturulacak.")
+    else:
+        await kisa_cevap(context.bot, chat.id, "✅ Giriş susturması kapatıldı.")
+
+
 async def setwelcome_komut(update, context):
     g = await _mod_giris(update, context)
     if not g:
         return
     _, chat, _ = g
     if not context.args:
-        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/setwelcome metin</code> ({ad})")
+        await kisa_cevap(
+            context.bot, chat.id,
+            "Kullanım:\n<code>/setwelcome metin</code>\n"
+            "Mute: <code>/welcomemute 15</code>\n"
+            "{ad} = üye adı",
+        )
         return
-    cset(chat.id, "hosgeldin_metin", " ".join(context.args))
+    metin = " ".join(context.args)
+    cset(chat.id, "hosgeldin_metin", metin)
     cset(chat.id, "hosgeldin", True)
-    await kisa_cevap(context.bot, chat.id, "✅ Karşılama kaydedildi ve açıldı.")
+    # metinde "15 dakika" varsa mute otomatik
+    m = re.search(r"(\d+)\s*(?:dk|dakika|min)", metin, re.I)
+    if m:
+        dk = max(1, min(1440, int(m.group(1))))
+        cset(chat.id, "hosgeldin_mute", dk)
+        extra = f" + {dk} dk susturma"
+    else:
+        extra = ""
+        if int(cget(chat.id, "hosgeldin_mute") or 0) == 0:
+            extra = " (mute yok — /welcomemute 15)"
+    await kisa_cevap(
+        context.bot, chat.id,
+        f"✅ Karşılama kaydedildi ve açıldı{extra}.",
+    )
 
 
 async def setlog_komut(update, context):
@@ -7440,6 +7487,18 @@ async def etkinlik_kapat(chat_id):
     return True
 
 
+
+def hosgeldin_metin_hazirla(sablon: str, ad_esc: str) -> str:
+    """Markdown kalintilarini HTML yap; {ad}/{name} degistir."""
+    s = sablon or DEFAULT_G.get("hosgeldin_metin") or "Hos geldin {ad}"
+    s = s.replace("{ad}", ad_esc).replace("{name}", ad_esc).replace("{Name}", ad_esc)
+    s = s.replace("{KullanıcıAdı}", ad_esc).replace("{KullaniciAdi}", ad_esc)
+    # **kalin** -> <b>
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"__([^_]+)__", r"<b>\1</b>", s)
+    return s
+
+
 async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg, chat = update.effective_message, update.effective_chat
     if not msg or not chat or not msg.new_chat_members:
@@ -7572,14 +7631,17 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await log_gonder(context.bot, chat.id, "🛡 AntiRaid tetiklendi")
                 except Exception as e:
                     log.warning("antiraid: %s", e)
-        # Mute: sadece bu grupta ayar aciksa (varsayilan 0 = kapali)
+        # Mute: hosgeldin_mute > 0 ise uygula (hosgeldin mesaji ayri)
         mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
         if cget(chat.id, "approval") or cget(chat.id, "captcha"):
             mute_dk = max(mute_dk, 60)
-        if mute_dk > 0 and (cget(chat.id, "hosgeldin") or cget(chat.id, "approval") or cget(chat.id, "captcha")):
+        if mute_dk > 0:
             try:
                 until = datetime.now(timezone.utc) + timedelta(minutes=mute_dk)
-                await context.bot.restrict_chat_member(chat.id, u.id, permissions=MUTE_PERMS, until_date=until)
+                await context.bot.restrict_chat_member(
+                    chat.id, u.id, permissions=MUTE_PERMS, until_date=until
+                )
+                log.info("join mute %s dk uid=%s chat=%s", mute_dk, u.id, chat.id)
             except Exception as e:
                 log.warning("join mute: %s", e)
         if cget(chat.id, "captcha"):
@@ -7616,8 +7678,9 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hv[str(u.id)] = ver
                 cset(chat.id, "hg_uye_versiyon", hv)
             else:
-                metin = (cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"]).replace(
-                    "{ad}", ad_esc
+                metin = hosgeldin_metin_hazirla(
+                    cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"],
+                    ad_esc,
                 )
             if cget(chat.id, "kural_onay"):
                 kur = html.escape(str(cget(chat.id, "kurallar") or DEFAULT_G["kurallar"])[:400])
@@ -7628,7 +7691,15 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 kb = None
             try:
-                gonder = await context.bot.send_message(chat.id, metin, parse_mode="HTML", reply_markup=kb)
+                try:
+                    gonder = await context.bot.send_message(
+                        chat.id, metin, parse_mode="HTML", reply_markup=kb
+                    )
+                except Exception:
+                    # HTML bozulduysa duz metin
+                    gonder = await context.bot.send_message(
+                        chat.id, re.sub(r"<[^>]+>", "", metin), reply_markup=kb
+                    )
                 sil = int(cget(chat.id, "hosgeldin_sil") or 0)
                 if sil > 0 and not cget(chat.id, "kural_onay"):
                     asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, sil))
@@ -9558,6 +9629,8 @@ def main():
     app.add_handler(CommandHandler("id", id_komut))
     app.add_handler(CommandHandler("setrules", setrules_komut))
     app.add_handler(CommandHandler("setwelcome", setwelcome_komut))
+    app.add_handler(CommandHandler("welcomemute", welcomemute_komut))
+    app.add_handler(CommandHandler("hgmute", welcomemute_komut))
     app.add_handler(CommandHandler("setlog", setlog_komut))
     app.add_handler(CommandHandler("unsetlog", unsetlog_komut))
     app.add_handler(CommandHandler("izinlink", izinlink_komut))
