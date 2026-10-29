@@ -4478,20 +4478,45 @@ async def disabled_komut(update, context):
 
 
 
+def _duyuru_temiz_baslik(ham: str) -> str:
+    """URL ve kirli satirlari at, kisa isim birak."""
+    t = (ham or "").strip()
+    if not t:
+        return "Duyuru"
+    satirlar = []
+    for ln in t.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if re.search(r"https?://|t\.me/", ln):
+            temiz = re.sub(r"https?://\S+|t\.me/\S+", "", ln).strip()
+            if len(temiz) < 3:
+                continue
+            ln = temiz
+        satirlar.append(ln)
+    line = satirlar[0] if satirlar else t.splitlines()[0].strip()
+    line = re.sub(r"https?://\S+", "", line).strip()
+    line = re.sub(r"t\.me/\S+", "", line).strip()
+    line = re.sub(r"\s+", " ", line).strip(" -|·•")
+    if len(line) < 3:
+        line = "Duyuru"
+    if len(line) > 48:
+        line = line[:45].rstrip() + "..."
+    return line
+
+
 def _duyuru_baslik(msg) -> str:
     t = (msg.text or msg.caption or "").strip()
     if not t:
-        if msg.photo:
+        if getattr(msg, "photo", None):
             return "📷 Fotoğraf"
-        if msg.video:
+        if getattr(msg, "video", None):
             return "🎬 Video"
-        if msg.document:
+        if getattr(msg, "document", None):
             return "📎 Dosya"
         return "Duyuru"
-    line = t.split("\n")[0].strip()
-    if len(line) > 60:
-        line = line[:57] + "..."
-    return line
+    return _duyuru_temiz_baslik(t)
+
 
 
 def _duyuru_link(chat, msg_id: int) -> str:
@@ -4632,6 +4657,7 @@ async def kanal_duyuru_yakala(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 def duyuru_liste_metni(chat_id, bos_mesaj=False):
+    """Numarali, isimli, tiklaninca kanala giden duzenli liste."""
     posts = list(cget(chat_id, "duyuru_posts") or [])
     bugun = datetime.now(TR).strftime("%Y-%m-%d")
     bugunku = [p for p in posts if p.get("date") == bugun]
@@ -4639,15 +4665,42 @@ def duyuru_liste_metni(chat_id, bos_mesaj=False):
         if bos_mesaj:
             return "📣 <b>Bugünkü Duyurular</b>\n\nHenüz duyuru yok."
         return None
+    sec = bugunku[-15:]
+    nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     lines = ["📣 <b>Bugünkü Duyurular</b>", ""]
-    for i, p in enumerate(bugunku[-20:], 1):
-        title = html.escape(p.get("title") or "Duyuru")
-        link = p.get("link") or ""
+    for i, p in enumerate(sec, 1):
+        ham = p.get("title") or "Duyuru"
+        try:
+            title = html.escape(_duyuru_temiz_baslik(ham))
+        except Exception:
+            title = html.escape(str(ham)[:48])
+        link = (p.get("link") or "").strip()
+        no = nums[i - 1] if i <= 10 else f"<b>{i}.</b>"
         if link:
-            lines.append(f'{i}. <a href="{html.escape(link)}">{title}</a>')
+            lines.append(f'{no} <a href="{html.escape(link)}">{title}</a>')
         else:
-            lines.append(f"{i}. {title}")
+            lines.append(f"{no} {title}")
+    lines.append("")
+    lines.append("<i>Başlığa tıkla → kanal duyurusuna git</i>")
     return "\n".join(lines)
+
+
+def duyuru_liste_butonlar(chat_id):
+    """URL buton satirlari (max 12)."""
+    posts = list(cget(chat_id, "duyuru_posts") or [])
+    bugun = datetime.now(TR).strftime("%Y-%m-%d")
+    bugunku = [p for p in posts if p.get("date") == bugun][-12:]
+    rows = []
+    for i, p in enumerate(bugunku, 1):
+        link = (p.get("link") or "").strip()
+        if not link:
+            continue
+        try:
+            ad = _duyuru_temiz_baslik(p.get("title") or f"Duyuru {i}")[:32]
+        except Exception:
+            ad = f"Duyuru {i}"
+        rows.append([InlineKeyboardButton(f"{i}. {ad}", url=link)])
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 
@@ -4725,8 +4778,10 @@ async def duyuru_gonder_grup(bot, chat_id, zorla=False):
     if not text:
         return False
     try:
+        kb = duyuru_liste_butonlar(chat_id)
         m = await bot.send_message(
-            chat_id, text, parse_mode="HTML", disable_web_page_preview=True
+            chat_id, text, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=kb,
         )
         if cget(chat_id, "kopru_pin") and m:
             try:
