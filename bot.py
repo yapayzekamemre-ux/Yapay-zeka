@@ -6495,6 +6495,10 @@ async def uye_guncelle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "member", "restricted", ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED
     ):
         uye_kaydi(chat.id, new.user)
+        try:
+            await yeni_uye_karsila(context.bot, chat, new.user, context)
+        except Exception as e:
+            log.warning("uye_guncelle karsila: %s", e)
         il = getattr(res, "invite_link", None)
         if il and getattr(il, "name", None):
             name = (il.name or "").lower()
@@ -7544,6 +7548,118 @@ def hosgeldin_metin_hazirla(sablon: str, ad_esc: str) -> str:
     return s
 
 
+
+# Ayni uye 30sn icinde 2 kez karsilanmasin (Message + ChatMember cift tetik)
+_join_lock = {}
+
+
+async def yeni_uye_karsila(bot, chat, u, context=None):
+    """Mute + hosgeldin mesaji. hosgeldin() ve uye_guncelle() ortak."""
+    if not chat or not u or getattr(u, "is_bot", False):
+        return
+    key = (chat.id, u.id)
+    now = time.time()
+    son = _join_lock.get(key) or 0
+    if now - son < 25:
+        return
+    _join_lock[key] = now
+    # temizlik
+    if len(_join_lock) > 500:
+        for k in list(_join_lock.keys())[:200]:
+            if now - _join_lock[k] > 120:
+                _join_lock.pop(k, None)
+
+    uye_kaydi(chat.id, u)
+
+    # Mute
+    mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
+    if cget(chat.id, "approval") or cget(chat.id, "captcha"):
+        mute_dk = max(mute_dk, 60)
+    if mute_dk > 0:
+        try:
+            until = datetime.now(timezone.utc) + timedelta(minutes=mute_dk)
+            await bot.restrict_chat_member(
+                chat.id, u.id, permissions=MUTE_PERMS, until_date=until
+            )
+            log.info("join mute OK %sdk uid=%s chat=%s", mute_dk, u.id, chat.id)
+        except Exception as e:
+            log.warning("join mute FAIL: %s", e)
+            try:
+                await bot.send_message(
+                    SAHIP_ID,
+                    f"⚠️ Mute basarisiz (chat {chat.id}, uid {u.id}):\n<code>{html.escape(str(e)[:200])}</code>\n"
+                    "Botta \"kullanicilari kisitla\" yetkisi var mi?",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+    # Captcha
+    if cget(chat.id, "captcha"):
+        pending_captcha[(chat.id, u.id)] = True
+        if cget(chat.id, "captcha_math"):
+            import random
+            a, b = random.randint(2, 9), random.randint(2, 9)
+            pending_captcha[(chat.id, u.id)] = a + b
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(str(a + b), callback_data=f"cap:{chat.id}:{u.id}:{a+b}"),
+                InlineKeyboardButton(str(a + b + 2), callback_data=f"cap:{chat.id}:{u.id}:x"),
+                InlineKeyboardButton(str(max(1, a + b - 3)), callback_data=f"cap:{chat.id}:{u.id}:y"),
+            ]])
+            txt = f"🔐 {html.escape(u.full_name or 'Üye')}, {a}+{b} = ?"
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ İnsanım", callback_data=f"cap:{chat.id}:{u.id}:ok")]])
+            txt = f"🔐 {html.escape(u.full_name or 'Üye')}, gruba yazmak için butona bas."
+        try:
+            gonder = await bot.send_message(chat.id, txt, parse_mode="HTML", reply_markup=kb)
+            asyncio.create_task(sil_sonra(bot, chat.id, gonder.message_id, 120))
+        except Exception as e:
+            log.warning("captcha: %s", e)
+        return
+
+    # Hosgeldin mesaji
+    if not (cget(chat.id, "hosgeldin") or cget(chat.id, "kural_onay") or cget(chat.id, "hg_test")):
+        return
+    ad_esc = html.escape(u.full_name or u.first_name or "üye")
+    if cget(chat.id, "hg_test"):
+        ver = "a" if (u.id % 2 == 0) else "b"
+        sablon = cget(chat.id, f"hg_{ver}") or DEFAULT_G.get(f"hg_{ver}") or DEFAULT_G["hosgeldin_metin"]
+        metin = hosgeldin_metin_hazirla(sablon, ad_esc)
+    else:
+        metin = hosgeldin_metin_hazirla(
+            cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"],
+            ad_esc,
+        )
+    kb = None
+    if cget(chat.id, "kural_onay"):
+        kur = html.escape(str(cget(chat.id, "kurallar") or DEFAULT_G.get("kurallar") or "")[:400])
+        metin += f"\n\n📜 <b>Kurallar</b>\n{kur}\n\nYazmak için butona bas."
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Kuralları kabul ediyorum", callback_data=f"ko:{chat.id}:{u.id}")
+        ]])
+    try:
+        try:
+            gonder = await bot.send_message(chat.id, metin, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            gonder = await bot.send_message(
+                chat.id, re.sub(r"<[^>]+>", "", metin), reply_markup=kb
+            )
+        sil = int(cget(chat.id, "hosgeldin_sil") or 0)
+        if sil > 0 and not cget(chat.id, "kural_onay"):
+            asyncio.create_task(sil_sonra(bot, chat.id, gonder.message_id, sil))
+        log.info("hosgeldin OK uid=%s chat=%s", u.id, chat.id)
+    except Exception as e:
+        log.warning("hosgeldin send: %s", e)
+        try:
+            await bot.send_message(
+                SAHIP_ID,
+                f"⚠️ Hosgeldin mesaji gitmedi (chat {chat.id}):\n<code>{html.escape(str(e)[:200])}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
 async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg, chat = update.effective_message, update.effective_chat
     if not msg or not chat or not msg.new_chat_members:
@@ -7676,80 +7792,11 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await log_gonder(context.bot, chat.id, "🛡 AntiRaid tetiklendi")
                 except Exception as e:
                     log.warning("antiraid: %s", e)
-        # Mute: hosgeldin_mute > 0 ise uygula (hosgeldin mesaji ayri)
-        mute_dk = int(cget(chat.id, "hosgeldin_mute") or 0)
-        if cget(chat.id, "approval") or cget(chat.id, "captcha"):
-            mute_dk = max(mute_dk, 60)
-        if mute_dk > 0:
-            try:
-                until = datetime.now(timezone.utc) + timedelta(minutes=mute_dk)
-                await context.bot.restrict_chat_member(
-                    chat.id, u.id, permissions=MUTE_PERMS, until_date=until
-                )
-                log.info("join mute %s dk uid=%s chat=%s", mute_dk, u.id, chat.id)
-            except Exception as e:
-                log.warning("join mute: %s", e)
-        if cget(chat.id, "captcha"):
-            pending_captcha[(chat.id, u.id)] = True
-            if cget(chat.id, "captcha_math"):
-                import random
-                a, b = random.randint(2, 9), random.randint(2, 9)
-                pending_captcha[(chat.id, u.id)] = a + b
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(str(a + b), callback_data=f"cap:{chat.id}:{u.id}:{a+b}"),
-                    InlineKeyboardButton(str(a + b + 2), callback_data=f"cap:{chat.id}:{u.id}:x"),
-                    InlineKeyboardButton(str(max(1, a + b - 3)), callback_data=f"cap:{chat.id}:{u.id}:y"),
-                ]])
-                txt = f"🔐 {html.escape(u.full_name or 'Üye')}, {a}+{b} = ?"
-            else:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ İnsanım", callback_data=f"cap:{chat.id}:{u.id}:ok")]])
-                txt = f"🔐 {html.escape(u.full_name or 'Üye')}, gruba yazmak için butona bas."
-            try:
-                gonder = await context.bot.send_message(chat.id, txt, parse_mode="HTML", reply_markup=kb)
-                asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, 120))
-            except Exception as e:
-                log.warning("captcha: %s", e)
-        elif cget(chat.id, "hosgeldin") or cget(chat.id, "kural_onay") or cget(chat.id, "hg_test"):
-            ad_esc = html.escape(u.full_name or u.first_name or "üye")
-            if cget(chat.id, "hg_test"):
-                # A/B: cift uid -> A, tek -> B
-                ver = "a" if (u.id % 2 == 0) else "b"
-                sablon = cget(chat.id, f"hg_{ver}") or DEFAULT_G[f"hg_{ver}"]
-                metin = sablon.replace("{ad}", ad_esc)
-                sc = dict(cget(chat.id, "hg_sayac") or {})
-                sc[ver] = int(sc.get(ver) or 0) + 1
-                cset(chat.id, "hg_sayac", sc)
-                hv = dict(cget(chat.id, "hg_uye_versiyon") or {})
-                hv[str(u.id)] = ver
-                cset(chat.id, "hg_uye_versiyon", hv)
-            else:
-                metin = hosgeldin_metin_hazirla(
-                    cget(chat.id, "hosgeldin_metin") or DEFAULT_G["hosgeldin_metin"],
-                    ad_esc,
-                )
-            if cget(chat.id, "kural_onay"):
-                kur = html.escape(str(cget(chat.id, "kurallar") or DEFAULT_G["kurallar"])[:400])
-                metin += f"\n\n📜 <b>Kurallar</b>\n{kur}\n\nYazmak için butona bas."
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Kuralları kabul ediyorum", callback_data=f"ko:{chat.id}:{u.id}")
-                ]])
-            else:
-                kb = None
-            try:
-                try:
-                    gonder = await context.bot.send_message(
-                        chat.id, metin, parse_mode="HTML", reply_markup=kb
-                    )
-                except Exception:
-                    # HTML bozulduysa duz metin
-                    gonder = await context.bot.send_message(
-                        chat.id, re.sub(r"<[^>]+>", "", metin), reply_markup=kb
-                    )
-                sil = int(cget(chat.id, "hosgeldin_sil") or 0)
-                if sil > 0 and not cget(chat.id, "kural_onay"):
-                    asyncio.create_task(sil_sonra(context.bot, chat.id, gonder.message_id, sil))
-            except Exception as e:
-                log.warning("hosgeldin: %s", e)
+        try:
+            await yeni_uye_karsila(context.bot, chat, u, context)
+        except Exception as e:
+            log.warning("hosgeldin karsila: %s", e)
+
         # istatistik giren
         st = dict(cget(chat.id, "istatistik") or {})
         st["giren"] = int(st.get("giren") or 0) + 1
