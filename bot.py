@@ -252,7 +252,7 @@ SISTEM_TABAN = (
     "- Bilmiyorsan 'bilmiyorum' de; uydurma.\n"
     "- Canlı haber/skor uydurma.\n"
     "- Al-sat emri verme. Kriptoda gerekirse bir kez 'finansal tavsiye değil' de.\n"
-    "- Olgun ol, sulu/flörtöz olma. Dalga geçilirse kısa zekice cevap ver.\n"
+    "- Olgun ol, sulu. Guncel haber/hack bilmiyorsan uydurma, bilmiyorum de/flörtöz olma. Dalga geçilirse kısa zekice cevap ver.\n"
     "- Bot/model adı yazma. Üyeleri isimleriyle tanı.\n"
     "- ESPRİ: İsim veya cümleden komik bağlantı kur; cevap bitince sus.\n"
     "- MATEMATİK: Oran, çarpma, bölme, yüzde sorularında ÖNCE doğru sayıyı hesapla, "
@@ -1027,6 +1027,85 @@ def komut_kapali(chat_id, isim: str) -> bool:
 
 
 # ---------- AI ----------
+
+# ---------- web arama (ucretsiz, guncel bilgi) ----------
+_web_cache = {}
+
+def web_arama(sorgu: str, limit: int = 5) -> str:
+    """DuckDuckGo + RSS. Guncel olaylar icin."""
+    q = (sorgu or "").strip()[:120]
+    if not q:
+        return ""
+    now = time.time()
+    if q in _web_cache and now - _web_cache[q][0] < 120:
+        return _web_cache[q][1]
+    parcalar = []
+    try:
+        r = requests.get(
+            "https://api.duckduckgo.com/",
+            params={"q": q, "format": "json", "no_html": 1, "skip_disambig": 1},
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0 TurkPronimBot"},
+        )
+        if r.ok:
+            d = r.json()
+            if d.get("AbstractText"):
+                parcalar.append(d["AbstractText"][:400])
+            for tpc in (d.get("RelatedTopics") or [])[:3]:
+                if isinstance(tpc, dict) and tpc.get("Text"):
+                    parcalar.append(tpc["Text"][:200])
+    except Exception as e:
+        log.warning("ddg instant: %s", e)
+    try:
+        r = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": q},
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; TurkPronimBot/2.7)"},
+        )
+        if r.ok:
+            texts = re.findall(
+                r'class="result__snippet"[^>]*>(.*?)</(?:a|td|div)',
+                r.text,
+                flags=re.I | re.S,
+            )
+            for raw in texts[:limit]:
+                clean = re.sub(r"<[^>]+>", " ", raw)
+                clean = re.sub(r"\s+", " ", clean).strip()
+                if len(clean) > 40:
+                    parcalar.append(clean[:280])
+    except Exception as e:
+        log.warning("ddg html: %s", e)
+    if any(x in q.lower() for x in ("haber", "gündem", "gundem", "news", "bugün", "bugun", "crypto")):
+        for feed in (
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "https://cointelegraph.com/rss",
+        ):
+            try:
+                rr = requests.get(feed, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+                if not rr.ok:
+                    continue
+                titles = re.findall(
+                    r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
+                    rr.text,
+                    re.I,
+                )
+                for title in titles[1:6]:
+                    title = re.sub(r"\s+", " ", html.unescape(title)).strip()
+                    if title and len(title) > 15:
+                        parcalar.append("• " + title[:180])
+                if any(x.startswith("•") for x in parcalar):
+                    break
+            except Exception as e:
+                log.warning("rss: %s", e)
+    out = "\n".join(parcalar[:8])
+    _web_cache[q] = (now, out)
+    if len(_web_cache) > 80:
+        for k in list(_web_cache.keys())[:20]:
+            _web_cache.pop(k, None)
+    return out
+
+
 def groq_sor(m, sistem):
     if not groq:
         return None
@@ -1157,7 +1236,7 @@ def deepseek_sor(m, sistem):
             "https://api.deepseek.com/chat/completions",
             headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"},
             json={"model": "deepseek-chat", "messages": [{"role": "system", "content": sistem}] + m, "max_tokens": 400},
-            timeout=25,
+            timeout=15,
         )
         if r.ok:
             return (r.json()["choices"][0]["message"]["content"] or "").strip()
@@ -1174,7 +1253,7 @@ def mistral_sor(m, sistem):
             "https://api.mistral.ai/v1/chat/completions",
             headers={"Authorization": f"Bearer {MISTRAL_KEY}"},
             json={"model": "mistral-small-latest", "messages": [{"role": "system", "content": sistem}] + m, "max_tokens": 400},
-            timeout=25,
+            timeout=15,
         )
         if r.ok:
             return (r.json()["choices"][0]["message"]["content"] or "").strip()
@@ -8805,16 +8884,38 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # gündem/haber — uydurma engeli
+    # gündem/haber — RSS + web
     low_soru = kucult(soru)
-    if any(x in low_soru for x in ("gündem", "gundem", "son dakika", "haber", "bugün ne oldu", "bugun ne oldu", "gündemde ne", "gundemde ne")):
+    if any(x in low_soru for x in ("gündem", "gundem", "son dakika", "haber", "bugün ne oldu", "bugun ne oldu", "gündemde ne", "gundemde ne", "kripto haber")):
         try:
-            await msg.reply_text("🔆 Canlı haber akışına erişimim yok.")
+            await context.bot.send_chat_action(cid, "typing")
         except Exception:
             pass
+        try:
+            ham = await asyncio.to_thread(web_arama, "crypto news today Bitcoin Ethereum", 8)
+        except Exception as e:
+            log.warning("gundem web: %s", e)
+            ham = ""
+        if not ham:
+            try:
+                await msg.reply_text("🔆 Şu an haber kaynağına ulaşamadım, biraz sonra tekrar dene.")
+            except Exception:
+                pass
+            return
+        ozet = sor(
+            [{"role": "user", "content": f"Gündem özeti yaz (3-5 madde, Türkçe, uydurma yok):\n{ham}"}],
+            ek="Sadece verilen basliklardan.",
+            zor=False,
+            soru_metin=soru,
+        )
+        met = ozet or ham[:800]
+        try:
+            await msg.reply_text(f"📰 <b>Kısa gündem</b>\n{html.escape(met)}", parse_mode="HTML")
+        except Exception:
+            await msg.reply_text(f"📰 Gündem\n{met}")
         return
 
-    # kriz / etkinlik
+        # kriz / etkinlik
     if kucult(soru) in ("kriz aç", "kriz ac", "alarm aç", "alarm ac") and (await admin_mi(cid, user, context.bot) or sahip_mi(user)):
         ok = await kriz_ac(cid)
         try:
@@ -9216,29 +9317,32 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("✅ Öğrendim, bilgi tabanına eklendi.")
                 return
 
-    # arastir
+    # arastir — web + model (guncel)
     if re.search(r"(?i)\b(araştır|arastir|research)\b", soru):
         proje = re.sub(r"(?i)\b(araştır|arastir|research|yapay|şu|su|projeyi|projeyi)\b", "", soru).strip()
-        if proje:
-            try:
-                await context.bot.send_chat_action(cid, "typing")
-            except Exception:
-                pass
-            sistem = (
-                "Kripto proje ozeti yaz. Max 4 kisa cumle. Bilmiyorsan bilmiyorum de. "
-                "Uydurma link/fiyat verme. Turkce. Risk uyarisi ekle."
-            )
-            ozet = sor(
-                [{"role": "user", "content": f"Şu projeyi araştır ve özetle: {proje}"}],
-                ek="Kaynak uydurma.",
-                zor=True,
-                soru_metin=proje,
-            )
-            met = ozet or "Yeterli bilgi bulamadım."
-            if "tavsiye değildir" not in met.lower() and "tavsiye degildir" not in met.lower():
-                met = met.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
-            await msg.reply_text(f"🔍 {met}")
-            return
+        if not proje:
+            proje = soru
+        try:
+            await context.bot.send_chat_action(cid, "typing")
+        except Exception:
+            pass
+        try:
+            ham = await asyncio.to_thread(web_arama, proje, 6)
+        except Exception as e:
+            log.warning("web_arama: %s", e)
+            ham = ""
+        user_c = f"Soru: {proje}\n\nWeb ozeti:\n{ham or '(sonuc yok)'}"
+        ozet = sor(
+            [{"role": "user", "content": user_c}],
+            ek="Sadece web ozetine guven. Uydurma. Max 5 kisa cumle. Turkce.",
+            zor=True,
+            soru_metin=proje,
+        )
+        met = ozet or "Güvenilir güncel kaynak bulamadım; emin değilim."
+        if "tavsiye değildir" not in met.lower() and "tavsiye degildir" not in met.lower():
+            met = met.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
+        await msg.reply_text(f"🔍 {met}")
+        return
 
     # mini ders
     for anahtar, ders in _MINI_DERS.items():
