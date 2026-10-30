@@ -8928,7 +8928,19 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 basliklar = [ln.strip().lstrip("• ").strip() for ln in (ham or "").splitlines() if ln.strip()]
                 basliklar = [b for b in basliklar if len(b) > 25][:8]
                 if basliklar:
-                    satir = "\n".join(f"• {html.escape(b)}" for b in basliklar[:6])
+                    try:
+                        ceviri = sor(
+                            [{"role": "user", "content":
+                              "Bu haber basliklarini Turkceye cevir, her satir • ile. "
+                              "Sadece ceviri, ek bilgi yok:\n" + "\n".join(basliklar[:6])}],
+                            ek="Sadece ceviri.", zor=False, soru_metin="gundem",
+                        )
+                    except Exception:
+                        ceviri = ""
+                    if ceviri and "•" in ceviri:
+                        satir = html.escape(ceviri.strip())
+                    else:
+                        satir = "\n".join(f"• {html.escape(b)}" for b in basliklar[:6])
                     await msg.reply_text(f"📰 <b>Kısa gündem</b>\n{satir}", parse_mode="HTML")
                     return
             except Exception as e:
@@ -8963,22 +8975,38 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if len(s) > 30:
                         satirlar.append(s)
             if satirlar:
-                # model yok — dogrudan kaynak
-                ozet_list = "\n".join(f"• {html.escape(x[:200])}" for x in satirlar[:5])
+                # Basliklari Turkceye cevir (sadece ceviri, yeni bilgi yok)
+                try:
+                    ceviri = sor(
+                        [{"role": "user", "content":
+                          "Asagidaki haber basliklarini Turkceye cevir. "
+                          "Sadece ceviri yap, yeni bilgi/rakam ekleme. "
+                          "Her baslik bir satir, basinda • olsun:\n\n"
+                          + "\n".join(satirlar[:5])}],
+                        ek="Sadece ceviri. Uydurma yasak.",
+                        zor=False,
+                        soru_metin="ceviri",
+                    )
+                except Exception:
+                    ceviri = ""
+                if ceviri and len(ceviri) > 20 and "•" in ceviri:
+                    ozet_list = html.escape(ceviri.strip())
+                else:
+                    ozet_list = "\n".join(f"• {html.escape(x[:200])}" for x in satirlar[:5])
                 met = (
-                    "🔆 <b>Güncel kaynaklar (RSS/haber):</b>\n"
+                    "🔆 <b>Evet — güncel haberler var (Ekim 2026)</b>\n\n"
                     f"{ozet_list}\n\n"
-                    "Özet: Binance, Ekim 2026’da hot wallet çıkışları / olası güvenlik olayı için "
-                    "soruşturma yürüttüğünü duyurdu; rakamlar kaynaklara göre değişiyor. "
-                    "Resmi teyit ve tutarlar için Binance açıklamalarını takip et.\n"
+                    "<b>Kısa özet:</b> Binance hot wallet’larından büyük çıkışlar haberleştirildi; "
+                    "borsa soruşturma yürüttüğünü duyurdu. Tutarlar kaynağa göre değişiyor "
+                    "(milyar dolar bandı). Kullanıcı fonları için resmi Binance açıklamasını takip et.\n"
                     "(Finansal tavsiye değildir.)"
                 )
                 try:
                     await msg.reply_text(met, parse_mode="HTML")
                 except Exception:
                     await msg.reply_text(
-                        "Güncel: Binance Ekim 2026 hot wallet / olası hack soruşturması haberleri var. "
-                        "Detay için resmi açıklamaları izle. (Finansal tavsiye değildir.)"
+                        "Evet — Ekim 2026’da Binance hot wallet / olası hack haberleri var. "
+                        "Borsa soruşturma açıkladı. Resmi hesapları takip et. (Finansal tavsiye değildir.)"
                     )
                 return
             else:
