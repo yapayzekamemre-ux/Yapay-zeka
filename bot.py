@@ -832,6 +832,38 @@ def cset(chat_id, key, val):
     durum_kaydet()
 
 
+
+# EVM cuzdan adresi (ETH/BSC/...)
+_EVM_ADDR = re.compile(r"(?i)\b(0x[a-fA-F0-9]{40})\b")
+
+def evm_adres_bul(metin: str):
+    if not metin:
+        return None
+    m = _EVM_ADDR.search(metin)
+    return m.group(1) if m else None
+
+
+async def cuzdan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debank kartindaki Sil butonu."""
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    try:
+        await q.answer()
+    except Exception:
+        pass
+    # czd:sil:chatid:msgid or czd:sil
+    parts = (q.data or "").split(":")
+    if len(parts) >= 2 and parts[1] == "sil":
+        try:
+            await q.message.delete()
+        except Exception:
+            try:
+                await q.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+
 def kucult(t):
     return (t or "").replace("İ", "i").replace("I", "ı").lower()
 
@@ -8415,6 +8447,38 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.warning("wizard: %s", e)
 
+    
+    # --- EVM cuzdan / Debank ---
+    if metin and not ozel:
+        addr = evm_adres_bul(metin)
+        if addr:
+            # sadece adres veya kisa mesaj (spam AI'ya gitmesin)
+            sadece = len(metin.strip()) <= 50 or metin.strip().lower().startswith("0x")
+            if sadece or len(metin) < 80:
+                debank = f"https://debank.com/profile/{addr}"
+                ethscan = f"https://etherscan.io/address/{addr}"
+                bsc = f"https://bscscan.com/address/{addr}"
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("Debank", url=debank),
+                        InlineKeyboardButton("Etherscan", url=ethscan),
+                    ],
+                    [
+                        InlineKeyboardButton("BscScan", url=bsc),
+                        InlineKeyboardButton("🗑 Sil", callback_data="czd:sil"),
+                    ],
+                ])
+                try:
+                    await msg.reply_text(
+                        f"<code>{addr}</code>\nDebank / explorer:",
+                        parse_mode="HTML",
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    )
+                except Exception as e:
+                    log.warning("cuzdan yanit: %s", e)
+                return
+
     if ozel:
         if not sahip_mi(user):
             if metin:
@@ -10446,6 +10510,7 @@ def main():
             setlog_komut,
         )
     )
+    app.add_handler(CallbackQueryHandler(cuzdan_callback, pattern=r"^czd:"))
     app.add_handler(CallbackQueryHandler(panel_callback, pattern=r"^p:"))
     app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
     app.add_handler(CallbackQueryHandler(ceza_oy_callback, pattern=r"^cz:"))
