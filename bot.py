@@ -1105,6 +1105,19 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
         elif not ilgili and diger:
             # spesifik sorgu eslesmedi — yine de son haberleri ver (Binance vs)
             parcalar.extend(diger[:5])
+        # gundem/haber icin RSS yeterliyse DDG atla (hiz)
+        if any(x in low_q for x in ("haber", "gündem", "gundem", "news", "bugün", "bugun", "crypto news")) and len(parcalar) >= 5:
+            seen, uniq = set(), []
+            for p0 in parcalar:
+                k = p0[:55].lower()
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append(p0)
+            out = "\n".join(uniq[:12])
+            _web_cache[ck] = (now, out)
+            return out
+
     except Exception as e:
         log.warning("rss block: %s", e)
 
@@ -1119,7 +1132,7 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
             r = requests.get(
                 "https://api.duckduckgo.com/",
                 params={"q": v, "format": "json", "no_html": 1, "skip_disambig": 1},
-                timeout=8,
+                timeout=5,
                 headers={"User-Agent": "Mozilla/5.0 TurkPronimBot"},
             )
             if r.ok:
@@ -1136,7 +1149,7 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
         r = requests.get(
             "https://html.duckduckgo.com/html/",
             params={"q": q},
-            timeout=10,
+            timeout=6,
             headers={"User-Agent": "Mozilla/5.0 (compatible; TurkPronimBot/2.7)"},
         )
         if r.ok:
@@ -1169,51 +1182,71 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
 
 
 
+
 def _baslik_turkce(basliklar, limit=7):
-    """RSS basliklarini Turkceye cevir — yeterli token, yarim cumle yok."""
+    """Hizli Turkce ceviri — tek model, kisa timeout."""
     basliklar = [b.strip() for b in basliklar if b and len(b.strip()) > 15][:limit]
     if not basliklar:
-        return []
+        return ""
+    # cache
+    ck = "|".join(b[:40] for b in basliklar)
+    now = time.time()
+    if not hasattr(_baslik_turkce, "_cache"):
+        _baslik_turkce._cache = {}
+    if ck in _baslik_turkce._cache and now - _baslik_turkce._cache[ck][0] < 300:
+        return _baslik_turkce._cache[ck][1]
     prompt = (
-        "Asagidaki haber basliklarinin her birini Turkceye cevir. "
-        "Her satir tam cumle olsun, kesme. Yeni bilgi ekleme. "
-        "Sadece numarali liste yaz (1. 2. 3.):\n\n"
+        "Bu basliklari Turkceye cevir. Her satir tam olsun. "
+        "Sadece numarali liste (1. 2. 3.). Ek bilgi yok:\n"
         + "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar))
     )
     mesajlar = [{"role": "user", "content": prompt}]
-    sistem = "Sadece ceviri yap. Yarim birakma. Uydurma yasak."
-    # dogrudan daha yuksek token ile dene
+    sistem = "Sadece hizli ceviri. Yarim birakma."
+    txt = ""
+    # once en hizli: groq 8b
     if groq:
-        for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
-            try:
-                r = groq.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "system", "content": sistem}] + mesajlar,
-                    temperature=0.2,
-                    max_tokens=900,
-                )
-                txt = (r.choices[0].message.content or "").strip()
-                if txt and len(txt) > 40:
-                    return txt
-            except Exception as e:
-                log.warning("ceviri groq: %s", e)
-    if gem:
-        for model in ("gemini-flash-latest", "gemini-2.5-flash"):
-            try:
-                r = gem.models.generate_content(
-                    model=model,
-                    contents=_gem_parts(mesajlar),
-                    config=types.GenerateContentConfig(
-                        system_instruction=sistem, temperature=0.2, max_output_tokens=900
-                    ),
-                )
-                txt = (getattr(r, "text", None) or "").strip()
-                if txt and len(txt) > 40:
-                    return txt
-            except Exception as e:
-                log.warning("ceviri gem: %s", e)
-    # fallback: orijinal basliklar
-    return "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar))
+        try:
+            r = groq.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "system", "content": sistem}] + mesajlar,
+                temperature=0.1,
+                max_tokens=700,
+                timeout=12,
+            )
+            txt = (r.choices[0].message.content or "").strip()
+        except Exception as e:
+            log.warning("ceviri groq8: %s", e)
+    if not txt and groq:
+        try:
+            r = groq.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "system", "content": sistem}] + mesajlar,
+                temperature=0.1,
+                max_tokens=700,
+                timeout=15,
+            )
+            txt = (r.choices[0].message.content or "").strip()
+        except Exception as e:
+            log.warning("ceviri groq70: %s", e)
+    if not txt and gem:
+        try:
+            r = gem.models.generate_content(
+                model="gemini-flash-latest",
+                contents=_gem_parts(mesajlar),
+                config=types.GenerateContentConfig(
+                    system_instruction=sistem, temperature=0.1, max_output_tokens=700
+                ),
+            )
+            txt = (getattr(r, "text", None) or "").strip()
+        except Exception as e:
+            log.warning("ceviri gem: %s", e)
+    if not txt or len(txt) < 30:
+        txt = "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar))
+    _baslik_turkce._cache[ck] = (now, txt)
+    if len(_baslik_turkce._cache) > 30:
+        for k in list(_baslik_turkce._cache.keys())[:10]:
+            _baslik_turkce._cache.pop(k, None)
+    return txt
 
 
 def groq_sor(m, sistem):
@@ -8972,7 +9005,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if any(x in low_early for x in ("gündem", "gundem", "son dakika", "kripto haber")) or low_early.strip() in ("haber", "haberler"):
             try:
                 await context.bot.send_chat_action(cid, "typing")
-                ham = await asyncio.to_thread(web_arama, "crypto news today", 14)
+                # 3 dk gundem onbellegi
+                _gc = getattr(web_arama, "_gundem_cache", None)
+                if _gc and time.time() - _gc[0] < 180:
+                    ham = _gc[1]
+                else:
+                    ham = await asyncio.to_thread(web_arama, "crypto news today", 14)
+                    web_arama._gundem_cache = (time.time(), ham)
                 basliklar = []
                 for ln in (ham or "").splitlines():
                     s = ln.strip().lstrip("• ").strip()
