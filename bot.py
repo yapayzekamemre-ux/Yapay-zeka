@@ -2684,6 +2684,20 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cset(cid, "hosgeldin", not bool(cget(cid, "hosgeldin")))
         await yenile()
         return
+    if data == "hgmetin":
+        if not cid or int(cid) >= 0:
+            await q.answer("Önce grup seç", show_alert=True)
+            return
+        try:
+            await q.answer()
+        except Exception:
+            pass
+        await wizard_baslat(
+            update, context, "welcome", int(cid),
+            "Yeni karşılama mesajını yaz.\n"
+            "{ad} = üye adı\nÖrnek: ⛔ <b>{ad}</b> Hoşgeldiniz",
+        )
+        return
     if data == "hc":
         cset(cid, "hoscaakal", not bool(cget(cid, "hoscaakal")))
         await yenile()
@@ -2742,6 +2756,7 @@ async def panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"Hoş Geldin {_ok(cget(cid,'hosgeldin'))}", callback_data="p:hg"),
                  InlineKeyboardButton(f"Hoşçakal {_ok(cget(cid,'hoscaakal'))}", callback_data="p:hc")],
+                [InlineKeyboardButton("📝 Karşılama metni", callback_data="p:hgmetin")],
                 [
                     InlineKeyboardButton("Mute kapalı", callback_data="p:hm0"),
                     InlineKeyboardButton("5dk", callback_data="p:hm5"),
@@ -4341,33 +4356,79 @@ async def welcomemute_komut(update, context):
 async def setwelcome_komut(update, context):
     g = await _mod_giris(update, context)
     if not g:
+        try:
+            ch = update.effective_chat
+            if ch and ch.type in (ChatType.PRIVATE, "private"):
+                await update.effective_message.reply_text(
+                    "Önce grup seç:\n<code>/gruplar</code> veya <code>/grup -100...</code>",
+                    parse_mode="HTML",
+                )
+        except Exception:
+            pass
         return
-    _, chat, _ = g
-    if not context.args:
+    msg, chat, user = g
+    # 1) Yanitlanan mesaj = karsilama metni
+    metin = ""
+    if msg and getattr(msg, "reply_to_message", None):
+        rt = msg.reply_to_message
+        metin = (rt.text or rt.caption or "").strip()
+    # 2) Komuttan sonraki tum metin (cok satir)
+    if not metin and msg and msg.text:
+        raw = msg.text
+        # /setwelcome@Bot ... veya /setwelcome ...
+        parts = raw.split(None, 1)
+        if len(parts) >= 2:
+            metin = parts[1].strip()
+    if not metin and context.args:
+        metin = " ".join(context.args).strip()
+    if not metin:
         await kisa_cevap(
-            context.bot, chat.id,
-            "Kullanım:\n<code>/setwelcome metin</code>\n"
-            "Mute: <code>/welcomemute 15</code>\n"
+            context.bot, chat.id if hasattr(chat, "id") else update.effective_chat.id,
+            "Kullanım:\n"
+            "• <code>/setwelcome metin buraya</code>\n"
+            "• veya bir mesaja yanıtla: <code>/setwelcome</code>\n"
+            "• Mute: <code>/welcomemute 15</code>\n"
             "{ad} = üye adı",
         )
         return
-    metin = " ".join(context.args)
-    cset(chat.id, "hosgeldin_metin", metin)
-    cset(chat.id, "hosgeldin", True)
-    # metinde "15 dakika" varsa mute otomatik
+    gid = int(chat.id)
+    if gid >= 0:
+        await kisa_cevap(
+            context.bot, update.effective_chat.id,
+            "❌ Geçerli grup seçili değil. <code>/gruplar</code> ile grup seç.",
+        )
+        return
+    cset(gid, "hosgeldin_metin", metin)
+    cset(gid, "hosgeldin", True)
+    durum_kaydet()
     m = re.search(r"(\d+)\s*(?:dk|dakika|min)", metin, re.I)
     if m:
         dk = max(1, min(1440, int(m.group(1))))
-        cset(chat.id, "hosgeldin_mute", dk)
+        cset(gid, "hosgeldin_mute", dk)
         extra = f" + {dk} dk susturma"
     else:
         extra = ""
-        if int(cget(chat.id, "hosgeldin_mute") or 0) == 0:
+        if int(cget(gid, "hosgeldin_mute") or 0) == 0:
             extra = " (mute yok — /welcomemute 15)"
-    await kisa_cevap(
-        context.bot, chat.id,
-        f"✅ Karşılama kaydedildi ve açıldı{extra}.",
-    )
+    # dogrulama oku
+    kayit = cget(gid, "hosgeldin_metin") or ""
+    onizleme = kayit.replace("{ad}", (user.first_name if user else "Üye") or "Üye")[:300]
+    hedef = update.effective_chat.id  # ozelde ozel sohbete yaz
+    try:
+        await context.bot.send_message(
+            hedef,
+            f"✅ <b>Karşılama kaydedildi</b> (grup <code>{gid}</code>){extra}\n\n"
+            f"<b>Önizleme:</b>\n{onizleme}\n\n"
+            f"Açık: {'evet' if cget(gid,'hosgeldin') else 'hayır'} · "
+            f"Mute: {cget(gid,'hosgeldin_mute') or 0} dk",
+            parse_mode="HTML",
+        )
+    except Exception:
+        await kisa_cevap(
+            context.bot, hedef,
+            f"✅ Karşılama kaydedildi ({gid}){extra}",
+        )
+    log.info("setwelcome OK gid=%s len=%s", gid, len(metin))
 
 
 async def setlog_komut(update, context):
@@ -6267,13 +6328,26 @@ async def wizard_devam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
     cid = w["cid"]
 
     if tip == "welcome":
+        try:
+            cid = int(cid)
+        except Exception:
+            await msg.reply_text("Grup ID hatalı.")
+            return True
+        if cid >= 0:
+            await msg.reply_text("Geçerli grup seç (/gruplar).")
+            return True
         cset(cid, "hosgeldin_metin", metin)
         cset(cid, "hosgeldin", True)
+        durum_kaydet()
         context.user_data.pop("wizard", None)
+        oniz = metin.replace("{ad}", user.first_name or "Üye")[:250]
         await msg.reply_text(
-            "✅ Karsilama kaydedildi.\nOnizleme: "
-            + metin.replace("{ad}", user.first_name or "Uye")[:200]
+            f"✅ Karşılama kaydedildi (grup <code>{cid}</code>).\n\n"
+            f"<b>Önizleme:</b>\n{oniz}\n\n"
+            f"Kontrol: /hgdurum",
+            parse_mode="HTML",
         )
+        log.info("wizard welcome OK gid=%s", cid)
         return True
     if tip == "block":
         bl = list(cget(cid, "blocklist") or [])
