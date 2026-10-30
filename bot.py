@@ -1168,6 +1168,54 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
     return out
 
 
+
+def _baslik_turkce(basliklar, limit=7):
+    """RSS basliklarini Turkceye cevir — yeterli token, yarim cumle yok."""
+    basliklar = [b.strip() for b in basliklar if b and len(b.strip()) > 15][:limit]
+    if not basliklar:
+        return []
+    prompt = (
+        "Asagidaki haber basliklarinin her birini Turkceye cevir. "
+        "Her satir tam cumle olsun, kesme. Yeni bilgi ekleme. "
+        "Sadece numarali liste yaz (1. 2. 3.):\n\n"
+        + "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar))
+    )
+    mesajlar = [{"role": "user", "content": prompt}]
+    sistem = "Sadece ceviri yap. Yarim birakma. Uydurma yasak."
+    # dogrudan daha yuksek token ile dene
+    if groq:
+        for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+            try:
+                r = groq.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "system", "content": sistem}] + mesajlar,
+                    temperature=0.2,
+                    max_tokens=900,
+                )
+                txt = (r.choices[0].message.content or "").strip()
+                if txt and len(txt) > 40:
+                    return txt
+            except Exception as e:
+                log.warning("ceviri groq: %s", e)
+    if gem:
+        for model in ("gemini-flash-latest", "gemini-2.5-flash"):
+            try:
+                r = gem.models.generate_content(
+                    model=model,
+                    contents=_gem_parts(mesajlar),
+                    config=types.GenerateContentConfig(
+                        system_instruction=sistem, temperature=0.2, max_output_tokens=900
+                    ),
+                )
+                txt = (getattr(r, "text", None) or "").strip()
+                if txt and len(txt) > 40:
+                    return txt
+            except Exception as e:
+                log.warning("ceviri gem: %s", e)
+    # fallback: orijinal basliklar
+    return "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar))
+
+
 def groq_sor(m, sistem):
     if not groq:
         return None
@@ -8920,29 +8968,43 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- ONCELIK: guncel haber / arastir / gundem (duyuru airdrop'tan ONCE) ---
     if cagrildi and not ozel:
         low_early = kucult(soru or metin or "")
-        # 1) GUNDEM
+        # 1) GUNDEM — 6-8 tam baslik, Turkce, kesilmesin
         if any(x in low_early for x in ("gündem", "gundem", "son dakika", "kripto haber")) or low_early.strip() in ("haber", "haberler"):
             try:
                 await context.bot.send_chat_action(cid, "typing")
-                ham = await asyncio.to_thread(web_arama, "crypto news today Binance", 12)
-                basliklar = [ln.strip().lstrip("• ").strip() for ln in (ham or "").splitlines() if ln.strip()]
-                basliklar = [b for b in basliklar if len(b) > 25][:8]
-                if basliklar:
-                    try:
-                        ceviri = sor(
-                            [{"role": "user", "content":
-                              "Bu haber basliklarini Turkceye cevir, her satir • ile. "
-                              "Sadece ceviri, ek bilgi yok:\n" + "\n".join(basliklar[:6])}],
-                            ek="Sadece ceviri.", zor=False, soru_metin="gundem",
-                        )
-                    except Exception:
-                        ceviri = ""
-                    if ceviri and "•" in ceviri:
-                        satir = html.escape(ceviri.strip())
-                    else:
-                        satir = "\n".join(f"• {html.escape(b)}" for b in basliklar[:6])
-                    await msg.reply_text(f"📰 <b>Kısa gündem</b>\n{satir}", parse_mode="HTML")
+                ham = await asyncio.to_thread(web_arama, "crypto news today", 14)
+                basliklar = []
+                for ln in (ham or "").splitlines():
+                    s = ln.strip().lstrip("• ").strip()
+                    if len(s) > 25:
+                        basliklar.append(s[:220])
+                # tekil
+                seen, uniq = set(), []
+                for b in basliklar:
+                    k = b[:40].lower()
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    uniq.append(b)
+                basliklar = uniq[:8]
+                if not basliklar:
+                    await msg.reply_text("📰 Şu an gündem başlığı çekemedim, biraz sonra tekrar dene.")
                     return
+                try:
+                    ceviri = await asyncio.to_thread(_baslik_turkce, basliklar, 7)
+                except Exception as e:
+                    log.warning("gundem ceviri: %s", e)
+                    ceviri = "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar[:7]))
+                if isinstance(ceviri, list):
+                    ceviri = "\n".join(str(x) for x in ceviri)
+                ceviri = (ceviri or "").strip()
+                # HTML kacis
+                satir = html.escape(ceviri)
+                await msg.reply_text(
+                    f"📰 <b>Kısa gündem</b>\n{satir}\n\n<i>Kaynak: CoinDesk / Cointelegraph RSS</i>",
+                    parse_mode="HTML",
+                )
+                return
             except Exception as e:
                 log.warning("early gundem: %s", e)
 
@@ -8977,20 +9039,11 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if satirlar:
                 # Basliklari Turkceye cevir (sadece ceviri, yeni bilgi yok)
                 try:
-                    ceviri = sor(
-                        [{"role": "user", "content":
-                          "Asagidaki haber basliklarini Turkceye cevir. "
-                          "Sadece ceviri yap, yeni bilgi/rakam ekleme. "
-                          "Her baslik bir satir, basinda • olsun:\n\n"
-                          + "\n".join(satirlar[:5])}],
-                        ek="Sadece ceviri. Uydurma yasak.",
-                        zor=False,
-                        soru_metin="ceviri",
-                    )
+                    ceviri = await asyncio.to_thread(_baslik_turkce, satirlar[:6], 6)
                 except Exception:
                     ceviri = ""
-                if ceviri and len(ceviri) > 20 and "•" in ceviri:
-                    ozet_list = html.escape(ceviri.strip())
+                if ceviri and len(str(ceviri)) > 20:
+                    ozet_list = html.escape(str(ceviri).strip())
                 else:
                     ozet_list = "\n".join(f"• {html.escape(x[:200])}" for x in satirlar[:5])
                 met = (
