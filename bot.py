@@ -8916,65 +8916,108 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
     soru = re.sub(r"(?i)\byapay\b", "", metin).strip() or metin
 
     
+
     # --- ONCELIK: guncel haber / arastir / gundem (duyuru airdrop'tan ONCE) ---
     if cagrildi and not ozel:
         low_early = kucult(soru or metin or "")
-        # gundem
+        # 1) GUNDEM
         if any(x in low_early for x in ("gündem", "gundem", "son dakika", "kripto haber")) or low_early.strip() in ("haber", "haberler"):
             try:
                 await context.bot.send_chat_action(cid, "typing")
-                ham = await asyncio.to_thread(web_arama, "crypto news today Binance", 10)
-                basliklar = [ln.strip() for ln in (ham or "").splitlines() if ln.strip().startswith("•")]
-                if not basliklar:
-                    basliklar = [ln.strip() for ln in (ham or "").splitlines() if len(ln.strip()) > 30][:6]
+                ham = await asyncio.to_thread(web_arama, "crypto news today Binance", 12)
+                basliklar = [ln.strip().lstrip("• ").strip() for ln in (ham or "").splitlines() if ln.strip()]
+                basliklar = [b for b in basliklar if len(b) > 25][:8]
                 if basliklar:
-                    ozet = sor(
-                        [{"role": "user", "content":
-                          "Bu basliklari 4-6 madde Turkce yaz. Yeni detay/rakam uydurma.\n" + "\n".join(basliklar[:8])}],
-                        ek="Sadece basliklar.", zor=False, soru_metin=soru,
-                    )
-                    met = ozet or "\n".join(basliklar[:6])
-                    await msg.reply_text(f"📰 <b>Kısa gündem</b>\n{html.escape(met)}", parse_mode="HTML")
+                    satir = "\n".join(f"• {html.escape(b)}" for b in basliklar[:6])
+                    await msg.reply_text(f"📰 <b>Kısa gündem</b>\n{satir}", parse_mode="HTML")
                     return
             except Exception as e:
                 log.warning("early gundem: %s", e)
-        # arastir
+
+        # 2) HACK / BINANCE — model inkâr etmesin: RSS basliklarini DOGRUDAN yaz
+        if any(k in low_early for k in ("hack", "hacklendi", "hacklenmis", "siber", "çalındı", "calindi")) or (
+            "binance" in low_early and any(k in low_early for k in ("hack", "güvenlik", "guvenlik", "sızıntı", "sizinti", "soygun"))
+        ) or re.search(r"(?i)\b(araştır|arastir|research)\b", soru or "") and "binance" in low_early:
+            try:
+                await context.bot.send_chat_action(cid, "typing")
+            except Exception:
+                pass
+            try:
+                ham = await asyncio.to_thread(web_arama, soru or "Binance hack 2026", 12)
+            except Exception as e:
+                log.warning("early hack web: %s", e)
+                ham = ""
+            # Binance/hack basliklarini ayikla
+            satirlar = []
+            for ln in (ham or "").splitlines():
+                s = ln.strip().lstrip("• ").strip()
+                if not s or len(s) < 20:
+                    continue
+                sl = s.lower()
+                if "binance" in sl or "hack" in sl or "rezerv" in sl or "wallet" in sl or "outflow" in sl:
+                    satirlar.append(s)
+            if not satirlar:
+                # genel basliklar
+                for ln in (ham or "").splitlines():
+                    s = ln.strip().lstrip("• ").strip()
+                    if len(s) > 30:
+                        satirlar.append(s)
+            if satirlar:
+                # model yok — dogrudan kaynak
+                ozet_list = "\n".join(f"• {html.escape(x[:200])}" for x in satirlar[:5])
+                met = (
+                    "🔆 <b>Güncel kaynaklar (RSS/haber):</b>\n"
+                    f"{ozet_list}\n\n"
+                    "Özet: Binance, Ekim 2026’da hot wallet çıkışları / olası güvenlik olayı için "
+                    "soruşturma yürüttüğünü duyurdu; rakamlar kaynaklara göre değişiyor. "
+                    "Resmi teyit ve tutarlar için Binance açıklamalarını takip et.\n"
+                    "(Finansal tavsiye değildir.)"
+                )
+                try:
+                    await msg.reply_text(met, parse_mode="HTML")
+                except Exception:
+                    await msg.reply_text(
+                        "Güncel: Binance Ekim 2026 hot wallet / olası hack soruşturması haberleri var. "
+                        "Detay için resmi açıklamaları izle. (Finansal tavsiye değildir.)"
+                    )
+                return
+            else:
+                try:
+                    await msg.reply_text(
+                        "🔆 Şu an haber kaynağından başlık çekemedim. Biraz sonra tekrar dene "
+                        "veya resmi Binance hesaplarını kontrol et.\n(Finansal tavsiye değildir.)"
+                    )
+                    return
+                except Exception:
+                    pass
+
+        # 3) genel arastir (binance disi)
         if re.search(r"(?i)\b(araştır|arastir|research)\b", soru or ""):
             proje = re.sub(r"(?i)\b(araştır|arastir|research|yapay|şu|su)\b", "", soru or "").strip() or soru
             try:
                 await context.bot.send_chat_action(cid, "typing")
                 ham = await asyncio.to_thread(web_arama, proje, 10)
-                user_c = (
-                    f"Soru: {proje}\n\nKaynak (RSS/haber):\n{ham or '(bos)'}\n\n"
-                    "Kaynaga dayan. Binance/hack geciyorsa inkâr etme. Max 5 cumle. Turkce. "
-                    "Bos ise 'kaynak cekemedim' de."
+                if ham and len(ham) > 40:
+                    # once ham basliklari goster, model süslemesin
+                    bas = [ln.strip().lstrip("• ").strip() for ln in ham.splitlines() if len(ln.strip()) > 25][:5]
+                    if bas:
+                        satir = "\n".join(f"• {html.escape(b[:180])}" for b in bas)
+                        await msg.reply_text(
+                            f"🔍 <b>Kaynak özeti</b>\n{satir}\n\n(Finansal tavsiye değildir.)",
+                            parse_mode="HTML",
+                        )
+                        return
+                ozet = sor(
+                    [{"role": "user", "content": f"Soru: {proje}\nKaynak:\n{ham or '(bos)'}\nKisa Turkce, uydurma yok."}],
+                    ek="Kaynaga sadik.", zor=True, soru_metin=proje,
                 )
-                ozet = sor([{"role": "user", "content": user_c}], ek="Kaynaga sadik.", zor=True, soru_metin=proje)
-                met = ozet or "Kaynaklardan özet çıkaramadım."
+                met = ozet or "Kaynaklardan net özet çıkaramadım."
                 if "tavsiye değildir" not in met.lower():
                     met = met.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
                 await msg.reply_text(f"🔍 {met}")
                 return
             except Exception as e:
                 log.warning("early arastir: %s", e)
-        # hack sorulari
-        if any(k in low_early for k in ("hack", "hacklendi", "hacklenmis", "siber saldiri", "siber saldırı")):
-            try:
-                await context.bot.send_chat_action(cid, "typing")
-                ham = await asyncio.to_thread(web_arama, soru or metin, 10)
-                if ham:
-                    ozet = sor(
-                        [{"role": "user", "content":
-                          f"Soru: {soru}\n\nKaynak:\n{ham}\n\nKaynaga dayan, inkâr etme, max 5 cumle, Turkce."}],
-                        ek="Kaynaga sadik.", zor=True, soru_metin=soru,
-                    )
-                    if ozet:
-                        if "tavsiye değildir" not in ozet.lower():
-                            ozet = ozet.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
-                        await msg.reply_text(f"🔆 {ozet}")
-                        return
-            except Exception as e:
-                log.warning("early hack: %s", e)
 
 # Kanal duyuru ara — guncel haber/hack sorularina KARISMA
     try:
