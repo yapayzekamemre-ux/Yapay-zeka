@@ -5076,27 +5076,34 @@ def duyuru_liste_butonlar(chat_id):
 
 
 def duyuru_ara(chat_id, sorgu: str, limit: int = 3):
-    """Grup duyuru havuzunda kelime ara (title+text)."""
+    """Grup duyuru havuzunda kelime ara (title+text). Kisa/anlamsiz eslesme yok."""
     posts = list(cget(chat_id, "duyuru_posts") or [])
     if not posts or not sorgu:
         return []
-    # temizle: yapay, duyuru, airdrop, link, ne, nedir
     q = kucult(sorgu)
-    for at in ("yapay", "duyuru", "duyurusu", "airdrop", "nedir", "neydi", "hakkinda", "hakkında",
-               "link", "var mi", "var mı", "goster", "göster", "bul", "ara"):
+    for at in (
+        "yapay", "duyuru", "duyurusu", "airdrop", "nedir", "neydi", "hakkinda", "hakkında",
+        "link", "var mi", "var mı", "goster", "göster", "bul", "ara", "hack", "hacklendi",
+        "hacklenmis", "siber", "haber", "gundem", "gündem",
+    ):
         q = q.replace(at, " ")
     q = re.sub(r"\s+", " ", q).strip()
-    kelimeler = [k for k in q.split() if len(k) >= 2]
+    stop = {"mi", "mı", "mu", "mü", "ne", "bu", "su", "şu", "bir", "ile", "icin", "için", "ve", "da", "de"}
+    kelimeler = [k for k in q.split() if len(k) >= 4 and k not in stop]
     if not kelimeler:
-        # sadece "duyuru" dediyse bugunku son postlar
-        bugun = datetime.now(TR).strftime("%Y-%m-%d")
-        bugunku = [p for p in posts if p.get("date") == bugun]
-        return (bugunku or posts)[-limit:][::-1]
+        # sadece acik "duyuru" istegi
+        low0 = kucult(sorgu)
+        if "duyuru" in low0 and not any(x in low0 for x in ("hack", "binance", "haber", "gundem", "gündem")):
+            bugun = datetime.now(TR).strftime("%Y-%m-%d")
+            bugunku = [p for p in posts if p.get("date") == bugun]
+            return (bugunku or posts)[-limit:][::-1]
+        return []
     skorlu = []
     for p in posts:
         blob = kucult((p.get("title") or "") + " " + (p.get("text") or ""))
         skor = sum(1 for k in kelimeler if k in blob)
-        if skor:
+        # en az 1 anlamli kelime, tek harf/ek eslesmesin
+        if skor >= 1:
             skorlu.append((skor, p))
     skorlu.sort(key=lambda x: (-x[0], x[1].get("id") or 0))
     return [p for _, p in skorlu[:limit]]
@@ -8908,26 +8915,94 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     soru = re.sub(r"(?i)\byapay\b", "", metin).strip() or metin
 
-    # Kanal duyuru ara: "yapay folk duyuru" / "yapay neopod"
-    try:
-        if cagrildi and not ozel and (duyuru_posts := (cget(cid, "duyuru_posts") or [])):
-            low_s = kucult(soru or metin or "")
-            iste_duyuru = any(
-                x in low_s
-                for x in (
-                    "duyuru", "airdrop", "kampanya", "etkinlik", "kayit", "kayıt",
-                    "link var", "nedir", "ne o", "ne bu",
+    
+    # --- ONCELIK: guncel haber / arastir / gundem (duyuru airdrop'tan ONCE) ---
+    if cagrildi and not ozel:
+        low_early = kucult(soru or metin or "")
+        # gundem
+        if any(x in low_early for x in ("gündem", "gundem", "son dakika", "kripto haber")) or low_early.strip() in ("haber", "haberler"):
+            try:
+                await context.bot.send_chat_action(cid, "typing")
+                ham = await asyncio.to_thread(web_arama, "crypto news today Binance", 10)
+                basliklar = [ln.strip() for ln in (ham or "").splitlines() if ln.strip().startswith("•")]
+                if not basliklar:
+                    basliklar = [ln.strip() for ln in (ham or "").splitlines() if len(ln.strip()) > 30][:6]
+                if basliklar:
+                    ozet = sor(
+                        [{"role": "user", "content":
+                          "Bu basliklari 4-6 madde Turkce yaz. Yeni detay/rakam uydurma.\n" + "\n".join(basliklar[:8])}],
+                        ek="Sadece basliklar.", zor=False, soru_metin=soru,
+                    )
+                    met = ozet or "\n".join(basliklar[:6])
+                    await msg.reply_text(f"📰 <b>Kısa gündem</b>\n{html.escape(met)}", parse_mode="HTML")
+                    return
+            except Exception as e:
+                log.warning("early gundem: %s", e)
+        # arastir
+        if re.search(r"(?i)\b(araştır|arastir|research)\b", soru or ""):
+            proje = re.sub(r"(?i)\b(araştır|arastir|research|yapay|şu|su)\b", "", soru or "").strip() or soru
+            try:
+                await context.bot.send_chat_action(cid, "typing")
+                ham = await asyncio.to_thread(web_arama, proje, 10)
+                user_c = (
+                    f"Soru: {proje}\n\nKaynak (RSS/haber):\n{ham or '(bos)'}\n\n"
+                    "Kaynaga dayan. Binance/hack geciyorsa inkâr etme. Max 5 cumle. Turkce. "
+                    "Bos ise 'kaynak cekemedim' de."
                 )
-            )
-            # veya havuzda eslesen kelime
-            eslesen = duyuru_ara(cid, soru or metin or "", limit=1)
-            if iste_duyuru or eslesen:
-                if eslesen or iste_duyuru:
+                ozet = sor([{"role": "user", "content": user_c}], ek="Kaynaga sadik.", zor=True, soru_metin=proje)
+                met = ozet or "Kaynaklardan özet çıkaramadım."
+                if "tavsiye değildir" not in met.lower():
+                    met = met.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
+                await msg.reply_text(f"🔍 {met}")
+                return
+            except Exception as e:
+                log.warning("early arastir: %s", e)
+        # hack sorulari
+        if any(k in low_early for k in ("hack", "hacklendi", "hacklenmis", "siber saldiri", "siber saldırı")):
+            try:
+                await context.bot.send_chat_action(cid, "typing")
+                ham = await asyncio.to_thread(web_arama, soru or metin, 10)
+                if ham:
+                    ozet = sor(
+                        [{"role": "user", "content":
+                          f"Soru: {soru}\n\nKaynak:\n{ham}\n\nKaynaga dayan, inkâr etme, max 5 cumle, Turkce."}],
+                        ek="Kaynaga sadik.", zor=True, soru_metin=soru,
+                    )
+                    if ozet:
+                        if "tavsiye değildir" not in ozet.lower():
+                            ozet = ozet.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
+                        await msg.reply_text(f"🔆 {ozet}")
+                        return
+            except Exception as e:
+                log.warning("early hack: %s", e)
+
+# Kanal duyuru ara — guncel haber/hack sorularina KARISMA
+    try:
+        if cagrildi and not ozel and (cget(cid, "duyuru_posts") or []):
+            low_s = kucult(soru or metin or "")
+            if any(x in low_s for x in (
+                "hack", "hacklendi", "hacklenmis", "siber", "gundem", "gündem",
+                "haber", "son dakika", "binance hack", "araştır", "arastir",
+            )):
+                pass  # web/gundem yollarina birak
+            else:
+                iste_duyuru = any(
+                    x in low_s
+                    for x in (
+                        "duyuru", "airdrop", "kampanya", "etkinlik", "kayit", "kayıt",
+                        "link var", "nedir", "ne o", "ne bu",
+                    )
+                )
+                eslesen = duyuru_ara(cid, soru or metin or "", limit=1)
+                if (iste_duyuru or eslesen) and eslesen:
                     ok = await duyuru_sorgu_cevap(
                         context.bot, cid, soru or metin or "", msg.message_id
                     )
                     if ok:
                         return
+                elif iste_duyuru and not eslesen:
+                    # rastgele son duyuruya yapisma
+                    pass
     except Exception as e:
         log.warning("duyuru ara hook: %s", e)
 
