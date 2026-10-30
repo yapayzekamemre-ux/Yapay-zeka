@@ -1028,34 +1028,110 @@ def komut_kapali(chat_id, isim: str) -> bool:
 
 # ---------- AI ----------
 
+
 # ---------- web arama (ucretsiz, guncel bilgi) ----------
 _web_cache = {}
 
-def web_arama(sorgu: str, limit: int = 5) -> str:
-    """DuckDuckGo + RSS. Guncel olaylar icin."""
-    q = (sorgu or "").strip()[:120]
+def _rss_basliklar(limit=10):
+    """CoinDesk + Cointelegraph son basliklar."""
+    out = []
+    for feed in (
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://cointelegraph.com/rss",
+    ):
+        try:
+            rr = requests.get(feed, timeout=9, headers={"User-Agent": "Mozilla/5.0 TurkPronimBot"})
+            if not rr.ok:
+                continue
+            titles = re.findall(
+                r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
+                rr.text,
+                re.I | re.S,
+            )
+            for title in titles[1:12]:
+                title = re.sub(r"<[^>]+>", "", html.unescape(title))
+                title = re.sub(r"\s+", " ", title).strip()
+                low = title.lower()
+                if not title or len(title) < 20:
+                    continue
+                if "coindesk" in low or "cointelegraph" in low:
+                    continue
+                out.append("• " + title[:220])
+        except Exception as e:
+            log.warning("rss: %s", e)
+    # tekil
+    seen, uniq = set(), []
+    for x in out:
+        k = x[:50].lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(x)
+    return uniq[:limit]
+
+
+def web_arama(sorgu: str, limit: int = 6) -> str:
+    """RSS once, sonra DDG. Guncel olaylar icin RSS zorunlu."""
+    q = (sorgu or "").strip()[:140]
     if not q:
         return ""
     now = time.time()
-    if q in _web_cache and now - _web_cache[q][0] < 120:
-        return _web_cache[q][1]
+    ck = q.lower()
+    if ck in _web_cache and now - _web_cache[ck][0] < 120:
+        return _web_cache[ck][1]
+
     parcalar = []
+    low_q = q.lower()
+    # her zaman RSS (kripto guncel)
     try:
-        r = requests.get(
-            "https://api.duckduckgo.com/",
-            params={"q": q, "format": "json", "no_html": 1, "skip_disambig": 1},
-            timeout=8,
-            headers={"User-Agent": "Mozilla/5.0 TurkPronimBot"},
-        )
-        if r.ok:
-            d = r.json()
-            if d.get("AbstractText"):
-                parcalar.append(d["AbstractText"][:400])
-            for tpc in (d.get("RelatedTopics") or [])[:3]:
-                if isinstance(tpc, dict) and tpc.get("Text"):
-                    parcalar.append(tpc["Text"][:200])
+        rss = _rss_basliklar(12)
+        # sorguyla ilgili basliklari one al
+        anahtar = [w for w in re.split(r"\W+", low_q) if len(w) > 2]
+        ilgili, diger = [], []
+        for b in rss:
+            bl = b.lower()
+            if any(a in bl for a in anahtar):
+                ilgili.append(b)
+            else:
+                diger.append(b)
+        parcalar.extend(ilgili[:8])
+        # genel gundem / haber sorgusunda hepsini ekle
+        if any(x in low_q for x in ("haber", "gündem", "gundem", "news", "bugün", "bugun", "crypto")):
+            for b in diger:
+                if b not in parcalar:
+                    parcalar.append(b)
+                if len(parcalar) >= 10:
+                    break
+        elif not ilgili and diger:
+            # spesifik sorgu eslesmedi — yine de son haberleri ver (Binance vs)
+            parcalar.extend(diger[:5])
     except Exception as e:
-        log.warning("ddg instant: %s", e)
+        log.warning("rss block: %s", e)
+
+    # DDG instant — birden fazla sorgu varyanti
+    varyantlar = [q]
+    if "2026" in q and "hack" in low_q:
+        varyantlar.append(q.replace("2026", "").strip())
+        varyantlar.append("Binance hack October 2026")
+        varyantlar.append("Binance security incident")
+    for v in varyantlar[:3]:
+        try:
+            r = requests.get(
+                "https://api.duckduckgo.com/",
+                params={"q": v, "format": "json", "no_html": 1, "skip_disambig": 1},
+                timeout=8,
+                headers={"User-Agent": "Mozilla/5.0 TurkPronimBot"},
+            )
+            if r.ok:
+                d = r.json()
+                if d.get("AbstractText"):
+                    parcalar.append(d["AbstractText"][:400])
+                for tpc in (d.get("RelatedTopics") or [])[:3]:
+                    if isinstance(tpc, dict) and tpc.get("Text"):
+                        parcalar.append(tpc["Text"][:200])
+        except Exception as e:
+            log.warning("ddg instant: %s", e)
+
     try:
         r = requests.get(
             "https://html.duckduckgo.com/html/",
@@ -1076,32 +1152,18 @@ def web_arama(sorgu: str, limit: int = 5) -> str:
                     parcalar.append(clean[:280])
     except Exception as e:
         log.warning("ddg html: %s", e)
-    if any(x in q.lower() for x in ("haber", "gündem", "gundem", "news", "bugün", "bugun", "crypto")):
-        for feed in (
-            "https://www.coindesk.com/arc/outboundfeeds/rss/",
-            "https://cointelegraph.com/rss",
-        ):
-            try:
-                rr = requests.get(feed, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-                if not rr.ok:
-                    continue
-                titles = re.findall(
-                    r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
-                    rr.text,
-                    re.I,
-                )
-                for title in titles[1:6]:
-                    title = re.sub(r"\s+", " ", html.unescape(title)).strip()
-                    if title and len(title) > 15:
-                        parcalar.append("• " + title[:180])
-                if any(x.startswith("•") for x in parcalar):
-                    break
-            except Exception as e:
-                log.warning("rss: %s", e)
-    out = "\n".join(parcalar[:8])
-    _web_cache[q] = (now, out)
+
+    seen, uniq = set(), []
+    for p0 in parcalar:
+        k = p0[:55].lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(p0)
+    out = "\n".join(uniq[:12])
+    _web_cache[ck] = (now, out)
     if len(_web_cache) > 80:
-        for k in list(_web_cache.keys())[:20]:
+        for k in list(_web_cache.keys())[:25]:
             _web_cache.pop(k, None)
     return out
 
@@ -8884,7 +8946,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # gündem/haber — RSS + web
+    # gündem/haber — RSS basliklari (model süslemesin)
     low_soru = kucult(soru)
     if any(x in low_soru for x in ("gündem", "gundem", "son dakika", "haber", "bugün ne oldu", "bugun ne oldu", "gündemde ne", "gundemde ne", "kripto haber")):
         try:
@@ -8892,27 +8954,38 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         try:
-            ham = await asyncio.to_thread(web_arama, "crypto news today Bitcoin Ethereum", 8)
+            ham = await asyncio.to_thread(web_arama, "crypto news today", 8)
         except Exception as e:
             log.warning("gundem web: %s", e)
             ham = ""
-        if not ham:
+        # Sadece • ile baslayan basliklari al
+        basliklar = [ln.strip() for ln in (ham or "").splitlines() if ln.strip().startswith("•")]
+        if not basliklar:
+            basliklar = [ln.strip() for ln in (ham or "").splitlines() if len(ln.strip()) > 30][:6]
+        if not basliklar:
             try:
-                await msg.reply_text("🔆 Şu an haber kaynağına ulaşamadım, biraz sonra tekrar dene.")
+                await msg.reply_text("🔆 Şu an haber başlığı çekemedim, biraz sonra tekrar dene.")
             except Exception:
                 pass
             return
+        # Model sadece sirala/kisalt — yeni olay uydurma
         ozet = sor(
-            [{"role": "user", "content": f"Gündem özeti yaz (3-5 madde, Türkçe, uydurma yok):\n{ham}"}],
-            ek="Sadece verilen basliklardan.",
+            [{"role": "user", "content":
+              "Asagidaki basliklari Turkce 4-6 madde yap. "
+              "YENI DETAY EKLEME. Rakam/hack uydurma. Baslikta yoksa yazma.\n\n"
+              + "\n".join(basliklar[:8])}],
+            ek="Sadece verilen basliklari ozetle. Uydurma yasak.",
             zor=False,
             soru_metin=soru,
         )
-        met = ozet or ham[:800]
+        if not ozet or len(ozet) < 20:
+            met = "📰 <b>Kısa gündem</b>\n" + "\n".join(html.escape(b) for b in basliklar[:6])
+        else:
+            met = "📰 <b>Kısa gündem</b>\n" + html.escape(ozet)
         try:
-            await msg.reply_text(f"📰 <b>Kısa gündem</b>\n{html.escape(met)}", parse_mode="HTML")
+            await msg.reply_text(met, parse_mode="HTML")
         except Exception:
-            await msg.reply_text(f"📰 Gündem\n{met}")
+            await msg.reply_text("📰 Gündem\n" + (ozet or "\n".join(basliklar[:6])))
         return
 
         # kriz / etkinlik
@@ -9317,7 +9390,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("✅ Öğrendim, bilgi tabanına eklendi.")
                 return
 
-    # arastir — web + model (guncel)
+    # arastir — ayni kaynak (RSS+DDG), gundemle tutarli
     if re.search(r"(?i)\b(araştır|arastir|research)\b", soru):
         proje = re.sub(r"(?i)\b(araştır|arastir|research|yapay|şu|su|projeyi|projeyi)\b", "", soru).strip()
         if not proje:
@@ -9327,22 +9400,54 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         try:
-            ham = await asyncio.to_thread(web_arama, proje, 6)
+            ham = await asyncio.to_thread(web_arama, proje, 8)
         except Exception as e:
             log.warning("web_arama: %s", e)
             ham = ""
-        user_c = f"Soru: {proje}\n\nWeb ozeti:\n{ham or '(sonuc yok)'}"
+        user_c = (
+            f"Soru: {proje}\n\nKaynak metin (RSS/haber):\n{ham or '(bos)'}\n\n"
+            "Bu metne dayanarak kisa Turkce cevap ver (max 5 cumle). "
+            "Metinde Binance/hack/rezerv geciyorsa inkâr etme; ozetle. "
+            "Metin bossa 'kaynak cekemedim' de. Rakam uydurma; metindeki rakami kullan. "
+            "Kesin degilse 'iddia / sorusturma asamasinda' de."
+        )
         ozet = sor(
             [{"role": "user", "content": user_c}],
-            ek="Sadece web ozetine guven. Uydurma. Max 5 kisa cumle. Turkce.",
+            ek="Kaynak metne sadik kal. Uydurma yasak.",
             zor=True,
             soru_metin=proje,
         )
-        met = ozet or "Güvenilir güncel kaynak bulamadım; emin değilim."
+        met = ozet or "Kaynaklardan net özet çıkaramadım."
         if "tavsiye değildir" not in met.lower() and "tavsiye degildir" not in met.lower():
             met = met.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
         await msg.reply_text(f"🔍 {met}")
         return
+
+    # guncel olay (hack/binance vs) — araştır demeden de web
+    _guncel_kw = ("hack", "hacklendi", "hacklenmis", "siber", "çalındı", "calindi", "soygun", "breach")
+    if any(k in kucult(soru) for k in _guncel_kw) and len(soru) < 200:
+        try:
+            await context.bot.send_chat_action(cid, "typing")
+        except Exception:
+            pass
+        try:
+            ham = await asyncio.to_thread(web_arama, soru, 8)
+        except Exception:
+            ham = ""
+        if ham:
+            ozet = sor(
+                [{"role": "user", "content":
+                  f"Soru: {soru}\n\nKaynak:\n{ham}\n\n"
+                  "Kaynaga dayan, kisa Turkce cevap. Inkar etme. Uydurma yasak. Max 5 cumle."}],
+                ek="Kaynak metne sadik.",
+                zor=True,
+                soru_metin=soru,
+            )
+            if ozet:
+                if "tavsiye değildir" not in ozet.lower():
+                    ozet = ozet.rstrip(".") + ".\n(Finansal tavsiye değildir.)"
+                await msg.reply_text(f"🔆 {ozet}")
+                return
 
     # mini ders
     for anahtar, ders in _MINI_DERS.items():
