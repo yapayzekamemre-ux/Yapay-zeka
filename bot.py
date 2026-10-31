@@ -1215,70 +1215,126 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
 
 
 
+
 def _baslik_turkce(basliklar, limit=7):
-    """Hizli Turkce ceviri — tek model, kisa timeout."""
+    """RSS basliklarini mutlaka Turkceye cevir."""
     basliklar = [b.strip() for b in basliklar if b and len(b.strip()) > 15][:limit]
     if not basliklar:
         return ""
-    # cache
     ck = "|".join(b[:40] for b in basliklar)
     now = time.time()
     if not hasattr(_baslik_turkce, "_cache"):
         _baslik_turkce._cache = {}
-    if ck in _baslik_turkce._cache and now - _baslik_turkce._cache[ck][0] < 300:
-        return _baslik_turkce._cache[ck][1]
+    hit = _baslik_turkce._cache.get(ck)
+    if hit and now - hit[0] < 300:
+        # cache sadece Turkce ise
+        if _metin_turkce_mi(hit[1]):
+            return hit[1]
     prompt = (
-        "Bu basliklari Turkceye cevir. Her satir tam olsun. "
-        "Sadece numarali liste (1. 2. 3.). Ek bilgi yok:\n"
+        "Asagidaki Ingilizce haber basliklarini TURKCEYE cevir.\n"
+        "Kurallar:\n"
+        "- Cikti tamamen Turkce olsun\n"
+        "- Her baslik icin bir satir, 1. 2. 3. numarali\n"
+        "- Yeni bilgi ekleme, sadece cevir\n"
+        "- Ingilizce kelime birakma (Bitcoin, Binance, OpenAI gibi ozel isimler kalabilir)\n\n"
         + "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar))
     )
     mesajlar = [{"role": "user", "content": prompt}]
-    sistem = "Sadece hizli ceviri. Yarim birakma."
+    sistem = (
+        "Sen profesyonel cevirmensin. Ciktiyi SADECE Turkce numarali liste olarak ver. "
+        "Ingilizce cumle yazma."
+    )
     txt = ""
-    # once en hizli: groq 8b
+    # 1) groq
     if groq:
+        for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+            try:
+                r = groq.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "system", "content": sistem}] + mesajlar,
+                    temperature=0.1,
+                    max_tokens=900,
+                )
+                txt = (r.choices[0].message.content or "").strip()
+                if txt and _metin_turkce_mi(txt):
+                    break
+                txt = ""
+            except Exception as e:
+                log.warning("ceviri groq %s: %s", model, e)
+                txt = ""
+    # 2) gemini
+    if (not txt or not _metin_turkce_mi(txt)) and gem:
+        for model in ("gemini-flash-latest", "gemini-2.5-flash"):
+            try:
+                r = gem.models.generate_content(
+                    model=model,
+                    contents=_gem_parts(mesajlar),
+                    config=types.GenerateContentConfig(
+                        system_instruction=sistem, temperature=0.1, max_output_tokens=900
+                    ),
+                )
+                txt = (getattr(r, "text", None) or "").strip()
+                if txt and _metin_turkce_mi(txt):
+                    break
+                txt = ""
+            except Exception as e:
+                log.warning("ceviri gem: %s", e)
+                txt = ""
+    # 3) genel sor() zinciri
+    if not txt or not _metin_turkce_mi(txt):
         try:
-            r = groq.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "system", "content": sistem}] + mesajlar,
-                temperature=0.1,
-                max_tokens=700,
-                timeout=12,
-            )
-            txt = (r.choices[0].message.content or "").strip()
+            txt2 = sor(mesajlar, ek=sistem, zor=False, soru_metin="ceviri")
+            if txt2 and _metin_turkce_mi(txt2):
+                txt = txt2
         except Exception as e:
-            log.warning("ceviri groq8: %s", e)
-    if not txt and groq:
-        try:
-            r = groq.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": sistem}] + mesajlar,
-                temperature=0.1,
-                max_tokens=700,
-                timeout=15,
-            )
-            txt = (r.choices[0].message.content or "").strip()
-        except Exception as e:
-            log.warning("ceviri groq70: %s", e)
-    if not txt and gem:
-        try:
-            r = gem.models.generate_content(
-                model="gemini-flash-latest",
-                contents=_gem_parts(mesajlar),
-                config=types.GenerateContentConfig(
-                    system_instruction=sistem, temperature=0.1, max_output_tokens=700
-                ),
-            )
-            txt = (getattr(r, "text", None) or "").strip()
-        except Exception as e:
-            log.warning("ceviri gem: %s", e)
-    if not txt or len(txt) < 30:
-        txt = "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar))
-    _baslik_turkce._cache[ck] = (now, txt)
-    if len(_baslik_turkce._cache) > 30:
-        for k in list(_baslik_turkce._cache.keys())[:10]:
+            log.warning("ceviri sor: %s", e)
+    if not txt or not _metin_turkce_mi(txt):
+        # son care: satir satir kisa prompt
+        satirlar = []
+        for i, b in enumerate(basliklar):
+            try:
+                c = sor(
+                    [{"role": "user", "content": f"Turkceye cevir (tek satir): {b}"}],
+                    ek="Sadece Turkce ceviri, baska bir sey yazma.",
+                    zor=False,
+                    soru_metin="ceviri",
+                )
+                if c:
+                    c = c.strip().split("\n")[0].strip()
+                    satirlar.append(f"{i+1}. {c}")
+                else:
+                    satirlar.append(f"{i+1}. {b}")
+            except Exception:
+                satirlar.append(f"{i+1}. {b}")
+        txt = "\n".join(satirlar)
+    if _metin_turkce_mi(txt):
+        _baslik_turkce._cache[ck] = (now, txt)
+    if len(getattr(_baslik_turkce, "_cache", {})) > 40:
+        for k in list(_baslik_turkce._cache.keys())[:15]:
             _baslik_turkce._cache.pop(k, None)
     return txt
+
+
+def _metin_turkce_mi(s: str) -> bool:
+    """Kabaca Turkce mi? Ingilizce baslik cache'lenmesin."""
+    if not s or len(s) < 20:
+        return False
+    low = s.lower()
+    # tipik Ingilizce haber kaliplari
+    eng = (" the ", " and ", " after ", " from ", " with ", " over ", " into ",
+           " reportedly ", " analysts ", " liquidations ", " arrangements ",
+           "here's ", "experts ", "uncovers ", "urge investors")
+    eng_hits = sum(1 for e in eng if e in f" {low} ")
+    # Turkce karakter veya Turkce kelime
+    tr_ch = sum(1 for c in s if c in "çğıöşüÇĞİÖŞÜ")
+    tr_w = sum(1 for w in (" ve ", " için ", " bir ", " ile ", " olarak ", " sonra ",
+                            " kadar ", " milyar ", " dolar ", " kaybet", " düş", " çık")
+               if w in low)
+    if eng_hits >= 2 and tr_ch == 0 and tr_w == 0:
+        return False
+    if eng_hits >= 3:
+        return False
+    return True
 
 
 def groq_sor(m, sistem):
