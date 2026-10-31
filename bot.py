@@ -1217,7 +1217,7 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
 
 
 
-def _baslik_turkce(basliklar, limit=7):
+def _baslik_turkce(basliklar, limit=6):
     """RSS basliklarini tam Turkce liste yap; yarim satir birakma."""
     basliklar = [b.strip() for b in basliklar if b and len(b.strip()) > 15][:limit]
     if not basliklar:
@@ -9239,7 +9239,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         continue
                     seen.add(k)
                     uniq.append(b)
-                basliklar = uniq[:8]
+                basliklar = uniq[:6]
                 if not basliklar:
                     await msg.reply_text("📰 Şu an gündem başlığı çekemedim, biraz sonra tekrar dene.")
                     return
@@ -9247,14 +9247,14 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ceviri = await asyncio.to_thread(_baslik_turkce, basliklar, 7)
                 except Exception as e:
                     log.warning("gundem ceviri: %s", e)
-                    ceviri = "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar[:7]))
+                    ceviri = "\n".join(f"{i+1}. {b}" for i, b in enumerate(basliklar[:6]))
                 if isinstance(ceviri, list):
                     ceviri = "\n".join(str(x) for x in ceviri)
                 ceviri = (ceviri or "").strip()
                 # HTML kacis
                 satir = html.escape(ceviri)
                 await msg.reply_text(
-                    f"📰 <b>Kısa gündem</b>\n{satir}\n\n<i>Kaynak: CoinDesk / Cointelegraph RSS</i>",
+                    f"📰 <b>TürkPronim gündem haber</b>\n{satir}",
                     parse_mode="HTML",
                 )
                 return
@@ -9431,9 +9431,9 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             soru_metin=soru,
         )
         if not ozet or len(ozet) < 20:
-            met = "📰 <b>Kısa gündem</b>\n" + "\n".join(html.escape(b) for b in basliklar[:6])
+            met = "📰 <b>TürkPronim gündem haber</b>\n" + "\n".join(html.escape(b) for b in basliklar[:6])
         else:
-            met = "📰 <b>Kısa gündem</b>\n" + html.escape(ozet)
+            met = "📰 <b>TürkPronim gündem haber</b>\n" + html.escape(ozet)
         try:
             await msg.reply_text(met, parse_mode="HTML")
         except Exception:
