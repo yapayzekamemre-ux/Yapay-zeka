@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.7.2"
+BOT_SURUM = "v2.7.3"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -3664,6 +3664,32 @@ async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
         log.info("boost etiket kayit uid=%s title=%s (admin yapilmadi)", user_id, title)
     except Exception as e:
         log.warning("boost_etiket_dene: %s", e)
+
+
+async def cezaizle_komut(update, context):
+    """Ceza sonrası laf sokma: /cezaizle ac | kapat"""
+    g = await _mod_giris(update, context, "cezaizle")
+    if not g:
+        return
+    _, chat, _ = g
+    args = [a.lower() for a in (context.args or [])]
+    if not args or args[0] in ("durum", "status"):
+        acik = bool(cget(chat.id, "ceza_izle"))
+        await kisa_cevap(
+            context.bot, chat.id,
+            f"👁 Ceza izleme: <b>{'AÇIK' if acik else 'KAPALI'}</b>\n"
+            f"Aç: <code>/cezaizle ac</code> · Kapat: <code>/cezaizle kapat</code>",
+            15,
+        )
+        return
+    if args[0] in ("ac", "aç", "on", "1", "open"):
+        cset(chat.id, "ceza_izle", True)
+        await kisa_cevap(context.bot, chat.id, "👁 Ceza sonrası izleme <b>AÇILDI</b>.")
+    elif args[0] in ("kapat", "kapalı", "kapali", "off", "0", "close"):
+        cset(chat.id, "ceza_izle", False)
+        await kisa_cevap(context.bot, chat.id, "👁 Ceza sonrası izleme <b>KAPANDI</b>.")
+    else:
+        await kisa_cevap(context.bot, chat.id, "Kullanım: <code>/cezaizle ac</code> · <code>/cezaizle kapat</code>")
 
 
 async def kilitac_komut(update, context):
@@ -10810,6 +10836,7 @@ def main():
     app.add_handler(CommandHandler("hakkim", boost_komut))
     app.add_handler(CommandHandler("boostdemote", boostdemote_komut))
     app.add_handler(CommandHandler("kilitac", kilitac_komut))
+    app.add_handler(CommandHandler("cezaizle", cezaizle_komut))
     app.add_handler(CommandHandler("yardim", komutlar_komut))
     app.add_handler(CommandHandler("durum", durum_komut))
     app.add_handler(CommandHandler("log", log_komut))
