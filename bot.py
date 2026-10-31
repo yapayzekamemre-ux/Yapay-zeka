@@ -9261,65 +9261,62 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 log.warning("early gundem: %s", e)
 
-        # 2) HACK / BINANCE — model inkâr etmesin: RSS basliklarini DOGRUDAN yaz
-        if any(k in low_early for k in ("hack", "hacklendi", "hacklenmis", "siber", "çalındı", "calindi")) or (
-            "binance" in low_early and any(k in low_early for k in ("hack", "güvenlik", "guvenlik", "sızıntı", "sizinti", "soygun"))
-        ) or re.search(r"(?i)\b(araştır|arastir|research)\b", soru or "") and "binance" in low_early:
+        # 2) HACK / guvenlik sorulari — SADECE kaynaktan baslik, sabit paragraf YOK
+        if any(k in low_early for k in ("hack", "hacklendi", "hacklenmis", "siber", "çalındı", "calindi", "soygun")) or (
+            re.search(r"(?i)\b(araştır|arastir|research)\b", soru or "") and any(
+                x in low_early for x in ("hack", "binance", "guvenlik", "güvenlik")
+            )
+        ):
             try:
                 await context.bot.send_chat_action(cid, "typing")
             except Exception:
                 pass
             try:
-                ham = await asyncio.to_thread(web_arama, soru or "Binance hack 2026", 12)
+                ham = await asyncio.to_thread(web_arama, soru or metin or "crypto hack", 12)
             except Exception as e:
                 log.warning("early hack web: %s", e)
                 ham = ""
-            # Binance/hack basliklarini ayikla
-            satirlar = []
+            # sorgu kelimeleriyle ilgili basliklari oncele
+            anahtar = [w for w in re.split(r"\W+", low_early) if len(w) > 2]
+            satirlar, diger = [], []
             for ln in (ham or "").splitlines():
                 s = ln.strip().lstrip("• ").strip()
                 if not s or len(s) < 20:
                     continue
                 sl = s.lower()
-                if "binance" in sl or "hack" in sl or "rezerv" in sl or "wallet" in sl or "outflow" in sl:
+                if any(a in sl for a in anahtar):
                     satirlar.append(s)
+                else:
+                    diger.append(s)
             if not satirlar:
-                # genel basliklar
-                for ln in (ham or "").splitlines():
-                    s = ln.strip().lstrip("• ").strip()
-                    if len(s) > 30:
-                        satirlar.append(s)
+                satirlar = diger[:6]
+            else:
+                satirlar = satirlar[:6]
             if satirlar:
-                # Basliklari Turkceye cevir (sadece ceviri, yeni bilgi yok)
                 try:
-                    ceviri = await asyncio.to_thread(_baslik_turkce, satirlar[:6], 6)
+                    ceviri = await asyncio.to_thread(_baslik_turkce, satirlar, 6)
                 except Exception:
                     ceviri = ""
-                if ceviri and len(str(ceviri)) > 20:
+                if ceviri and len(str(ceviri)) > 20 and _metin_turkce_mi(str(ceviri)):
                     ozet_list = html.escape(str(ceviri).strip())
                 else:
-                    ozet_list = "\n".join(f"• {html.escape(x[:200])}" for x in satirlar[:5])
+                    ozet_list = "\n".join(f"{i+1}. {html.escape(x[:200])}" for i, x in enumerate(satirlar[:6]))
                 met = (
-                    "🔆 <b>Evet — güncel haberler var (Ekim 2026)</b>\n\n"
+                    "🔆 <b>Güncel haber başlıkları</b>\n\n"
                     f"{ozet_list}\n\n"
-                    "<b>Kısa özet:</b> Binance hot wallet’larından büyük çıkışlar haberleştirildi; "
-                    "borsa soruşturma yürüttüğünü duyurdu. Tutarlar kaynağa göre değişiyor "
-                    "(milyar dolar bandı). Kullanıcı fonları için resmi Binance açıklamasını takip et.\n"
+                    "<i>Özet kodda sabit değil; yukarıdakiler canlı kaynaktan.</i>\n"
                     "(Finansal tavsiye değildir.)"
                 )
                 try:
                     await msg.reply_text(met, parse_mode="HTML")
                 except Exception:
-                    await msg.reply_text(
-                        "Evet — Ekim 2026’da Binance hot wallet / olası hack haberleri var. "
-                        "Borsa soruşturma açıkladı. Resmi hesapları takip et. (Finansal tavsiye değildir.)"
-                    )
+                    await msg.reply_text("🔆 Haber başlıkları:\n" + "\n".join(satirlar[:6]))
                 return
             else:
                 try:
                     await msg.reply_text(
-                        "🔆 Şu an haber kaynağından başlık çekemedim. Biraz sonra tekrar dene "
-                        "veya resmi Binance hesaplarını kontrol et.\n(Finansal tavsiye değildir.)"
+                        "🔆 Bu konuda şu an kaynaklardan başlık çekemedim. "
+                        "Biraz sonra tekrar dene.\n(Finansal tavsiye değildir.)"
                     )
                     return
                 except Exception:
