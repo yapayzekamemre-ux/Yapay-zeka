@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.7.0"
+BOT_SURUM = "v2.7.2"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -426,6 +426,8 @@ DEFAULT_G = {
     "topic_mode": False,
     "disabled_cmds": [],
     "privacy_ai": False,
+    "ceza_izle": False,
+    "kufur_otomatik": False,
     "reports": True,
     "duyuru_kanal": None,
     "airdrop_yorum": True,  # kanal/airdrop paylasimlarina AI ozet
@@ -527,13 +529,36 @@ def kaydet():
         log.warning("kaydet: %s", e)
 
 
-def durum_kaydet():
+_durum_kirli = False
+_durum_son_yaz = 0.0
+
+
+def durum_kaydet(zorla=False):
+    """JSON + Mongo. Ana thread dumps; dosya/Mongo arka thread."""
+    global _durum_kirli, _durum_son_yaz
+    _durum_kirli = False
+    _durum_son_yaz = time.time()
     try:
-        with open(DURUM, "w", encoding="utf-8") as f:
-            json.dump(durum, f, ensure_ascii=False)
+        payload = json.dumps(durum, ensure_ascii=False)
     except Exception as e:
-        log.warning("durum: %s", e)
-    _db_push()
+        log.warning("durum dumps: %s", e)
+        return
+
+    def _yaz():
+        try:
+            with open(DURUM, "w", encoding="utf-8") as f:
+                f.write(payload)
+        except Exception as e:
+            log.warning("durum: %s", e)
+        try:
+            _db_push()
+        except Exception as e:
+            log.warning("mongo push: %s", e)
+
+    try:
+        threading.Thread(target=_yaz, daemon=True).start()
+    except Exception:
+        _yaz()
 
 
 # ---------- kalici DB (Mongo opsiyonel) ----------
@@ -821,15 +846,23 @@ def fed_banli_mi(uid) -> bool:
 
 
 def cget(chat_id, key, default=None):
-    g = durum.setdefault("grup", {}).setdefault(str(chat_id), {})
+    """Okuma — yeni grup kaydi ACMAZ (yanlis grup kaydini onler)."""
+    g = (durum.get("grup") or {}).get(str(chat_id))
+    if not isinstance(g, dict):
+        return DEFAULT_G.get(key, default)
     if key in g:
         return g[key]
     return DEFAULT_G.get(key, default)
 
 
 def cset(chat_id, key, val):
+    """Degisiklikte kirli isaretle; en fazla ~10 sn'de bir diske yaz."""
+    global _durum_kirli
     durum.setdefault("grup", {}).setdefault(str(chat_id), {})[key] = val
-    durum_kaydet()
+    _durum_kirli = True
+    now = time.time()
+    if now - _durum_son_yaz >= 10:
+        durum_kaydet(zorla=True)
 
 
 
@@ -844,28 +877,63 @@ def evm_adres_bul(metin: str):
 
 
 async def cuzdan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Debank kartindaki Sil butonu."""
+    """Debank kartindaki Sil — sadece kart sahibi veya admin."""
     q = update.callback_query
     if not q or not q.data:
+        return
+    parts = (q.data or "").split(":")
+    if len(parts) < 2 or parts[1] != "sil":
+        return
+    uid_izin = int(parts[2]) if len(parts) >= 3 and str(parts[2]).isdigit() else None
+    u = q.from_user
+    ok = False
+    if u and uid_izin and u.id == uid_izin:
+        ok = True
+    if u and sahip_mi(u):
+        ok = True
+    if not ok and u and q.message and q.message.chat:
+        try:
+            ok = await admin_mi(q.message.chat.id, u, context.bot)
+        except Exception:
+            ok = False
+    if not ok:
+        try:
+            await q.answer("Sadece kart sahibi veya admin silebilir.", show_alert=True)
+        except Exception:
+            pass
         return
     try:
         await q.answer()
     except Exception:
         pass
-    # czd:sil:chatid:msgid or czd:sil
-    parts = (q.data or "").split(":")
-    if len(parts) >= 2 and parts[1] == "sil":
+    try:
+        await q.message.delete()
+    except Exception:
         try:
-            await q.message.delete()
+            await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
-            try:
-                await q.edit_message_reply_markup(reply_markup=None)
-            except Exception:
-                pass
+            pass
 
 
 def kucult(t):
     return (t or "").replace("İ", "i").replace("I", "ı").lower()
+
+
+def yapay_geciyor(metin: str) -> bool:
+    """Sadece tam kelime 'yapay'. yapayım/yapaydım varsayilan KAPALI."""
+    if not metin:
+        return False
+    low = kucult(metin)
+    # tam kelime yapay
+    if re.search(r"(?<![a-zçğıöşü])yapay(?![a-zçğıöşüı])", low):
+        return True
+    # ek haller sadece panelden acilirsa
+    try:
+        # global varsayilan kapali — chat_id bilinmiyor; ek formlar yok
+        pass
+    except Exception:
+        pass
+    return False
 
 
 def sahip_mi(user):
@@ -906,19 +974,32 @@ async def sahip_grupta_mi(bot, chat_id) -> bool:
     return ok
 
 
+_admin_cache = {}  # (chat_id, user_id) -> (bool, ts)
+
+
 async def admin_mi(chat_id, user, bot) -> bool:
     if not user:
         return False
     if sahip_mi(user):
         return True
+    key = (int(chat_id), int(user.id))
+    now = time.time()
+    hit = _admin_cache.get(key)
+    if hit and now - hit[1] < 60:
+        return hit[0]
     try:
         m = await bot.get_chat_member(chat_id, user.id)
-        return m.status in (
+        ok = m.status in (
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.OWNER,
             "administrator",
             "creator",
         )
+        _admin_cache[key] = (ok, now)
+        if len(_admin_cache) > 500:
+            for k in list(_admin_cache.keys())[:100]:
+                _admin_cache.pop(k, None)
+        return ok
     except Exception:
         return False
 
@@ -1011,18 +1092,16 @@ async def guvenli_gonder(bot, chat_id, text, parse_mode="HTML", sil=None, **extr
     await _msg_q.put(payload)
 
 
-async def kisa_cevap(bot, chat_id, text, sn=8, sahip_kopya=True):
+async def kisa_cevap(bot, chat_id, text, sn=8, sahip_kopya=False):
+    """sahip_kopya sadece ozelden verilen komutlarda True gonderilmeli."""
     try:
         _kuyruk_baslat(bot)
-        # hizli yol: kisa cevaplar yine await (onay/feedback)
         m = await bot.send_message(chat_id, text, parse_mode="HTML")
         if sn:
             asyncio.create_task(sil_sonra(bot, chat_id, m.message_id, sn))
-        # sahip ozelden yonetiyorsa gruba giden ozeti DM'de de gorsun
         if sahip_kopya and SAHIP_ID and int(chat_id) != int(SAHIP_ID):
             try:
-                if _aktif_grup_id() and int(chat_id) == int(_aktif_grup_id()):
-                    await bot.send_message(SAHIP_ID, f"↪️ grup <code>{chat_id}</code>\n{text}", parse_mode="HTML")
+                await bot.send_message(SAHIP_ID, f"↪️ grup <code>{chat_id}</code>\n{text}", parse_mode="HTML")
             except Exception:
                 pass
         return m
@@ -1134,9 +1213,7 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
                     parcalar.append(b)
                 if len(parcalar) >= 10:
                     break
-        elif not ilgili and diger:
-            # spesifik sorgu eslesmedi — yine de son haberleri ver (Binance vs)
-            parcalar.extend(diger[:5])
+        # spesifik sorgu eslesmediyse alakasiz baslik EKLEME
         # gundem/haber icin RSS yeterliyse DDG atla (hiz)
         if any(x in low_q for x in ("haber", "gündem", "gundem", "news", "bugün", "bugun", "crypto news")) and len(parcalar) >= 5:
             seen, uniq = set(), []
@@ -1153,13 +1230,9 @@ def web_arama(sorgu: str, limit: int = 6) -> str:
     except Exception as e:
         log.warning("rss block: %s", e)
 
-    # DDG instant — birden fazla sorgu varyanti
+    # DDG instant — kullanicinin sorgusu (sabit Binance sorgusu YOK)
     varyantlar = [q]
-    if "2026" in q and "hack" in low_q:
-        varyantlar.append(q.replace("2026", "").strip())
-        varyantlar.append("Binance hack October 2026")
-        varyantlar.append("Binance security incident")
-    for v in varyantlar[:3]:
+    for v in varyantlar[:1]:
         try:
             r = requests.get(
                 "https://api.duckduckgo.com/",
@@ -1366,9 +1439,14 @@ def groq_sor(m, sistem):
                 model=model,
                 messages=[{"role": "system", "content": sistem}] + m,
                 temperature=0.7,
-                max_tokens=400,
+                max_tokens=1500,
             )
+            # length kesildiyse sonraki modele gec
+            fr = getattr(r.choices[0], "finish_reason", None) or ""
             t = (r.choices[0].message.content or "").strip()
+            if str(fr).lower() in ("length", "max_tokens"):
+                log.warning("Groq %s length cut, skip", model)
+                continue
             if t and len(t) >= 2:
                 return t
         except Exception as e:
@@ -1386,27 +1464,35 @@ def _gem_parts(m):
     ]
 
 
+_GEMINI_FAIL = {}  # model -> fail_until_ts
+
+
 def gemini_sor(m, sistem):
     if not gem:
         return None
+    now = time.time()
     for model in (
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite",
         "gemini-flash-latest",
         "gemini-2.5-flash",
+        "gemini-2.0-flash",
     ):
+        if _GEMINI_FAIL.get(model, 0) > now:
+            continue
         try:
             r = gem.models.generate_content(
                 model=model,
                 contents=_gem_parts(m),
                 config=types.GenerateContentConfig(
-                    system_instruction=sistem, temperature=0.7, max_output_tokens=400
+                    system_instruction=sistem, temperature=0.7, max_output_tokens=1500
                 ),
             )
             t = (getattr(r, "text", None) or "").strip()
             if t:
                 return t
         except Exception as e:
+            err = str(e).lower()
+            if "404" in err or "not_found" in err or "not found" in err:
+                _GEMINI_FAIL[model] = now + 3600
             log.warning("Gemini %s: %s", model, e)
     return None
 
@@ -1716,21 +1802,29 @@ def _sor_modeller(mesajlar, sistem, hizli=True):
 
 
 def _ikinci_kontrol(soru, yanit):
-    """Onemli cevapta hizli dogruluk kontrolu."""
+    """Onemli cevapta hizli dogruluk kontrolu — orijinali kisaltma."""
+    orijinal = yanit or ""
     sistem = (
         "Sadece OK veya DUZELT: satir yaz. "
         "Cevap uydurma/yanlis fiyat/tehlikeli tavsiye iceriyorsa DUZELT: kisa dogru metin."
     )
-    m = [{"role": "user", "content": f"Soru: {soru[:200]}\nCevap: {yanit[:300]}"}]
+    m = [{"role": "user", "content": f"Soru: {soru[:200]}\nCevap: {orijinal[:1500]}"}]
     t = _sor_modeller(m, sistem, hizli=True)
     if not t:
-        return yanit
+        return orijinal
     if t.upper().startswith("OK"):
-        return yanit
+        return orijinal
     if t.upper().startswith("DUZELT") or t.upper().startswith("DÜZELT"):
         duz = t.split(":", 1)[-1].strip()
-        return duz or yanit
-    return yanit
+        if not duz:
+            return orijinal
+        # duzeltme belirgin kisaysa veya cumle bitmiyorsa orijinal kalsin
+        if len(duz) < max(20, len(orijinal) * 0.4):
+            return orijinal
+        if duz[-1] not in ".!?…\"'" and len(duz) < 80:
+            return orijinal
+        return duz
+    return orijinal
 
 
 def sor(mesajlar, ek="", zor=False, duygu="notr", soru_metin="", chat_id=None):
@@ -2182,21 +2276,22 @@ def fiyat_cek(sembol: str):
     q = (sembol or "").strip().lower()
     if not q:
         return None
-    # 30 sn onbellek — CoinGecko limit + hiz
+    # 30 sn onbellek
     hit = _fiyat_cache.get(q)
     if hit and time.time() - hit[0] < _FIYAT_CACHE_SN:
         return dict(hit[1]) if isinstance(hit[1], dict) else hit[1]
     bil = None
-    # doviz / altin (gram coin CG'de TON; altin = "altin")
+    # Yahoo SADECE doviz / altin / gumus (coin degil)
     if q in ("usd", "dolar", "usdt", "eur", "euro", "gbp", "sterlin", "altin", "gold", "ons", "gumus", "silver"):
         bil = _yahoo_fiyat(q)
+    # hisse acik yazildiysa: "hisse THYAO" gibi — sembol hisse: prefix
+    if not bil and q.startswith("hisse:"):
+        bil = _yahoo_fiyat(q.split(":", 1)[1])
     if not bil:
         bil = _coingecko_fiyat(q)
-    if not bil and q.isalpha() and 3 <= len(q) <= 6:
-        bil = _yahoo_fiyat(q)
+    # Coin bulunamadiysa Yahoo'ya dusme (yanlis hisse eslesmesi onlenir)
     if bil:
         _fiyat_cache[q] = (time.time(), bil)
-        # cache buyumesin
         if len(_fiyat_cache) > 300:
             eski = sorted(_fiyat_cache.items(), key=lambda x: x[1][0])[:80]
             for k, _ in eski:
@@ -2205,7 +2300,7 @@ def fiyat_cek(sembol: str):
 
 
 async def fiyat_gonder(update, miktar, sembol, niyetli=False):
-    bil = fiyat_cek(sembol)
+    bil = await asyncio.to_thread(fiyat_cek, sembol)
     if not bil:
         if not niyetli:
             return False
@@ -2291,13 +2386,9 @@ async def guvenli_sil(msg, neden: str, user=None, chat_id=None, bot=None):
                 boostlu = boost_link_hakki_var(cid, uid)
             except Exception:
                 pass
-        if boostlu and (mesajda_link_var(msg, metin) if msg else False):
-            log.info("SILME IPTAL (boostlu) neden=%s uid=%s", neden, uid)
-            return False
-        if boostlu and neden in (
-            "link", "link_engel", "sahte", "link_tara", "guven_link", "medya", "medya_engel", "reklam"
-        ):
-            log.info("SILME IPTAL (boostlu kural) neden=%s uid=%s", neden, uid)
+        # Boost sadece link_engel'den muaf — sahte/zararli/medya herkese uygulanir
+        if boostlu and neden in ("link", "link_engel"):
+            log.info("SILME IPTAL (boostlu link) neden=%s uid=%s", neden, uid)
             return False
         await msg.delete()
         log.info("SILINDI neden=%s uid=%s chat=%s", neden, uid, cid)
@@ -3558,25 +3649,88 @@ def _boost_unvan_temiz(etiket: str) -> str:
 
 
 async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
-    """Isim yanina unvan: yetkisiz admin + emojisiz title (Lite, Godmode...)."""
+    """Boost etiketi SADECE bot kaydinda. Telegram admin/promote YOK."""
     if not etiket:
         return
     title = _boost_unvan_temiz(etiket)
     if not title:
         return
+    # Sadece kayitta tut — promote_chat_member / custom_title kullanma
     try:
-        m = await bot.get_chat_member(chat_id, user_id)
-        st = getattr(m, "status", None)
-        if st in (ChatMemberStatus.OWNER, "creator"):
-            return
-        if st not in (ChatMemberStatus.ADMINISTRATOR, "administrator"):
-            # Telegram unvan icin en az bir gercek yetki ister — davet yeterli
-            await bot.promote_chat_member(
-                chat_id,
-                user_id,
+        kayit = _boost_kayit(chat_id)
+        u = dict(kayit.get(str(user_id)) or {})
+        u["etiket_goster"] = title
+        boost_kaydet(chat_id, user_id, {**boost_bilgi(chat_id, user_id), **u})
+        log.info("boost etiket kayit uid=%s title=%s (admin yapilmadi)", user_id, title)
+    except Exception as e:
+        log.warning("boost_etiket_dene: %s", e)
+
+
+async def kilitac_komut(update, context):
+    """Sahip/admin: antiraid veya kriz kilidini ac."""
+    g = await _mod_giris(update, context, "kilitac")
+    if not g:
+        return
+    _, chat, _ = g
+    try:
+        data = cget(chat.id, "antiraid_eski_izin") or cget(chat.id, "kriz_eski_izin") or {}
+        if data:
+            perms = ChatPermissions(**{k: v for k, v in data.items() if str(k).startswith("can_")})
+        else:
+            perms = ChatPermissions(
+                can_send_messages=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_video_notes=True,
+                can_send_voice_notes=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+            )
+        await context.bot.set_chat_permissions(chat.id, perms)
+        await kisa_cevap(context.bot, chat.id, "🔓 Grup kilidi açıldı.")
+    except Exception as e:
+        await kisa_cevap(context.bot, chat.id, f"❌ Kilit açılamadı: {html.escape(str(e))}")
+
+
+async def boostdemote_komut(update, context):
+    """Sahip: botun promote ettigi boost uyelerinin yetkisini geri al."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not sahip_mi(user):
+        return
+    cid = chat.id if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP, "group", "supergroup") else (_aktif_grup_id() or 0)
+    if not cid or cid >= 0:
+        try:
+            await update.effective_message.reply_text("Grupta yaz veya /grup ile sec.")
+        except Exception:
+            pass
+        return
+    kayit = _boost_kayit(cid)
+    alinan = 0
+    try:
+        admins = await context.bot.get_chat_administrators(cid)
+    except Exception as e:
+        await update.effective_message.reply_text(f"Admin listesi alinamadi: {e}")
+        return
+    for a in admins:
+        au = a.user
+        if au.is_bot or au.id == SAHIP_ID:
+            continue
+        if str(au.id) not in kayit:
+            continue
+        # sadece botun duzenleyebildigi (promote ettigi) uyeler
+        if not getattr(a, "can_be_edited", False):
+            continue
+        try:
+            await context.bot.promote_chat_member(
+                cid,
+                au.id,
                 can_change_info=False,
                 can_delete_messages=False,
-                can_invite_users=True,
+                can_invite_users=False,
                 can_restrict_members=False,
                 can_pin_messages=False,
                 can_promote_members=False,
@@ -3584,15 +3738,15 @@ async def boost_etiket_dene(bot, chat_id, user_id, etiket: str):
                 can_manage_video_chats=False,
                 is_anonymous=False,
             )
-        try:
-            await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
-            log.info("boost unvan OK uid=%s title=%s", user_id, title)
-        except Exception as e2:
-            # bazen promote sonrasi kisa bekleme gerekir
-            import asyncio as _aio
-            await _aio.sleep(0.8)
-            await bot.set_chat_administrator_custom_title(chat_id, user_id, title)
-            log.info("boost unvan retry OK uid=%s title=%s (%s)", user_id, title, e2)
+            alinan += 1
+        except Exception as e:
+            log.warning("boostdemote %s: %s", au.id, e)
+    try:
+        await update.effective_message.reply_text(
+            f"✅ Boost demote: {alinan} kisinin bot-yetkisi alindi. Gercek adminlere dokunulmadi."
+        )
+    except Exception:
+        pass
     except Exception as e:
         log.warning("boost unvan yazilamadi uid=%s: %s", user_id, e)
 
@@ -3795,7 +3949,7 @@ class _FakeUser:
 
 
 async def hedef_kullanici(update, context, isim_args=None):
-    """Reply, @username, id veya isim ile uye bul. isim_args: boost icin birlesik isim."""
+    """Reply → sayısal ID → tam @username → tam ad. Alt dize ile ban yok."""
     msg = update.effective_message
     chat = update.effective_chat
     if msg and msg.reply_to_message and msg.reply_to_message.from_user:
@@ -3811,46 +3965,49 @@ async def hedef_kullanici(update, context, isim_args=None):
     isim = " ".join(a.lstrip("@") for a in args if not a.isdigit()).strip().lower()
     if not isim:
         isim = a0.lower()
+    isim_clean = isim.lstrip("@")
 
-    def _esles(bil, uid):
+    def _esles_tam(bil, uid):
         kul = (bil.get("kullanici") or "").lower()
         ad = (bil.get("ad") or "").lower()
-        if kul and kul == isim.lstrip("@"):
+        # sadece tam eslesme
+        if kul and kul == isim_clean:
             return _FakeUser(uid, bil.get("ad") or kul, kul)
-        if ad and (ad == isim or isim in ad or ad.startswith(isim)):
+        if ad and ad == isim_clean:
             return _FakeUser(uid, bil.get("ad") or ad, kul)
         return None
 
-    # 1) bu grup
-    if chat and chat.type != ChatType.PRIVATE:
-        for uid, bil in (uyeler.get(str(chat.id)) or {}).items():
-            r = _esles(bil or {}, uid)
+    adaylar = []
+    seen_uid = set()
+
+    def _topla(gid):
+        for uid, bil in (uyeler.get(str(gid)) or {}).items():
+            if uid in seen_uid:
+                continue
+            r = _esles_tam(bil or {}, uid)
             if r:
-                return r
-    # 2) aktif grup + digerleri (ozel yonetim)
-    arama = []
+                seen_uid.add(uid)
+                adaylar.append(r)
+
+    if chat and chat.type != ChatType.PRIVATE:
+        _topla(chat.id)
     ag = _aktif_grup_id()
     if ag:
-        arama.append(str(ag))
-    if chat and chat.type != ChatType.PRIVATE:
-        arama.append(str(chat.id))
-    arama.extend(list(uyeler.keys()))
-    seen = set()
-    for gid in arama:
-        if gid in seen:
-            continue
-        seen.add(gid)
-        for uid, bil in (uyeler.get(str(gid)) or {}).items():
-            r = _esles(bil or {}, uid)
-            if r:
-                return r
-    # 3) @username api
-    try:
-        uname = isim.split()[0].lstrip("@")
-        c = await context.bot.get_chat("@" + uname)
-        return _FakeUser(c.id, getattr(c, "full_name", None) or uname, uname)
-    except Exception:
+        _topla(ag)
+    if len(adaylar) == 1:
+        return adaylar[0]
+    if len(adaylar) > 1:
+        # belirsiz — ban/mute icin None (yanitla kullanilsin)
         return None
+    # @username API (tam kullanici adi)
+    try:
+        uname = isim_clean.split()[0]
+        if uname and not uname.isdigit():
+            c = await context.bot.get_chat("@" + uname)
+            return _FakeUser(c.id, getattr(c, "full_name", None) or uname, uname)
+    except Exception:
+        pass
+    return None
 
 
 def _ad(u):
@@ -4239,15 +4396,18 @@ async def mute_komut(update, context):
             await kisa_cevap(context.bot, chat.id if chat0.type != ChatType.PRIVATE else user0.id,
                              "🚀 Bugünkü boost mute hakkın bitti.")
             return
-        # boost mute max 10 dk
+        # boost mute: argüman yoksa 10 dk, varsa en fazla 10 dk
         if not context.args:
             context.args = ["10"]
     args = list(context.args or [])
     dk = 60
+    _dk_tavan = 10 if boost_mute else 43200
     if update.effective_message.reply_to_message and args and args[0].isdigit():
-        dk = max(1, min(int(args[0]), 43200))
+        dk = max(1, min(int(args[0]), _dk_tavan))
     elif len(args) >= 2 and args[1].isdigit():
-        dk = max(1, min(int(args[1]), 43200))
+        dk = max(1, min(int(args[1]), _dk_tavan))
+    elif args and args[0].isdigit():
+        dk = max(1, min(int(args[0]), _dk_tavan))
     until = datetime.now(timezone.utc) + timedelta(minutes=dk)
     try:
         await context.bot.restrict_chat_member(chat.id, hedef.id, permissions=MUTE_PERMS, until_date=until)
@@ -4916,16 +5076,31 @@ async def export_komut(update, context):
     g = await _mod_giris(update, context)
     if not g:
         return
-    _, chat, _ = g
+    msg, chat, user = g
     data = durum.get("grup", {}).get(str(chat.id), {})
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     from io import BytesIO
     bio = BytesIO(payload.encode("utf-8"))
     bio.name = f"settings_{chat.id}.json"
+    # Sadece komutu yazan kisiye DM — grupta paylasma
+    hedef_dm = user.id if user else None
+    if not hedef_dm:
+        return
     try:
-        await context.bot.send_document(chat.id, document=bio, caption="📦 Grup ayarları export")
+        await context.bot.send_document(
+            hedef_dm, document=bio, caption=f"📦 Grup ayarları export\n<code>{chat.id}</code>",
+            parse_mode="HTML",
+        )
+        if update.effective_chat and update.effective_chat.type != ChatType.PRIVATE:
+            await kisa_cevap(context.bot, update.effective_chat.id, "✅ Export özel mesajına gönderildi.", 8)
     except Exception as e:
-        await kisa_cevap(context.bot, chat.id, f"❌ {html.escape(str(e))}")
+        try:
+            await context.bot.send_message(
+                hedef_dm if update.effective_chat.type != ChatType.PRIVATE else update.effective_chat.id,
+                "❌ Export için önce bota özelden /start yaz, DM'i aç.",
+            )
+        except Exception:
+            await kisa_cevap(context.bot, update.effective_chat.id, f"❌ Export DM: {html.escape(str(e)[:80])}")
 
 
 async def import_komut(update, context):
@@ -5658,13 +5833,13 @@ _ADAM_KELIME = [
     "kebap", "futbol", "basketbol", "yuzme", "kosu", "bisiklet", "modem",
 ]
 _ADAM_CIGIM = [
-    "```\n  +---+\n  |   |\n      |\n      |\n      |\n      |\n=========```",
-    "```\n  +---+\n  |   |\n  O   |\n      |\n      |\n      |\n=========```",
-    "```\n  +---+\n  |   |\n  O   |\n  |   |\n      |\n      |\n=========```",
-    "```\n  +---+\n  |   |\n  O   |\n /|   |\n      |\n      |\n=========```",
-    "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n      |\n      |\n=========```",
-    "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n /    |\n      |\n=========```",
-    "```\n  +---+\n  |   |\n  O   |\n /|\\  |\n / \\  |\n      |\n=========```",
+    "<pre>  +---+\n  |   |\n      |\n      |\n      |\n      |\n=========</pre>",
+    "<pre>  +---+\n  |   |\n  O   |\n      |\n      |\n      |\n=========</pre>",
+    "<pre>  +---+\n  |   |\n  O   |\n  |   |\n      |\n      |\n=========</pre>",
+    "<pre>  +---+\n  |   |\n  O   |\n /|   |\n      |\n      |\n=========</pre>",
+    "<pre>  +---+\n  |   |\n  O   |\n /|\\  |\n      |\n      |\n=========</pre>",
+    "<pre>  +---+\n  |   |\n  O   |\n /|\\  |\n /    |\n      |\n=========</pre>",
+    "<pre>  +---+\n  |   |\n  O   |\n /|\\  |\n / \\  |\n      |\n=========</pre>",
 ]
 
 
@@ -6242,15 +6417,26 @@ def _tekrar_normalize_url(url: str) -> str:
 
 
 async def tekrar_gonder_bir(bot, chat_id, item: dict):
-    """Tekrarlayan mesaj + url buton."""
+    """Tekrarlayan mesaj + tum butonlar (her biri ayri satir)."""
     text = (item.get("text") or "").strip()
     if not text:
         return False
-    kb = None
-    btn = (item.get("btn") or "").strip()
-    url = _tekrar_normalize_url(item.get("url") or "")
-    if btn and url:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(btn[:64], url=url)]])
+    rows = []
+    # coklu buttons listesi
+    for b in (item.get("buttons") or []):
+        if not isinstance(b, dict):
+            continue
+        bt = (b.get("btn") or b.get("text") or "").strip()
+        ur = _tekrar_normalize_url(b.get("url") or "")
+        if bt and ur:
+            rows.append([InlineKeyboardButton(bt[:64], url=ur)])
+    # tekli eski format
+    if not rows:
+        btn = (item.get("btn") or "").strip()
+        url = _tekrar_normalize_url(item.get("url") or "")
+        if btn and url:
+            rows.append([InlineKeyboardButton(btn[:64], url=url)])
+    kb = InlineKeyboardMarkup(rows) if rows else None
     try:
         await bot.send_message(
             chat_id,
@@ -6336,7 +6522,7 @@ async def tekrarekle_komut(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     context.user_data["tekrar_wizard"] = {
         "adim": "saat",
-        "cid": chat.id,
+        "cid": int(cid),  # hedef grup (ozelde aktif grup)
         "buttons": [],
     }
     await msg.reply_text(
@@ -6811,7 +6997,7 @@ async def bakim_komut(update, context):
 
 
 async def send_komut(update, context):
-    """Sahip: ozelden tum bilinen gruplara mesaj."""
+    """Sahip: ozelden sadece gercek kayitli gruplara mesaj."""
     user = update.effective_user
     if not sahip_mi(user):
         return
@@ -6826,7 +7012,7 @@ async def send_komut(update, context):
             pass
         return
     ok_n, fail_n = 0, 0
-    for gid in list((durum.get("grup") or {}).keys()):
+    for gid, _conf in gercek_grup_listesi():
         try:
             await context.bot.send_message(int(gid), met)
             ok_n += 1
@@ -7411,13 +7597,13 @@ async def ozel_gun_job(context: ContextTypes.DEFAULT_TYPE):
     key = f"ozel:{bugun}:{datetime.now(TR).year}"
     if durum.get("ozel_gonderilen") == key:
         return
-    for gid_s in list((durum.get("grup") or {}).keys()):
+    for gid, _c in gercek_grup_listesi():
         try:
-            await context.bot.send_message(int(gid_s), msg)
+            await context.bot.send_message(int(gid), msg)
         except Exception:
             pass
     durum["ozel_gonderilen"] = key
-    durum_kaydet()
+    durum_kaydet(zorla=True)
 
 
 # ---------- ekonomik takvim (yaklasik / bilinen yuksek etkili gunler) ----------
@@ -7443,9 +7629,9 @@ async def ekonomi_takvim_job(context: ContextTypes.DEFAULT_TYPE):
             if durum.get("eko_son") == key:
                 return
             text = f"📅 <b>Ekonomik takvim</b>\n{html.escape(acik)}\n⚠️ Yatırım tavsiyesi değildir."
-            for gid_s in list((durum.get("grup") or {}).keys()):
+            for gid, _c in gercek_grup_listesi():
                 try:
-                    await context.bot.send_message(int(gid_s), text, parse_mode="HTML")
+                    await context.bot.send_message(int(gid), text, parse_mode="HTML")
                 except Exception:
                     pass
             durum["eko_son"] = key
@@ -7538,13 +7724,12 @@ async def acilis_testi(bot):
         sorunlar.append("TELEGRAM_TOKEN yok")
     if not any([GROQ_KEY, GEMINI_KEY, DEEPSEEK_KEY, MISTRAL_KEY, OPENROUTER_KEY]):
         sorunlar.append("Hiç AI key yok")
-    # kisa CG ping
+    # CG ping yok — 429 uretmesin; snapshot doluluguna bak
     try:
-        r = requests.get(f"{CG_BASE}/ping", timeout=8)
-        if not r.ok:
-            sorunlar.append(f"CoinGecko ping {r.status_code}")
-    except Exception as e:
-        sorunlar.append(f"CoinGecko: {e}")
+        if not _cg_by_id:
+            sorunlar.append("CoinGecko snapshot bos (arkaplan yuklenecek)")
+    except Exception:
+        pass
     if _MONGO_URI and not _mongo_col:
         sorunlar.append("Mongo URI var ama baglanamadi")
     try:
@@ -8297,9 +8482,44 @@ async def hosgeldin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             jt.append(now)
             if len(jt) >= adet:
                 try:
+                    # mevcut izinleri kaydet, 10 dk sonra geri yukle
+                    try:
+                        ch_obj = await context.bot.get_chat(chat.id)
+                        eski = ch_obj.permissions
+                        if eski is not None:
+                            cset(chat.id, "antiraid_eski_izin", eski.to_dict() if hasattr(eski, "to_dict") else {})
+                    except Exception as e:
+                        log.warning("antiraid izin kaydet: %s", e)
                     await context.bot.set_chat_permissions(chat.id, MUTE_PERMS)
-                    await kisa_cevap(context.bot, chat.id, "🛡 AntiRaid: grup geçici kilitlendi.", 15)
+                    await kisa_cevap(context.bot, chat.id, "🛡 AntiRaid: grup 10 dk kilitlendi.", 15)
                     await log_gonder(context.bot, chat.id, "🛡 AntiRaid tetiklendi")
+                    async def _antiraid_ac(ctx):
+                        cid = chat.id
+                        try:
+                            data = cget(cid, "antiraid_eski_izin") or {}
+                            if data:
+                                perms = ChatPermissions(**{k: v for k, v in data.items() if k.startswith("can_")})
+                            else:
+                                perms = ChatPermissions(
+                                    can_send_messages=True,
+                                    can_send_audios=True,
+                                    can_send_documents=True,
+                                    can_send_photos=True,
+                                    can_send_videos=True,
+                                    can_send_video_notes=True,
+                                    can_send_voice_notes=True,
+                                    can_send_polls=True,
+                                    can_send_other_messages=True,
+                                    can_add_web_page_previews=True,
+                                )
+                            await ctx.bot.set_chat_permissions(cid, perms)
+                            await kisa_cevap(ctx.bot, cid, "🛡 AntiRaid kilidi açıldı.", 12)
+                        except Exception as e:
+                            log.warning("antiraid ac: %s", e)
+                    try:
+                        context.application.job_queue.run_once(_antiraid_ac, 600, name=f"antiraid_{chat.id}")
+                    except Exception as e:
+                        log.warning("antiraid job: %s", e)
                 except Exception as e:
                     log.warning("antiraid: %s", e)
         try:
@@ -8444,26 +8664,26 @@ def ilet_izinli_mi(chat_id, msg) -> bool:
 
 
 def mesajda_link_var(msg, metin: str) -> bool:
-    """Metin, entity, inline buton, via_bot, reklam kalibi."""
+    """Sadece gercek URL / t.me / text_link / url-buton. Kelime tek basina engel degil."""
     if metin and LINK_RE.search(metin):
-        return True
-    if metin and _REKLAM_KELIME.search(metin):
         return True
     for ent in list(getattr(msg, "entities", None) or []) + list(getattr(msg, "caption_entities", None) or []):
         t = getattr(ent, "type", None)
-        if t in ("url", "text_link", "mention"):
-            # mention tek basina engellenmesin; sadece text_link/url
-            if t in ("url", "text_link"):
-                return True
-    if mesajda_buton_var(msg):
-        return True
+        if t in ("url", "text_link"):
+            return True
+    # Sadece URL veya web_app butonu engelle (callback GIF/anket serbest)
+    rm = getattr(msg, "reply_markup", None)
+    if rm:
+        rows = getattr(rm, "inline_keyboard", None) or []
+        for row in rows:
+            for btn in row:
+                if getattr(btn, "url", None) or getattr(btn, "web_app", None) or getattr(btn, "login_url", None):
+                    return True
+    # via_bot GIF/anket serbest — sadece icinde gercek link varsa
     if getattr(msg, "via_bot", None):
-        return True
-    if getattr(msg, "forward_origin", None) or getattr(msg, "forward_from_chat", None):
-        if metin and (LINK_RE.search(metin) or _REKLAM_KELIME.search(metin)):
+        if metin and LINK_RE.search(metin):
             return True
-        if mesajda_buton_var(msg):
-            return True
+        return False
     return False
 
 
@@ -8524,37 +8744,6 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.warning("wizard: %s", e)
 
     
-    # --- EVM cuzdan / Debank ---
-    if metin and not ozel:
-        addr = evm_adres_bul(metin)
-        if addr:
-            # sadece adres veya kisa mesaj (spam AI'ya gitmesin)
-            sadece = len(metin.strip()) <= 50 or metin.strip().lower().startswith("0x")
-            if sadece or len(metin) < 80:
-                debank = f"https://debank.com/profile/{addr}"
-                ethscan = f"https://etherscan.io/address/{addr}"
-                bsc = f"https://bscscan.com/address/{addr}"
-                kb = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("Debank", url=debank),
-                        InlineKeyboardButton("Etherscan", url=ethscan),
-                    ],
-                    [
-                        InlineKeyboardButton("BscScan", url=bsc),
-                        InlineKeyboardButton("🗑 Sil", callback_data="czd:sil"),
-                    ],
-                ])
-                try:
-                    await msg.reply_text(
-                        f"<code>{addr}</code>\nDebank / explorer:",
-                        parse_mode="HTML",
-                        reply_markup=kb,
-                        disable_web_page_preview=True,
-                    )
-                except Exception as e:
-                    log.warning("cuzdan yanit: %s", e)
-                return
-
     if ozel:
         if not sahip_mi(user):
             if metin:
@@ -8704,6 +8893,16 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # grup: sadece sahip bu grubun uyesi/yoneticisiyse AI/komut
         if not await sahip_grupta_mi(context.bot, cid):
+            try:
+                await context.bot.leave_chat(cid)
+                log.info("sahip yok, gruptan cikildi: %s", cid)
+            except Exception as e:
+                log.warning("leave_chat %s: %s", cid, e)
+            # kayit acma
+            try:
+                (durum.get("grup") or {}).pop(str(cid), None)
+            except Exception:
+                pass
             return
         # bakim modu — AI susar ama spam filtresi yukarda calisti
         if cget(cid, "bakim") and not sahip_mi(user):
@@ -8822,7 +9021,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # link guvenlik tarama
             if ozellik_acik(cid, "link_tara") and metin and not boostlu:
                 for url in linkleri_cikar(metin, msg):
-                    guven, neden = link_guvenli_mi(url)
+                    guven, neden = await asyncio.to_thread(link_guvenli_mi, url)
                     if not guven:
                         try:
                             await msg.delete()
@@ -8852,8 +9051,11 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 low_m = metin.lower()
                 bl = list(cget(cid, "blocklist") or [])
                 yasak = set(x.lower() for x in bl if x) | set(DEFAULT_KUFUR)
-                # ogrenme: sik gecen kufur-benzeri kelimeleri ekle
-                if cget(cid, "kufur_otomatik") is not False:
+                # "oç" kökü koç/doç yakalamasin
+                yasak.discard("oç")
+                yasak.discard("oc")
+                # ogrenme: varsayilan KAPALI
+                if cget(cid, "kufur_otomatik"):
                     for ham in re.findall(r"[a-zA-ZğüşıöçĞÜŞİÖÇ]{3,16}", low_m):
                         if ham in yasak or any(k in ham for k in DEFAULT_KUFUR if len(k) >= 3):
                             _kufur_sayac[str(cid)][ham] += 1
@@ -8973,11 +9175,11 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 return
 
-    # seed phrase korumasi — herkese
-    if not ozel and metin and _SEED_RE.search(metin) and len(metin.split()) >= 12:
-        # cok sayida ingilizce kisa kelime = seed adayi
+    # seed phrase korumasi — 12+ ARDISIK 3-8 harfli kelime
+    if not ozel and metin and not await admin_mi(cid, user, context.bot):
         kelimeler = re.findall(r"[a-zA-Z]{3,8}", metin.lower())
-        if len(kelimeler) >= 12:
+        # ardışık en az 12 kısa kelime
+        if len(kelimeler) >= 12 and len(metin.split()) >= 12:
             try:
                 await msg.delete()
             except Exception:
@@ -8992,6 +9194,36 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             guven_ekle(cid, user.id, -20)
             return
+
+    # --- EVM cuzdan / Debank (filtrelerden SONRA, sadece sahip grubunda) ---
+    if metin and not ozel and await sahip_grupta_mi(context.bot, cid):
+        addr = evm_adres_bul(metin)
+        if addr:
+            sadece = len(metin.strip()) <= 50 or metin.strip().lower().startswith("0x")
+            if sadece or len(metin) < 80:
+                debank = f"https://debank.com/profile/{addr}"
+                ethscan = f"https://etherscan.io/address/{addr}"
+                bsc = f"https://bscscan.com/address/{addr}"
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("Debank", url=debank),
+                        InlineKeyboardButton("Etherscan", url=ethscan),
+                    ],
+                    [
+                        InlineKeyboardButton("BscScan", url=bsc),
+                        InlineKeyboardButton("🗑 Sil", callback_data=f"czd:sil:{user.id}"),
+                    ],
+                ])
+                try:
+                    await msg.reply_text(
+                        f"<code>{addr}</code>\nDebank / explorer:",
+                        parse_mode="HTML",
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    )
+                except Exception as e:
+                    log.warning("cuzdan yanit: %s", e)
+                return
 
     # ILET / FORWARD engeli — baska gruptan iletilen icerik
     if not ozel and cget(cid, "forward_engel") and mesaj_iletildi_mi(msg):
@@ -9110,6 +9342,14 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await ceza_baslat(update, context, hedef, user)
             return
 
+    # ceza izleme (varsayilan KAPALI — ozellik ceza_izle)
+    if not ozel and cget(cid, "ceza_izle"):
+        try:
+            if await ceza_izle_kontrol(update, context):
+                return
+        except Exception as e:
+            log.warning("ceza_izle: %s", e)
+
     low = kucult(metin)
     cagrildi = ozel
     reply_bot = False
@@ -9140,7 +9380,10 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _konusma_aktif[ck] = time.time() + max(30, min(sn, 300))
 
     # Adam asmaca (yapay yazmadan da)
-    if not ozel and ("adam asmaca" in low or "adamasmaca" in low.replace(" ", "")):
+    # Adam asmaca: sadece tam komut
+    if not ozel and low.strip() in ("adam asmaca", "yapay adam asmaca", "adamasmaca", "yapay adamasmaca"):
+        if cid in _adam_oyunlar and _adam_oyunlar[cid].get("aktif"):
+            return  # zaten oyun var — sessiz
         asyncio.create_task(_adam_bekle(context.bot, cid, baslatan_id=user.id))
         return
 
@@ -9149,12 +9392,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         oy = _oyun_adam.get(str(cid)) or {}
         if oy.get("durum") == "oyna":
             t0 = (metin or "").strip()
-            if user.id in (oy.get("oyuncular") or set()) and t0 and (
-                (len(t0) == 1 and t0.isalpha())
-                or (len(t0) > 1 and t0.isalpha())
-            ):
-                await _adam_harf(update, context, t0.lower())
-                return
+            kelime = (oy.get("kelime") or "")
+            if user.id in (oy.get("oyuncular") or set()) and t0 and t0.isalpha():
+                # tek harf her zaman; kelime tahmini sadece ayni uzunlukta
+                if len(t0) == 1 or (len(t0) > 1 and len(t0) == len(kelime)):
+                    await _adam_harf(update, context, t0.lower())
+                    return
+                # baska uzunlukta normal sohbet — silme/hak dusme yok
 
     # Fiyat: niyet veya top-300
     fiyat_ok = False
@@ -9860,11 +10104,14 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Metin bossa 'kaynak cekemedim' de. Rakam uydurma; metindeki rakami kullan. "
             "Kesin degilse 'iddia / sorusturma asamasinda' de."
         )
-        ozet = sor(
+        ozet = await asyncio.to_thread(
+            sor,
             [{"role": "user", "content": user_c}],
-            ek="Kaynak metne sadik kal. Uydurma yasak.",
-            zor=True,
-            soru_metin=proje,
+            "Kaynak metne sadik kal. Uydurma yasak.",
+            True,
+            "notr",
+            proje,
+            cid,
         )
         met = ozet or "Kaynaklardan net özet çıkaramadım."
         if "tavsiye değildir" not in met.lower() and "tavsiye degildir" not in met.lower():
@@ -9884,13 +10131,16 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             ham = ""
         if ham:
-            ozet = sor(
+            ozet = await asyncio.to_thread(
+                sor,
                 [{"role": "user", "content":
                   f"Soru: {soru}\n\nKaynak:\n{ham}\n\n"
                   "Kaynaga dayan, kisa Turkce cevap. Inkar etme. Uydurma yasak. Max 5 cumle."}],
-                ek="Kaynak metne sadik.",
-                zor=True,
-                soru_metin=soru,
+                "Kaynak metne sadik.",
+                True,
+                "notr",
+                soru,
+                cid,
             )
             if ozet:
                 if "tavsiye değildir" not in ozet.lower():
@@ -10035,16 +10285,20 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if "youtu" in url.lower():
                     parca = f"YouTube linki: {url}"
                 else:
-                    r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
-                    if r.ok:
-                        txt = re.sub(r"<[^>]+>", " ", r.text)[:2500]
-                        parca = txt
+                    def _cek():
+                        r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+                        if r.ok:
+                            return re.sub(r"<[^>]+>", " ", r.text)[:2500]
+                        return url
+                    parca = await asyncio.to_thread(_cek)
             except Exception:
                 parca = url
-            ozet = sor(
-                [{"role": "user", "content": f"Şu içeriği 3 kısa cümleyle özetle:\n{parca[:2000]}"}],
-                zor=True,
-                chat_id=cid,
+            ozet = await asyncio.to_thread(
+                lambda: sor(
+                    [{"role": "user", "content": f"Şu içeriği 3 kısa cümleyle özetle:\n{parca[:2000]}"}],
+                    zor=True,
+                    chat_id=cid,
+                )
             )
             await msg.reply_text(f"📄 {ozet or 'Özet çıkmadı.'}")
             return
@@ -10327,16 +10581,24 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 yanit = (kes.rsplit(".", 1)[0] + ".") if "." in kes else kes.rsplit(" ", 1)[0] + "..."
             yanit = yanit.strip()
             goster = yanit.lstrip("🔆 ").strip() if yanit else yanit
-            # kapanis klişelerini at
+            orijinal_goster = goster
+            # sadece sondaki kapanis cumlesini at (tum cevabi silme)
             try:
                 import re as _re
-                goster = _re.sub(
-                    r"(?is)(\n|^).{0,40}(yardımcı olabilir miyim|başka bir konuda|nasıl yardımcı|başka bir şey|size yardımcı).*$",
+                goster2 = _re.sub(
+                    r"(?is)[\n.!][^.!\n]{0,60}(yardımcı olabilir miyim|başka bir konuda|nasıl yardımcı|başka bir şey|size yardımcı)[^.!\n]{0,40}[.!]?\s*$",
                     "",
                     goster or "",
                 ).strip()
+                # temizleme bosalttiysa veya cok kisalttiysa orijinal kalsin
+                if goster2 and len(goster2) >= max(15, int(len(orijinal_goster) * 0.4)):
+                    goster = goster2
+                else:
+                    goster = orijinal_goster
             except Exception:
-                pass
+                goster = orijinal_goster
+            if not goster or len(goster) < 3:
+                goster = orijinal_goster or "Anlamadım, tekrar dener misin?"
             hist2 = list(hist)
             hist2.append({"role": "assistant", "content": yanit})
             h2 = _hafiza_al(key)
@@ -10346,7 +10608,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gecmis[key] = hist2[-14:]
             if len(hist2) >= 12:
                 try:
-                    _hafiza_ozetle(key)
+                    await asyncio.to_thread(_hafiza_ozetle, key)
                 except Exception:
                     pass
             try:
@@ -10398,7 +10660,13 @@ async def baslat(app):
     await acilis_testi(app.bot)
     if durum.get("son_surum") != BOT_SURUM:
         durum["son_surum"] = BOT_SURUM
-        durum_kaydet()
+        durum_kaydet(zorla=True)
+    # kapanista son yazim
+    try:
+        import atexit
+        atexit.register(lambda: durum_kaydet(zorla=True))
+    except Exception:
+        pass
     log.info(
         "AI keys: groq=%s gemini=%s deepseek=%s mistral=%s openrouter=%s",
         bool(GROQ_KEY), bool(GEMINI_KEY), bool(DEEPSEEK_KEY),
@@ -10540,6 +10808,8 @@ def main():
     app.add_handler(CommandHandler("komutlar", komutlar_komut))
     app.add_handler(CommandHandler("boost", boost_komut))
     app.add_handler(CommandHandler("hakkim", boost_komut))
+    app.add_handler(CommandHandler("boostdemote", boostdemote_komut))
+    app.add_handler(CommandHandler("kilitac", kilitac_komut))
     app.add_handler(CommandHandler("yardim", komutlar_komut))
     app.add_handler(CommandHandler("durum", durum_komut))
     app.add_handler(CommandHandler("log", log_komut))
