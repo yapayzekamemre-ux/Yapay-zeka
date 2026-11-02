@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.7.4"
+BOT_SURUM = "v2.7.5"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -312,9 +312,6 @@ _cift_onay = {}  # oid -> {tip, chat, hedef, onaylar:set, ihtiyac}
 _spam_ornek = defaultdict(list)  # chat_id -> [normalized spam texts]
 _ama = {}  # chat_id -> {aktif, sorular: {qid: {text, oy:set, by}}}
 _mesaj_arsiv = defaultdict(lambda: deque(maxlen=400))  # chat_id -> {ts, uid, ad, text}
-_SEED_RE = re.compile(
-    r"(?i)\b([a-z]+\s+){11,23}[a-z]+\b"
-)  # 12-24 kelime seed adayi
 _KISISEL_RE = [
     re.compile(r"(?i)\bTR\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{2}\b"),  # IBAN
     re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),  # email
@@ -8126,13 +8123,6 @@ async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     metin = (msg.text or msg.caption or "").strip()
     if not metin:
         return
-    # seed
-    if _SEED_RE.search(metin) and len(metin.split()) >= 12:
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-        return
     # link tara
     if ozellik_acik(chat.id, "link_tara"):
         for url in linkleri_cikar(metin, msg):
@@ -9209,38 +9199,6 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
                 return
-
-    # seed phrase — sadece yalnizca kisa ingilizce kelimelerden olusan metin
-    # (kanal postu / normal turkce duyuru ASLA seed sayilmaz)
-    if (
-        not ozel
-        and metin
-        and not getattr(msg, "is_automatic_forward", False)
-        and getattr(msg, "sender_chat", None) is None
-        and not await admin_mi(cid, user, context.bot)
-    ):
-        # satirdaki kelimelerin neredeyse hepsi 3-8 harf pure ascii olmali
-        tokens = re.findall(r"[A-Za-z]+", metin)
-        if len(tokens) >= 12:
-            kisa = [t for t in tokens if 3 <= len(t) <= 8]
-            # en az 12 kisa kelime VE metindeki kelimelerin %85+ i pure ascii kisa
-            if len(kisa) >= 12 and len(kisa) >= int(len(tokens) * 0.85):
-                # turkce karakter / uzun cumle isareti varsa seed degil
-                if not re.search(r"[çğıöşüÇĞİÖŞÜ]", metin) and not re.search(r"[.!?:,;]", metin):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-                    try:
-                        await kisa_cevap(
-                            context.bot, cid,
-                            f"🚨 {_ad(user)} seed/private key paylaşımı silindi. Asla paylaşma!",
-                            15,
-                        )
-                    except Exception:
-                        pass
-                    guven_ekle(cid, user.id, -20)
-                    return
 
     # --- EVM cuzdan / Debank (filtrelerden SONRA, sadece sahip grubunda) ---
     if metin and not ozel and await sahip_grupta_mi(context.bot, cid):
