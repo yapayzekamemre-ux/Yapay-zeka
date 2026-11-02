@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.8.5"
+BOT_SURUM = "v2.8.8"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -477,6 +477,9 @@ DEFAULT_G = {
     "gunluk_odul": True,
     "topic_ayar": {},  # thread_id -> {kurallar, bot_mod, ...}
     "sohbet_baslat": True,
+    "coin_tahmin_otomatik": True,   # bot kendisi arastirip sorar
+    "coin_tahmin_saat": 3,          # tur suresi (saat); 0 = gun sonu
+    "coin_tahmin_aralik_saat": 4,   # kac saatte bir yeni tur
     "sohbet_sessiz_saat": 3,
     "yabanci_spam": True,
     "rozetler": {},  # uid -> rozet adi
@@ -5852,6 +5855,310 @@ async def hatirlat_periyodik(context: ContextTypes.DEFAULT_TYPE):
     _hatirlat_q[:] = kalan
 
 
+# --- coin tahmin kapismasi (A vs B, sure sonunda gercek fiyat) ---
+_tahmin_coin = {}  # chat_id -> oyun dict
+
+
+def _coin_tahmin_adaylar(n=8):
+    """Snapshot'tan yukselen / hareketli coinler."""
+    with _cg_lock:
+        coins = list(_cg_by_id.values())
+    if not coins:
+        return []
+    # 24h degisim olanlar
+    skorlu = []
+    for c in coins:
+        ch = c.get("price_change_percentage_24h")
+        px = c.get("current_price")
+        if ch is None or px is None or float(px) <= 0:
+            continue
+        sym = (c.get("symbol") or "").upper()
+        if not sym or len(sym) > 10:
+            continue
+        # stablecoin at
+        if sym in ("USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDE"):
+            continue
+        skorlu.append((abs(float(ch)), float(ch), c))
+    skorlu.sort(key=lambda x: x[0], reverse=True)
+    return [x[2] for x in skorlu[: max(n * 3, 20)]]
+
+
+_CT_EMO = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+
+
+def _coin_tahmin_sec(n=5):
+    """n farkli hareketli coin."""
+    import random
+    aday = _coin_tahmin_adaylar(n=n)
+    if len(aday) < n:
+        return None
+    havuz = aday[: max(n * 4, 20)]
+    if len(havuz) < n:
+        return None
+    return random.sample(havuz, n)
+
+
+async def coin_tahmin_baslat(bot, chat_id, saat=3.0, baslatan=None):
+    """5 coin kapismasi. saat: 1/3/5 veya 0=gun sonu."""
+    if str(chat_id) in _tahmin_coin and _tahmin_coin[str(chat_id)].get("aktif"):
+        try:
+            await bot.send_message(chat_id, "📊 Zaten açık bir coin tahmini var.")
+        except Exception:
+            pass
+        return False
+    secim = await asyncio.to_thread(_coin_tahmin_sec, 5)
+    if not secim:
+        try:
+            await bot.send_message(chat_id, "📊 Coin verisi yok, biraz sonra dene.")
+        except Exception:
+            pass
+        return False
+    now = time.time()
+    if saat and saat > 0:
+        bitis = now + float(saat) * 3600
+        sure_txt = f"{saat:g} saat"
+    else:
+        bit = datetime.now(TR).replace(hour=23, minute=59, second=0, microsecond=0)
+        if bit.timestamp() <= now:
+            bit += timedelta(days=1)
+        bitis = bit.timestamp()
+        sure_txt = "gün sonu"
+
+    def _ch(v):
+        try:
+            return f"%{float(v):+.2f}"
+        except Exception:
+            return "—"
+
+    coins = []
+    lines = []
+    rows = []
+    for i, c in enumerate(secim):
+        px = float(c.get("current_price") or 0)
+        sym = (c.get("symbol") or "?").upper()
+        name = c.get("name") or sym
+        ch = c.get("price_change_percentage_24h")
+        coins.append({
+            "id": c.get("id"),
+            "sym": sym,
+            "name": name,
+            "p0": px,
+            "oy": set(),
+        })
+        emo = _CT_EMO[i]
+        lines.append(
+            f"{emo} <b>{html.escape(name)}</b> ({sym})\n"
+            f"   <code>${px:,.6g}</code> · 24s {_ch(ch)}"
+        )
+        rows.append([InlineKeyboardButton(
+            f"{emo} {sym}",
+            callback_data=f"ct:{i}:{chat_id}",
+        )])
+    # 2+3 veya 5 satir
+    kb_rows = []
+    if len(rows) >= 3:
+        kb_rows.append([rows[0][0], rows[1][0], rows[2][0]])
+        kb_rows.append([rows[3][0], rows[4][0]] if len(rows) > 4 else [rows[3][0]])
+    else:
+        kb_rows = rows
+    kb = InlineKeyboardMarkup(kb_rows)
+    kim = "Bot araştırdı, 5 hareketli coin seçti." if not baslatan else "Manuel tur · 5 coin."
+    text = (
+        f"📊 <b>Coin Kapışması</b> · {html.escape(sure_txt)}\n"
+        f"{kim}\n"
+        f"#turkpronimchat\n\n"
+        + "\n\n".join(lines)
+        + "\n\nHangisi süre sonunda <b>en çok yükselir</b> (veya en az düşer)?\n"
+        "Butona bas · süre bitince sonuç otomatik."
+    )
+    oyun = {
+        "aktif": True,
+        "coins": coins,
+        "bitis": bitis,
+        "mid": None,
+        "baslatan": baslatan,
+    }
+    try:
+        m = await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=kb)
+        oyun["mid"] = m.message_id
+    except Exception as e:
+        log.warning("coin tahmin baslat: %s", e)
+        return False
+    _tahmin_coin[str(chat_id)] = oyun
+    asyncio.create_task(_coin_tahmin_bekle_coz(bot, chat_id, bitis))
+    return True
+
+
+async def _coin_tahmin_bekle_coz(bot, chat_id, bitis_ts):
+    bekle = max(5, float(bitis_ts) - time.time())
+    await asyncio.sleep(bekle)
+    await coin_tahmin_coz(bot, chat_id)
+
+
+def _coin_fiyat_id(cid):
+    with _cg_lock:
+        c = _cg_by_id.get(cid)
+    if c and c.get("current_price") is not None:
+        return float(c["current_price"])
+    p = _cg_http("/coins/markets", vs_currency="usd", ids=cid, price_change_percentage="24h")
+    if p:
+        _cg_index(p)
+        with _cg_lock:
+            c2 = _cg_by_id.get(cid)
+        if c2 and c2.get("current_price") is not None:
+            return float(c2["current_price"])
+    return None
+
+
+async def coin_tahmin_coz(bot, chat_id):
+    oy = _tahmin_coin.get(str(chat_id))
+    if not oy or not oy.get("aktif"):
+        return
+    oy["aktif"] = False
+    coins = list(oy.get("coins") or [])
+    if len(coins) < 2:
+        _tahmin_coin.pop(str(chat_id), None)
+        return
+    sonuclar = []
+    for c in coins:
+        p0 = float(c.get("p0") or 0)
+        p1 = await asyncio.to_thread(_coin_fiyat_id, c.get("id"))
+        if p1 is None or p0 <= 0:
+            sonuclar.append(None)
+            continue
+        sonuclar.append((p1 - p0) / p0 * 100.0)
+    if all(x is None for x in sonuclar):
+        try:
+            await bot.send_message(chat_id, "📊 Tahmin sonucu alınamadı (fiyat verisi).")
+        except Exception:
+            pass
+        _tahmin_coin.pop(str(chat_id), None)
+        return
+    # en iyi degisim
+    best_i, best_d = None, None
+    for i, d in enumerate(sonuclar):
+        if d is None:
+            continue
+        if best_d is None or d > best_d:
+            best_d, best_i = d, i
+    # berabere payi
+    esler = [i for i, d in enumerate(sonuclar) if d is not None and best_d is not None and abs(d - best_d) < 0.01]
+    dogru = set()
+    if len(esler) == 1:
+        dogru = set(coins[esler[0]].get("oy") or set())
+        kaz = f"{_CT_EMO[esler[0]]} <b>{html.escape(coins[esler[0]]['sym'])}</b> ({best_d:+.2f}%)"
+    else:
+        for i in esler:
+            dogru |= set(coins[i].get("oy") or set())
+        kaz = "🤝 Birden fazla coin berabere lider"
+    for uid in dogru:
+        try:
+            guven_ekle(chat_id, uid, 3)
+        except Exception:
+            pass
+    detay = []
+    oy_satir = []
+    for i, c in enumerate(coins):
+        d = sonuclar[i]
+        p0 = float(c.get("p0") or 0)
+        p1 = await asyncio.to_thread(_coin_fiyat_id, c.get("id")) if d is not None else None
+        ds = f"{d:+.2f}%" if d is not None else "—"
+        if p1 is not None:
+            detay.append(
+                f"{_CT_EMO[i]} {html.escape(c['sym'])}: "
+                f"<code>${p0:,.6g}</code> → <code>${p1:,.6g}</code> ({ds}) · oy {len(c.get('oy') or [])}"
+            )
+        else:
+            detay.append(f"{_CT_EMO[i]} {html.escape(c['sym'])}: veri yok · oy {len(c.get('oy') or [])}")
+        oy_satir.append(f"{_CT_EMO[i]}{len(c.get('oy') or [])}")
+    text = (
+        f"🏁 <b>Coin Kapışması Sonuç</b>\n"
+        f"#turkpronimchat\n\n"
+        f"Kazanan: {kaz}\n\n"
+        + "\n".join(detay)
+        + "\n\n✅ Doğru tahmin +güven"
+    )
+    try:
+        await bot.send_message(chat_id, text, parse_mode="HTML")
+    except Exception as e:
+        log.warning("coin tahmin sonuc: %s", e)
+    _tahmin_coin.pop(str(chat_id), None)
+
+
+async def coin_tahmin_otomatik_job(context: ContextTypes.DEFAULT_TYPE):
+    """Bot 5 coin secer, gruba sorar. Gece calismaz."""
+    bot = context.bot
+    saat_tr = datetime.now(TR).hour
+    if saat_tr < 9 or saat_tr >= 23:
+        return
+    for gid, conf in gercek_grup_listesi():
+        try:
+            if cget(gid, "coin_tahmin_otomatik") is False:
+                continue
+            if (_tahmin_coin.get(str(gid)) or {}).get("aktif"):
+                continue
+            last = float(cget(gid, "coin_tahmin_last") or 0)
+            aralik = float(cget(gid, "coin_tahmin_aralik_saat") or 4) * 3600
+            if last and time.time() - last < aralik:
+                continue
+            sure = float(cget(gid, "coin_tahmin_saat") or 3)
+            ok = await coin_tahmin_baslat(bot, gid, saat=sure, baslatan=None)
+            if ok:
+                cset(gid, "coin_tahmin_last", time.time())
+                log.info("coin tahmin otomatik chat=%s sure=%s", gid, sure)
+        except Exception as e:
+            log.warning("coin tahmin job %s: %s", gid, e)
+
+
+async def coin_tahmin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data or not q.data.startswith("ct:"):
+        return
+    parts = q.data.split(":")
+    if len(parts) < 3:
+        return
+    idx_s, cid_s = parts[1], parts[2]
+    try:
+        idx, cid = int(idx_s), int(cid_s)
+    except Exception:
+        return
+    oy = _tahmin_coin.get(str(cid))
+    if not oy or not oy.get("aktif"):
+        await q.answer("Oyun bitti", show_alert=True)
+        return
+    if time.time() >= float(oy.get("bitis") or 0):
+        await q.answer("Süre doldu", show_alert=True)
+        return
+    coins = oy.get("coins") or []
+    if idx < 0 or idx >= len(coins):
+        await q.answer("Geçersiz", show_alert=True)
+        return
+    uid = q.from_user.id
+    # tek oy: digerlerinden cikar
+    for c in coins:
+        c.setdefault("oy", set()).discard(uid)
+    coins[idx].setdefault("oy", set()).add(uid)
+    await q.answer(f"{_CT_EMO[idx]} {coins[idx].get('sym')} seçildi")
+    try:
+        rows = []
+        btns = []
+        for i, c in enumerate(coins):
+            btns.append(InlineKeyboardButton(
+                f"{_CT_EMO[i]} {c.get('sym')} ({len(c.get('oy') or [])})",
+                callback_data=f"ct:{i}:{cid}",
+            ))
+        if len(btns) >= 5:
+            rows = [btns[0:3], btns[3:5]]
+        else:
+            rows = [btns]
+        if oy.get("mid"):
+            await context.bot.edit_message_reply_markup(
+                cid, oy["mid"], reply_markup=InlineKeyboardMarkup(rows)
+            )
+    except Exception:
+        pass
+
+
 # --- adam asmaca ---
 # (kelime dogru yazim, ipucu)
 _ADAM_KELIME = [
@@ -9554,6 +9861,46 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sn = int(cget(cid, "konusma_sn") or 90)
             _konusma_aktif[ck] = time.time() + max(30, min(sn, 300))
 
+    # Coin kapışması / tahmin (manuel + admin ac/kapat)
+    if not ozel and (
+        low.strip() in (
+            "coin tahmin", "coin kapışma", "coin kapisma", "fiyat duello", "fiyat düello",
+            "yapay coin tahmin", "yapay coin kapışma", "yapay coin kapisma",
+        )
+        or (yapay_geciyor(metin) and any(x in low for x in (
+            "coin tahmin", "coin kapış", "coin kapis", "fiyat duello", "fiyat düello",
+            "coin tahmin aç", "coin tahmin ac", "coin tahmin kapat",
+            "otomatik coin", "coin otomatik",
+        )))
+    ):
+        if await admin_mi(cid, user, context.bot) or sahip_mi(user):
+            if any(x in low for x in ("kapat", "kapalı", "kapali", "durdur")):
+                cset(cid, "coin_tahmin_otomatik", False)
+                await msg.reply_text("📊 Otomatik coin kapışması <b>kapalı</b>.", parse_mode="HTML")
+                return
+            if any(x in low for x in ("aç", "ac", "otomatik aç", "otomatik ac", "otomatik")) and "kapat" not in low:
+                if "otomatik" in low or low.strip().endswith("aç") or low.strip().endswith("ac"):
+                    cset(cid, "coin_tahmin_otomatik", True)
+                    await msg.reply_text(
+                        "📊 Otomatik coin kapışması <b>açık</b>.\n"
+                        "Bot CoinGecko’dan 2 coin seçer, gruba sorar, süre bitince sonucu yazar.\n"
+                        "#turkpronimchat",
+                        parse_mode="HTML",
+                    )
+                    return
+        # sure: "3 saat" / "1 saat" / "5 saat" / "gun sonu"
+        saat = float(cget(cid, "coin_tahmin_saat") or 3)
+        if "1 saat" in low or "1sa" in low.replace(" ", ""):
+            saat = 1.0
+        elif "5 saat" in low or "5sa" in low.replace(" ", ""):
+            saat = 5.0
+        elif "gün sonu" in low or "gun sonu" in low or "aksama" in low or "akşama" in low:
+            saat = 0
+        elif "3 saat" in low:
+            saat = 3.0
+        asyncio.create_task(coin_tahmin_baslat(context.bot, cid, saat=saat, baslatan=user.id))
+        return
+
     # Günlük duyuru — kanal gerçek postları (AI uydurma yok)
     if not ozel and (
         "günlük duyuru" in low
@@ -10916,6 +11263,7 @@ async def baslat(app):
             app.job_queue.run_repeating(hafta_dolandirici_job, interval=3600, first=900)
             app.job_queue.run_repeating(haftanin_mesaji_job, interval=3600, first=1200)
             app.job_queue.run_repeating(sabah_brifing, interval=3600, first=200)
+            app.job_queue.run_repeating(coin_tahmin_otomatik_job, interval=1800, first=420)
             log.info("Joblar aktif %s", BOT_SURUM)
             _kuyruk_baslat(app.bot)
         else:
@@ -11082,6 +11430,7 @@ def main():
     app.add_handler(CallbackQueryHandler(captcha_buton, pattern=r"^cap:"))
     app.add_handler(CallbackQueryHandler(ceza_oy_callback, pattern=r"^cz:"))
     app.add_handler(CallbackQueryHandler(adam_katil_callback, pattern=r"^adam:"))
+    app.add_handler(CallbackQueryHandler(coin_tahmin_callback, pattern=r"^ct:"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, hosgeldin))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, ayrildi))
     app.add_handler(
