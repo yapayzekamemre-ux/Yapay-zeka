@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.7.8"
+BOT_SURUM = "v2.8.1"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -5852,16 +5852,38 @@ async def hatirlat_periyodik(context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- adam asmaca (butonlu) ---
+# (kelime, ipucu) — bosluklu kelime destekli
 _ADAM_KELIME = [
-    "bitcoin", "ethereum", "airdrop", "cuzdan", "token", "defi", "nft",
-    "mainnet", "testnet", "staking", "snapshot", "whitelist", "blockchain",
-    "liquidity", "bridge", "oracle", "wallet", "mining", "validator",
-    "protocol", "governance", "stablecoin", "altcoin", "memecoin", "hodl",
-    "bullrun", "whitepaper", "roadmap", "ankara", "istanbul", "izmir",
-    "trabzon", "bursa", "antalya", "kitap", "kalem", "defter", "okul",
-    "bilgisayar", "telefon", "internet", "yazilim", "algoritma", "bulut",
-    "sunucu", "guvenlik", "anahtar", "kahve", "cay", "simit", "baklava",
-    "kebap", "futbol", "basketbol", "yuzme", "kosu", "bisiklet", "modem",
+    ("bitcoin", "En bilinen kripto para"),
+    ("ethereum", "Akıllı sözleşme ağı"),
+    ("airdrop", "Ücretsiz token dağıtımı"),
+    ("cuzdan", "Coin sakladığın yer"),
+    ("blockchain", "Zincirleme blok teknolojisi"),
+    ("staking", "Kilitleyip getiri alma"),
+    ("whitelist", "Beyaz liste / erken erişim"),
+    ("liquidity", "Likidite havuzu kavramı"),
+    ("stablecoin", "Fiyatı sabit tutulan coin"),
+    ("memecoin", "Şaka / meme tabanlı coin"),
+    ("whitepaper", "Proje teknik dokümanı"),
+    ("olasılık hesabı", "Matematikle ilgili bir kavramdır"),
+    ("algoritma", "Adım adım çözüm yöntemi"),
+    ("istanbul", "Türkiye'nin en kalabalık şehri"),
+    ("ankara", "Türkiye'nin başkenti"),
+    ("bilgisayar", "Kod ve oyun aracı"),
+    ("internet", "Dünyayı bağlayan ağ"),
+    ("guvenlik", "Koruma ve emniyet"),
+    ("baklava", "Tatlı bir Türk yemeği"),
+    ("futbol", "11 kişilik top sporu"),
+    ("telefon", "Cebindeki iletişim cihazı"),
+    ("yazilim", "Kodla üretilen programlar"),
+    ("defi", "Merkeziyetsiz finans kısaltması"),
+    ("token", "Zincir üzerindeki dijital varlık"),
+    ("mainnet", "Canlı blockchain ağı"),
+    ("testnet", "Deneme ağı"),
+    ("bridge", "Zincirler arası köprü"),
+    ("validator", "Ağı doğrulayan düğüm"),
+    ("hodl", "Uzun tut, satma stratejisi"),
+    ("bullrun", "Yükseliş dönemi"),
 ]
 _ADAM_CIGIM = [
     "<pre>  +---+\n  |   |\n      |\n      |\n      |\n      |\n=========</pre>",
@@ -5874,19 +5896,154 @@ _ADAM_CIGIM = [
 ]
 
 
+# kazanan susturma odulu: chat_id -> {winner, bitis, mute_sn}
+_oyun_odul = {}
+
+
 def _adam_gorunum(oy):
     k = oy.get("kelime") or ""
     ac = oy.get("acilan") or set()
-    satir = " ".join(ch.upper() if ch in ac else "_" for ch in k)
+    # bosluklu kelime: harfler arasinda bosluk, kelime arasi cift
+    parcalar = []
+    for ch in k:
+        if ch == " ":
+            parcalar.append(" ")
+        else:
+            parcalar.append(ch.upper() if ch in ac else "_")
+    satir = " ".join(parcalar)
     yanlis = int(oy.get("yanlis") or 0)
     maxh = int(oy.get("max") or 6)
     kullanilan = " ".join(sorted(oy.get("kullanilan") or set())) or "—"
     cigim = _ADAM_CIGIM[min(yanlis, 6)]
+    ipucu = oy.get("ipucu") or ""
+    ipucu_s = f"\n💡 {html.escape(ipucu)}\n" if ipucu else "\n"
     return (
-        f"🎮 <b>Adam Asmaca</b>\n{cigim}\n"
-        f"<code>{satir}</code>\nHarfler: {html.escape(kullanilan)}\n"
-        f"Hak: {maxh - yanlis}/{maxh}"
+        f"🦄 <b>Adam Asmaca</b>\n{cigim}\n"
+        f"{ipucu_s}"
+        f"<pre>{html.escape(satir)}</pre>\n"
+        f"Harfler: {html.escape(kullanilan)}\n"
+        f"Hak: {maxh - yanlis}/{maxh}\n\n"
+        f"⚠️ Grupta tek harf veya tam kelimeyi yazın!\n"
+        f"<blockquote>✅ Kazanan istediği birinin 3 dakika mesaj atmasını kapatır</blockquote>"
     )
+
+
+async def _oyun_mute_uygula(bot, chat_id, hedef_id, sn=180, kazanan_ad=""):
+    until = int(time.time()) + int(sn)
+    try:
+        await bot.restrict_chat_member(
+            chat_id,
+            hedef_id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=until,
+        )
+    except Exception as e:
+        log.warning("oyun mute: %s", e)
+        return False
+    dk = max(1, int(sn) // 60)
+    try:
+        ad = f"tg://user?id={hedef_id}"
+        await bot.send_message(
+            chat_id,
+            f"⚔️ <b>Oyun Cezası!</b>\n"
+            f"🔇 <a href=\"{ad}\">üye</a> → <b>{dk} dakika</b> susturuldu"
+            + (f"\n🏆 {html.escape(kazanan_ad)}" if kazanan_ad else ""),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    return True
+
+
+async def oyun_odul_kontrol(update, context) -> bool:
+    """Kazanan reply veya @ ile 3dk mute hakki kullanir."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not chat or not user:
+        return False
+    od = _oyun_odul.get(str(chat.id))
+    if not od:
+        return False
+    if time.time() > float(od.get("bitis") or 0):
+        _oyun_odul.pop(str(chat.id), None)
+        return False
+    if user.id != od.get("winner"):
+        return False
+    hedef = None
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        hedef = msg.reply_to_message.from_user
+    if not hedef and msg.entities:
+        for ent in msg.entities:
+            if ent.type == "mention":
+                uname = (msg.text or "")[ent.offset + 1: ent.offset + ent.length]
+                for uid, bil in (uyeler.get(str(chat.id)) or {}).items():
+                    if (bil.get("kullanici") or "").lower() == uname.lower():
+                        class _U:
+                            pass
+                        hedef = _U()
+                        hedef.id = int(uid)
+                        hedef.first_name = bil.get("ad") or uname
+                        break
+            elif ent.type == "text_mention" and ent.user:
+                hedef = ent.user
+                break
+    if not hedef:
+        return False
+    # admin / bot / kendini susturma
+    if hedef.id == user.id:
+        try:
+            await msg.reply_text("Kendini susturamazsın.")
+        except Exception:
+            pass
+        return True
+    if getattr(hedef, "is_bot", False):
+        return True
+    try:
+        if await admin_mi(chat.id, hedef, context.bot):
+            try:
+                await msg.reply_text("Adminler susturulamaz.")
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+    ok = await _oyun_mute_uygula(
+        context.bot, chat.id, hedef.id,
+        sn=int(od.get("mute_sn") or 180),
+        kazanan_ad=user.first_name or "",
+    )
+    if ok:
+        _oyun_odul.pop(str(chat.id), None)
+    return True
+
+
+async def _adam_kazandi(bot, chat, user, kelime: str):
+    """Tebrik + 3dk mute odulu ver."""
+    try:
+        guven_ekle(chat.id, user.id, 5)
+    except Exception:
+        pass
+    ad = html.escape(user.first_name or "Üye")
+    _oyun_odul[str(chat.id)] = {
+        "winner": user.id,
+        "bitis": time.time() + 120,
+        "mute_sn": 180,
+    }
+    try:
+        await bot.send_message(
+            chat.id,
+            f"🏆 <b>Tebrikler!</b>\n\n"
+            f"✨ <a href=\"tg://user?id={user.id}\">{ad}</a> kelimeyi bildi!\n"
+            f"🔑 Kelime: <b>{html.escape(kelime.upper())}</b>\n\n"
+            f"<blockquote>⚔️ İstediğin birini <b>3 dakika</b> susturabilirsin!\n"
+            f"↪️ Kişinin mesajına <b>yanıt ver</b>\n"
+            f"— veya — <code>@kullaniciadi</code> yaz\n"
+            f"(Adminler susturulamaz)</blockquote>",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        log.warning("adam kazandi: %s", e)
 
 
 async def _adam_bekle(bot, chat_id, baslatan_id=None):
@@ -5955,9 +6112,15 @@ async def _adam_baslat_oyna(bot, chat_id):
     oy = _oyun_adam.get(str(chat_id))
     if not oy:
         return
-    kelime = random.choice(_ADAM_KELIME)
+    sec = random.choice(_ADAM_KELIME)
+    if isinstance(sec, (list, tuple)):
+        kelime, ipucu = sec[0], (sec[1] if len(sec) > 1 else "")
+    else:
+        kelime, ipucu = str(sec), ""
+    kelime = kelime.lower().strip()
     oy.update({
-        "durum": "oyna", "kelime": kelime, "acilan": set(), "kullanilan": set(),
+        "durum": "oyna", "kelime": kelime, "ipucu": ipucu,
+        "acilan": set(), "kullanilan": set(),
         "yanlis": 0, "max": 6, "ts": time.time(),
     })
     _oyun_adam[str(chat_id)] = oy
@@ -5997,22 +6160,13 @@ async def _adam_harf(update, context, tahmin):
         await msg.delete()
     except Exception:
         pass
+    # bosluklari yok sayarak karsilastir (olasılık hesabı)
+    k_norm = k.replace(" ", "")
+    t_norm = tahmin.replace(" ", "")
     if len(tahmin) > 1:
-        if tahmin == k:
+        if t_norm == k_norm or tahmin == k:
             _oyun_adam.pop(str(chat.id), None)
-            try:
-                guven_ekle(chat.id, user.id, 5)
-            except Exception:
-                pass
-            try:
-                await context.bot.send_message(
-                    chat.id,
-                    f"🏆 <a href=\"tg://user?id={user.id}\">{html.escape(user.first_name or 'Üye')}</a> "
-                    f"bildi: <b>{html.escape(k)}</b>",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
+            await _adam_kazandi(context.bot, chat, user, k)
             return
         oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
     else:
@@ -6022,21 +6176,10 @@ async def _adam_harf(update, context, tahmin):
         oy.setdefault("kullanilan", set()).add(harf)
         if harf in k:
             oy.setdefault("acilan", set()).add(harf)
-            if all(c in oy["acilan"] for c in k):
+            # bosluk haric tum harfler acildi mi
+            if all((c == " " or c in oy["acilan"]) for c in k):
                 _oyun_adam.pop(str(chat.id), None)
-                try:
-                    guven_ekle(chat.id, user.id, 5)
-                except Exception:
-                    pass
-                try:
-                    await context.bot.send_message(
-                        chat.id,
-                        f"🏆 <a href=\"tg://user?id={user.id}\">{html.escape(user.first_name or 'Üye')}</a> "
-                        f"kazandı: <b>{html.escape(k)}</b>",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
+                await _adam_kazandi(context.bot, chat, user, k)
                 return
         else:
             oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
@@ -8914,6 +9057,12 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             return
+        # adam asmaca kazanan: reply/@ ile 3dk mute hakki
+        try:
+            if await oyun_odul_kontrol(update, context):
+                return
+        except Exception as e:
+            log.warning("oyun odul: %s", e)
         # LINK/REKLAM FILTRESI — bakim ve sahip kontrolunden ONCE (t.me/ChickenLandBot vb.)
         if not sahip_mi(user) and not kanal_post:
             is_adm_erken = await admin_mi(cid, user, context.bot)
@@ -9392,11 +9541,15 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sn = int(cget(cid, "konusma_sn") or 90)
             _konusma_aktif[ck] = time.time() + max(30, min(sn, 300))
 
-    # Adam asmaca (yapay yazmadan da)
-    # Adam asmaca: sadece tam komut
+    # Adam asmaca: "adam asmaca" yaz (en az 2 kisi, 60 sn katilim)
     if not ozel and low.strip() in ("adam asmaca", "yapay adam asmaca", "adamasmaca", "yapay adamasmaca"):
-        if cid in _adam_oyunlar and _adam_oyunlar[cid].get("aktif"):
-            return  # zaten oyun var — sessiz
+        oy0 = _oyun_adam.get(str(cid)) or {}
+        if oy0.get("durum") in ("bekle", "oyna"):
+            try:
+                await msg.reply_text("🎮 Zaten bir oyun var.")
+            except Exception:
+                pass
+            return
         asyncio.create_task(_adam_bekle(context.bot, cid, baslatan_id=user.id))
         return
 
@@ -9406,12 +9559,18 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if oy.get("durum") == "oyna":
             t0 = (metin or "").strip()
             kelime = (oy.get("kelime") or "")
-            if user.id in (oy.get("oyuncular") or set()) and t0 and t0.isalpha():
-                # tek harf her zaman; kelime tahmini sadece ayni uzunlukta
-                if len(t0) == 1 or (len(t0) > 1 and len(t0) == len(kelime)):
-                    await _adam_harf(update, context, t0.lower())
+            # harf veya kelime (bosluklu da olabilir)
+            temiz = re.sub(r"[^a-zA-ZçğıöşüÇĞİÖŞÜ ]", "", t0)
+            if user.id in (oy.get("oyuncular") or set()) and temiz:
+                if len(temiz) == 1 or (
+                    len(temiz) > 1
+                    and (
+                        len(temiz.replace(" ", "")) == len(kelime.replace(" ", ""))
+                        or temiz.lower() == kelime.lower()
+                    )
+                ):
+                    await _adam_harf(update, context, temiz.lower())
                     return
-                # baska uzunlukta normal sohbet — silme/hak dusme yok
 
     # Fiyat: niyet veya top-300
     fiyat_ok = False
