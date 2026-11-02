@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.7.5"
+BOT_SURUM = "v2.7.7"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -2312,7 +2312,13 @@ async def fiyat_gonder(update, miktar, sembol, niyetli=False):
             pass
         return True
     ch = bil.get("ch")
-    name = str(bil.get("s") or sembol).upper()
+    sym = str(bil.get("s") or sembol).upper()
+    # Ekrandaki format: "15 Gram (prev. Toncoin) (GRAM):"
+    ham_ad = re.sub(r"\s+", " ", str(bil.get("name") or "").strip())
+    if ham_ad and ham_ad.upper() != sym:
+        goster_ad = f"{ham_ad} ({sym})"
+    else:
+        goster_ad = sym
     link = bil.get("link") or ""
     adet = f"{miktar:g} " if miktar != 1 else ""
     usd = bil.get("usd")
@@ -2329,28 +2335,25 @@ async def fiyat_gonder(update, miktar, sembol, niyetli=False):
         fiyat_satir = f"₺{float(try_p) * miktar:,.2f}"
     else:
         fiyat_satir = "—"
-    try_line = ""
-    if usd is not None and try_p is not None:
-        try_line = f"\n🇹🇷 ₺{float(try_p) * miktar:,.2f}"
 
-    # her seferinde farkli tam cumle
+    # ekran: ➖ %2.31 düştü portföy eriyor, buz gibi
     if ch is not None and float(ch) >= 0.3:
-        ikon = "📈"
-        espri = f"%{float(ch):.2f} yükseldi — {_espri_uret('up')}"
+        ikon = "➖"
+        espri = f"%{float(ch):.2f} yükseldi {_espri_uret('up')}"
     elif ch is not None and float(ch) <= -0.3:
-        ikon = "⛔"
-        espri = f"%{abs(float(ch)):.2f} düştü — {_espri_uret('down')}"
+        ikon = "➖"
+        espri = f"%{abs(float(ch)):.2f} düştü {_espri_uret('down')}"
     else:
-        ikon = "💬"
+        ikon = "➖"
         ch_s = f"{abs(float(ch)):.2f}" if ch is not None else "0.00"
         yon = "yükseldi" if (ch or 0) >= 0 else "düştü"
-        espri = f"%{ch_s} {yon} — {_espri_uret('flat')}"
+        espri = f"%{ch_s} {yon} {_espri_uret('flat')}"
 
-    baslik = f"<b>{adet}{html.escape(name)}</b>"
+    baslik = f"{adet}{html.escape(goster_ad)}:"
     text = (
         f"⚠️ {baslik}\n"
         f"\n"
-        f"✅ {fiyat_satir}{try_line}\n"
+        f"✅ {fiyat_satir}\n"
         f"\n"
         f"{ikon} {html.escape(espri)}"
     )
