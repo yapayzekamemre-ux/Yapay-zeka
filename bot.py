@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.8.4"
+BOT_SURUM = "v2.8.5"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -5509,6 +5509,7 @@ def duyuru_liste_metni(chat_id, bos_mesaj=False):
             lines.append(f"{no} {title}")
     lines.append("")
     lines.append("<i>Başlığa tıkla → kanal duyurusuna git</i>")
+    lines.append("#turkpronimchat")
     return "\n".join(lines)
 
 
@@ -9552,6 +9553,37 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cagrildi and (yapay_geciyor(metin) or reply_bot or mention_bot):
             sn = int(cget(cid, "konusma_sn") or 90)
             _konusma_aktif[ck] = time.time() + max(30, min(sn, 300))
+
+    # Günlük duyuru — kanal gerçek postları (AI uydurma yok)
+    if not ozel and (
+        "günlük duyuru" in low
+        or "gunluk duyuru" in low
+        or low.strip() in (
+            "duyurular", "bugünkü duyuru", "bugunku duyuru",
+            "bugünkü duyurular", "bugunku duyurular",
+            "yapay günlük duyuru", "yapay gunluk duyuru",
+            "yapay duyurular", "yapay duyuru listesi",
+        )
+        or (yapay_geciyor(metin) and "duyuru" in low and "hack" not in low)
+    ):
+        # sadece liste istegi: uzun arastirma/hack degil
+        if not any(x in low for x in ("hack", "binance", "haber", "gündem", "gundem", "araştır", "arastir")):
+            try:
+                met = duyuru_liste_metni(cid, bos_mesaj=True)
+                kb = duyuru_liste_butonlar(cid)
+                await msg.reply_text(
+                    met or "📣 Bugün kanalda kayıtlı duyuru yok.\n#turkpronimchat",
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                log.warning("gunluk duyuru: %s", e)
+                try:
+                    await msg.reply_text("📣 Duyuru listesi alınamadı.\n#turkpronimchat")
+                except Exception:
+                    pass
+            return
 
     # Adam asmaca: hemen baslar, katilim yok, herkes oynar
     if not ozel and low.strip() in ("adam asmaca", "yapay adam asmaca", "adamasmaca", "yapay adamasmaca"):
