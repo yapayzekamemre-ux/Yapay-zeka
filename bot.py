@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.7.3"
+BOT_SURUM = "v2.7.4"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -8903,12 +8903,21 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # kanal postu / otomatik forward — filtre yok
-        # airdrop yorumu SADECE kanal_duyuru_yakala'dan (listeye yorum yok)
-        if getattr(msg, "sender_chat", None) is not None or getattr(msg, "is_automatic_forward", False):
-            pass
+        # bagli kanal / otomatik forward — SILME YOK (seed/link/spam uygulanmaz)
+        kanal_post = bool(
+            getattr(msg, "is_automatic_forward", False)
+            or getattr(msg, "sender_chat", None) is not None
+        )
+        if kanal_post:
+            # sadece uye kaydi/istatistik; filtreye dusme
+            try:
+                if not user.is_bot:
+                    uye_kaydi(cid, user)
+            except Exception:
+                pass
+            return
         # LINK/REKLAM FILTRESI — bakim ve sahip kontrolunden ONCE (t.me/ChickenLandBot vb.)
-        if not sahip_mi(user) and not getattr(msg, "sender_chat", None) and not getattr(msg, "is_automatic_forward", False):
+        if not sahip_mi(user) and not kanal_post:
             is_adm_erken = await admin_mi(cid, user, context.bot)
             # link silme link_filtre_oncelik (-5) yaptı; burada sadece boost isaretle
             if mesajda_link_var(msg, metin) and boost_link_hakki_var(cid, user.id):
@@ -9201,25 +9210,37 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 return
 
-    # seed phrase korumasi — 12+ ARDISIK 3-8 harfli kelime
-    if not ozel and metin and not await admin_mi(cid, user, context.bot):
-        kelimeler = re.findall(r"[a-zA-Z]{3,8}", metin.lower())
-        # ardışık en az 12 kısa kelime
-        if len(kelimeler) >= 12 and len(metin.split()) >= 12:
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-            try:
-                await kisa_cevap(
-                    context.bot, cid,
-                    f"🚨 {_ad(user)} seed/private key paylaşımı silindi. Asla paylaşma!",
-                    15,
-                )
-            except Exception:
-                pass
-            guven_ekle(cid, user.id, -20)
-            return
+    # seed phrase — sadece yalnizca kisa ingilizce kelimelerden olusan metin
+    # (kanal postu / normal turkce duyuru ASLA seed sayilmaz)
+    if (
+        not ozel
+        and metin
+        and not getattr(msg, "is_automatic_forward", False)
+        and getattr(msg, "sender_chat", None) is None
+        and not await admin_mi(cid, user, context.bot)
+    ):
+        # satirdaki kelimelerin neredeyse hepsi 3-8 harf pure ascii olmali
+        tokens = re.findall(r"[A-Za-z]+", metin)
+        if len(tokens) >= 12:
+            kisa = [t for t in tokens if 3 <= len(t) <= 8]
+            # en az 12 kisa kelime VE metindeki kelimelerin %85+ i pure ascii kisa
+            if len(kisa) >= 12 and len(kisa) >= int(len(tokens) * 0.85):
+                # turkce karakter / uzun cumle isareti varsa seed degil
+                if not re.search(r"[çğıöşüÇĞİÖŞÜ]", metin) and not re.search(r"[.!?:,;]", metin):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    try:
+                        await kisa_cevap(
+                            context.bot, cid,
+                            f"🚨 {_ad(user)} seed/private key paylaşımı silindi. Asla paylaşma!",
+                            15,
+                        )
+                    except Exception:
+                        pass
+                    guven_ekle(cid, user.id, -20)
+                    return
 
     # --- EVM cuzdan / Debank (filtrelerden SONRA, sadece sahip grubunda) ---
     if metin and not ozel and await sahip_grupta_mi(context.bot, cid):
