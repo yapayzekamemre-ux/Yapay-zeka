@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.8.2"
+BOT_SURUM = "v2.8.3"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -6031,8 +6031,20 @@ async def oyun_odul_kontrol(update, context) -> bool:
     return True
 
 
-async def _adam_kazandi(bot, chat, user, kelime: str):
-    """Tebrik + 3dk mute odulu ver."""
+async def _adam_sil_sonra(bot, chat_id, message_ids, sn=120):
+    """Oyun mesajlarini sn sonra sil."""
+    await asyncio.sleep(max(5, int(sn)))
+    for mid in message_ids:
+        if not mid:
+            continue
+        try:
+            await bot.delete_message(chat_id, int(mid))
+        except Exception:
+            pass
+
+
+async def _adam_kazandi(bot, chat, user, kelime: str, tahta_mid=None):
+    """Tebrik + 3dk mute odulu ver. Mesajlar 2 dk sonra silinir."""
     try:
         guven_ekle(chat.id, user.id, 5)
     except Exception:
@@ -6043,20 +6055,23 @@ async def _adam_kazandi(bot, chat, user, kelime: str):
         "bitis": time.time() + 120,
         "mute_sn": 180,
     }
+    bitis_mid = None
     try:
-        await bot.send_message(
+        m = await bot.send_message(
             chat.id,
             f"🏆 <b>Tebrikler!</b>\n\n"
             f"✨ <a href=\"tg://user?id={user.id}\">{ad}</a> kelimeyi bildi!\n"
-            f"🔑 Kelime: <b>{html.escape(kelime.upper())}</b>\n\n"
+            f"🔑 Kelime: <b>{html.escape(kelime)}</b>\n\n"
             f"<blockquote>⚔️ İstediğin birini <b>3 dakika</b> susturabilirsin!\n"
             f"↪️ Kişinin mesajına <b>yanıt ver</b>\n"
             f"— veya — <code>@kullaniciadi</code> yaz\n"
             f"(Adminler susturulamaz)</blockquote>",
             parse_mode="HTML",
         )
+        bitis_mid = m.message_id
     except Exception as e:
         log.warning("adam kazandi: %s", e)
+    asyncio.create_task(_adam_sil_sonra(bot, chat.id, [tahta_mid, bitis_mid], 120))
 
 
 async def _adam_bekle(bot, chat_id, baslatan_id=None):
@@ -6136,10 +6151,11 @@ async def _adam_harf(update, context, tahmin):
         pass
     k_norm = _adam_norm(k)
     t_norm = _adam_norm(tahmin)
+    tahta_mid = oy.get("mid")
     if len(tahmin.replace(" ", "")) > 1:
         if t_norm == k_norm:
             _oyun_adam.pop(str(chat.id), None)
-            await _adam_kazandi(context.bot, chat, user, k)
+            await _adam_kazandi(context.bot, chat, user, k, tahta_mid=tahta_mid)
             return
         oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
     else:
@@ -6159,17 +6175,23 @@ async def _adam_harf(update, context, tahmin):
         if eslesen:
             if all((c == " " or c in oy["acilan"]) for c in k):
                 _oyun_adam.pop(str(chat.id), None)
-                await _adam_kazandi(context.bot, chat, user, k)
+                await _adam_kazandi(context.bot, chat, user, k, tahta_mid=tahta_mid)
                 return
         else:
             oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
     oy["ts"] = time.time()
     if int(oy.get("yanlis") or 0) >= int(oy.get("max") or 6):
+        mid = oy.get("mid")
         _oyun_adam.pop(str(chat.id), None)
+        bitis_mid = None
         try:
-            await context.bot.send_message(chat.id, f"💀 Bitti. Kelime: <b>{html.escape(k)}</b>", parse_mode="HTML")
+            m = await context.bot.send_message(
+                chat.id, f"💀 Bitti. Kelime: <b>{html.escape(k)}</b>", parse_mode="HTML"
+            )
+            bitis_mid = m.message_id
         except Exception:
             pass
+        asyncio.create_task(_adam_sil_sonra(context.bot, chat.id, [mid, bitis_mid], 120))
         return
     try:
         if oy.get("mid"):
