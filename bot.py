@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.8.1"
+BOT_SURUM = "v2.8.2"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -5851,13 +5851,13 @@ async def hatirlat_periyodik(context: ContextTypes.DEFAULT_TYPE):
     _hatirlat_q[:] = kalan
 
 
-# --- adam asmaca (butonlu) ---
-# (kelime, ipucu) — bosluklu kelime destekli
+# --- adam asmaca ---
+# (kelime dogru yazim, ipucu)
 _ADAM_KELIME = [
     ("bitcoin", "En bilinen kripto para"),
     ("ethereum", "Akıllı sözleşme ağı"),
     ("airdrop", "Ücretsiz token dağıtımı"),
-    ("cuzdan", "Coin sakladığın yer"),
+    ("cüzdan", "Coin sakladığın yer"),
     ("blockchain", "Zincirleme blok teknolojisi"),
     ("staking", "Kilitleyip getiri alma"),
     ("whitelist", "Beyaz liste / erken erişim"),
@@ -5871,11 +5871,11 @@ _ADAM_KELIME = [
     ("ankara", "Türkiye'nin başkenti"),
     ("bilgisayar", "Kod ve oyun aracı"),
     ("internet", "Dünyayı bağlayan ağ"),
-    ("guvenlik", "Koruma ve emniyet"),
+    ("güvenlik", "Koruma ve emniyet"),
     ("baklava", "Tatlı bir Türk yemeği"),
     ("futbol", "11 kişilik top sporu"),
     ("telefon", "Cebindeki iletişim cihazı"),
-    ("yazilim", "Kodla üretilen programlar"),
+    ("yazılım", "Kodla üretilen programlar"),
     ("defi", "Merkeziyetsiz finans kısaltması"),
     ("token", "Zincir üzerindeki dijital varlık"),
     ("mainnet", "Canlı blockchain ağı"),
@@ -5884,7 +5884,20 @@ _ADAM_KELIME = [
     ("validator", "Ağı doğrulayan düğüm"),
     ("hodl", "Uzun tut, satma stratejisi"),
     ("bullrun", "Yükseliş dönemi"),
+    ("geliştirici", "Yazılım üreten kişi"),
+    ("blokzincir", "Blockchain Türkçe karşılığı"),
 ]
+
+
+def _adam_norm(s: str) -> str:
+    """Karsilastirma: ı/i, ğ/g vb. ayni say."""
+    s = (s or "").lower().strip()
+    tab = str.maketrans({
+        "ı": "i", "İ": "i", "I": "i",
+        "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c",
+        "Ğ": "g", "Ü": "u", "Ş": "s", "Ö": "o", "Ç": "c",
+    })
+    return s.translate(tab).replace(" ", "")
 _ADAM_CIGIM = [
     "<pre>  +---+\n  |   |\n      |\n      |\n      |\n      |\n=========</pre>",
     "<pre>  +---+\n  |   |\n  O   |\n      |\n      |\n      |\n=========</pre>",
@@ -6047,6 +6060,7 @@ async def _adam_kazandi(bot, chat, user, kelime: str):
 
 
 async def _adam_bekle(bot, chat_id, baslatan_id=None):
+    """Katilim yok — hemen baslar, herkes oynar."""
     oy = _oyun_adam.get(str(chat_id))
     if oy and oy.get("durum") in ("bekle", "oyna"):
         try:
@@ -6054,56 +6068,14 @@ async def _adam_bekle(bot, chat_id, baslatan_id=None):
         except Exception:
             pass
         return
-    oyuncular = set()
-    if baslatan_id:
-        oyuncular.add(baslatan_id)
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"✅ Katıl ({len(oyuncular)})", callback_data=f"adam:kat:{chat_id}")
-    ]])
-    try:
-        m = await bot.send_message(
-            chat_id,
-            "🎮 <b>Adam Asmaca</b>\nKatılmak için butona bas.\n⏳ 60 sn · en az 2 kişi",
-            parse_mode="HTML",
-            reply_markup=kb,
-        )
-        mid = m.message_id
-    except Exception as e:
-        log.warning("adam bekle: %s", e)
-        return
+    # herkes oynayabilir; oyuncu listesi bos = acik
     _oyun_adam[str(chat_id)] = {
-        "durum": "bekle", "oyuncular": oyuncular, "ts": time.time(), "mid": mid,
+        "durum": "bekle",
+        "oyuncular": None,  # None = herkes
+        "ts": time.time(),
+        "mid": None,
+        "baslatan": baslatan_id,
     }
-    for sn in range(55, 0, -5):
-        await asyncio.sleep(5)
-        oy = _oyun_adam.get(str(chat_id))
-        if not oy or oy.get("durum") != "bekle":
-            return
-        n = len(oy.get("oyuncular") or [])
-        try:
-            await bot.edit_message_text(
-                chat_id=chat_id, message_id=mid,
-                text=f"🎮 <b>Adam Asmaca</b>\nKatılmak için butona bas.\n⏳ {sn} sn · {n} kişi",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(f"✅ Katıl ({n})", callback_data=f"adam:kat:{chat_id}")
-                ]]),
-            )
-        except Exception:
-            pass
-    oy = _oyun_adam.get(str(chat_id))
-    if not oy or oy.get("durum") != "bekle":
-        return
-    if len(oy.get("oyuncular") or []) < 2:
-        _oyun_adam.pop(str(chat_id), None)
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=mid, text="🎮 Yeterli katılım yok, oyun iptal.")
-        except Exception:
-            try:
-                await bot.send_message(chat_id, "🎮 Yeterli katılım yok, oyun iptal.")
-            except Exception:
-                pass
-        return
     await _adam_baslat_oyna(bot, chat_id)
 
 
@@ -6152,7 +6124,9 @@ async def _adam_harf(update, context, tahmin):
         except Exception:
             pass
         return
-    if user.id not in (oy.get("oyuncular") or set()):
+    # oyuncular None ise herkes; set ise sadece liste
+    oyuncular = oy.get("oyuncular")
+    if oyuncular is not None and user.id not in oyuncular:
         return
     k = (oy.get("kelime") or "").lower()
     tahmin = (tahmin or "").lower().strip()
@@ -6160,23 +6134,29 @@ async def _adam_harf(update, context, tahmin):
         await msg.delete()
     except Exception:
         pass
-    # bosluklari yok sayarak karsilastir (olasılık hesabı)
-    k_norm = k.replace(" ", "")
-    t_norm = tahmin.replace(" ", "")
-    if len(tahmin) > 1:
-        if t_norm == k_norm or tahmin == k:
+    k_norm = _adam_norm(k)
+    t_norm = _adam_norm(tahmin)
+    if len(tahmin.replace(" ", "")) > 1:
+        if t_norm == k_norm:
             _oyun_adam.pop(str(chat.id), None)
             await _adam_kazandi(context.bot, chat, user, k)
             return
         oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
     else:
-        harf = tahmin
-        if harf in (oy.get("kullanilan") or set()):
+        harf = tahmin[:1]
+        harf_n = _adam_norm(harf)
+        # kullanilan da normalize
+        kul = oy.setdefault("kullanilan", set())
+        if harf_n in {_adam_norm(x) for x in kul}:
             return
-        oy.setdefault("kullanilan", set()).add(harf)
-        if harf in k:
-            oy.setdefault("acilan", set()).add(harf)
-            # bosluk haric tum harfler acildi mi
+        kul.add(harf)
+        # kelimedeki eslesen gercek harfleri ac
+        eslesen = False
+        for ch in set(k):
+            if ch != " " and _adam_norm(ch) == harf_n:
+                oy.setdefault("acilan", set()).add(ch)
+                eslesen = True
+        if eslesen:
             if all((c == " " or c in oy["acilan"]) for c in k):
                 _oyun_adam.pop(str(chat.id), None)
                 await _adam_kazandi(context.bot, chat, user, k)
@@ -9541,7 +9521,7 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sn = int(cget(cid, "konusma_sn") or 90)
             _konusma_aktif[ck] = time.time() + max(30, min(sn, 300))
 
-    # Adam asmaca: "adam asmaca" yaz (en az 2 kisi, 60 sn katilim)
+    # Adam asmaca: hemen baslar, katilim yok, herkes oynar
     if not ozel and low.strip() in ("adam asmaca", "yapay adam asmaca", "adamasmaca", "yapay adamasmaca"):
         oy0 = _oyun_adam.get(str(cid)) or {}
         if oy0.get("durum") in ("bekle", "oyna"):
@@ -9559,14 +9539,15 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if oy.get("durum") == "oyna":
             t0 = (metin or "").strip()
             kelime = (oy.get("kelime") or "")
-            # harf veya kelime (bosluklu da olabilir)
-            temiz = re.sub(r"[^a-zA-ZçğıöşüÇĞİÖŞÜ ]", "", t0)
-            if user.id in (oy.get("oyuncular") or set()) and temiz:
-                if len(temiz) == 1 or (
-                    len(temiz) > 1
+            temiz = re.sub(r"[^a-zA-ZçğıöşüÇĞİÖŞÜıİ ]", "", t0)
+            oyuncular = oy.get("oyuncular")
+            katilabilir = oyuncular is None or user.id in oyuncular
+            if katilabilir and temiz:
+                if len(temiz.replace(" ", "")) == 1 or (
+                    len(temiz.replace(" ", "")) > 1
                     and (
-                        len(temiz.replace(" ", "")) == len(kelime.replace(" ", ""))
-                        or temiz.lower() == kelime.lower()
+                        len(_adam_norm(temiz)) == len(_adam_norm(kelime))
+                        or _adam_norm(temiz) == _adam_norm(kelime)
                     )
                 ):
                     await _adam_harf(update, context, temiz.lower())
