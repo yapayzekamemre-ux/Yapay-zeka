@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.7.7"
+BOT_SURUM = "v2.7.8"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -2358,13 +2358,18 @@ async def fiyat_gonder(update, miktar, sembol, niyetli=False):
         f"{ikon} {html.escape(espri)}"
     )
     try:
-        m = await update.effective_message.reply_text(
+        soru_msg = update.effective_message
+        m = await soru_msg.reply_text(
             text, parse_mode="HTML", disable_web_page_preview=True
         )
         chat = update.effective_chat
         sil_sn = int(cget(chat.id, "cevap_sil_sn") or 90) if chat else 90
-        if sil_sn > 0 and m:
-            asyncio.create_task(_mesaj_sil_sn(m, sil_sn))
+        if sil_sn > 0:
+            if m:
+                asyncio.create_task(_mesaj_sil_sn(m, sil_sn))
+            # soran mesaji da ayni sure sonra sil
+            if soru_msg and chat and chat.type != ChatType.PRIVATE:
+                asyncio.create_task(_mesaj_sil_sn(soru_msg, sil_sn))
         return True
     except Exception as e:
         log.warning("fiyat_gonder: %s", e)
