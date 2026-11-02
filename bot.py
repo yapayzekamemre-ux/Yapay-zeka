@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.8.3"
+BOT_SURUM = "v2.8.4"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -6071,10 +6071,16 @@ async def _adam_kazandi(bot, chat, user, kelime: str, tahta_mid=None):
         bitis_mid = m.message_id
     except Exception as e:
         log.warning("adam kazandi: %s", e)
-    asyncio.create_task(_adam_sil_sonra(bot, chat.id, [tahta_mid, bitis_mid], 120))
+    baslat_mid = None
+    # tahta_mid aslinda (tahta, baslat) tuple olabilir
+    if isinstance(tahta_mid, (list, tuple)):
+        ids = list(tahta_mid) + [bitis_mid]
+    else:
+        ids = [tahta_mid, bitis_mid]
+    asyncio.create_task(_adam_sil_sonra(bot, chat.id, ids, 120))
 
 
-async def _adam_bekle(bot, chat_id, baslatan_id=None):
+async def _adam_bekle(bot, chat_id, baslatan_id=None, baslat_mid=None):
     """Katilim yok — hemen baslar, herkes oynar."""
     oy = _oyun_adam.get(str(chat_id))
     if oy and oy.get("durum") in ("bekle", "oyna"):
@@ -6089,6 +6095,7 @@ async def _adam_bekle(bot, chat_id, baslatan_id=None):
         "oyuncular": None,  # None = herkes
         "ts": time.time(),
         "mid": None,
+        "baslat_mid": baslat_mid,  # "adam asmaca" yazan uye mesaji
         "baslatan": baslatan_id,
     }
     await _adam_baslat_oyna(bot, chat_id)
@@ -6152,10 +6159,12 @@ async def _adam_harf(update, context, tahmin):
     k_norm = _adam_norm(k)
     t_norm = _adam_norm(tahmin)
     tahta_mid = oy.get("mid")
+    baslat_mid = oy.get("baslat_mid")
+    sil_ids = [baslat_mid, tahta_mid]
     if len(tahmin.replace(" ", "")) > 1:
         if t_norm == k_norm:
             _oyun_adam.pop(str(chat.id), None)
-            await _adam_kazandi(context.bot, chat, user, k, tahta_mid=tahta_mid)
+            await _adam_kazandi(context.bot, chat, user, k, tahta_mid=sil_ids)
             return
         oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
     else:
@@ -6175,13 +6184,14 @@ async def _adam_harf(update, context, tahmin):
         if eslesen:
             if all((c == " " or c in oy["acilan"]) for c in k):
                 _oyun_adam.pop(str(chat.id), None)
-                await _adam_kazandi(context.bot, chat, user, k, tahta_mid=tahta_mid)
+                await _adam_kazandi(context.bot, chat, user, k, tahta_mid=sil_ids)
                 return
         else:
             oy["yanlis"] = int(oy.get("yanlis") or 0) + 1
     oy["ts"] = time.time()
     if int(oy.get("yanlis") or 0) >= int(oy.get("max") or 6):
         mid = oy.get("mid")
+        bmid = oy.get("baslat_mid")
         _oyun_adam.pop(str(chat.id), None)
         bitis_mid = None
         try:
@@ -6191,7 +6201,7 @@ async def _adam_harf(update, context, tahmin):
             bitis_mid = m.message_id
         except Exception:
             pass
-        asyncio.create_task(_adam_sil_sonra(context.bot, chat.id, [mid, bitis_mid], 120))
+        asyncio.create_task(_adam_sil_sonra(context.bot, chat.id, [bmid, mid, bitis_mid], 120))
         return
     try:
         if oy.get("mid"):
@@ -9552,7 +9562,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             return
-        asyncio.create_task(_adam_bekle(context.bot, cid, baslatan_id=user.id))
+        asyncio.create_task(
+            _adam_bekle(
+                context.bot, cid,
+                baslatan_id=user.id,
+                baslat_mid=msg.message_id,
+            )
+        )
         return
 
     # --- adam asmaca tahmini ---
