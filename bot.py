@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.1"
+BOT_SURUM = "v2.9.2"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -10925,7 +10925,6 @@ async def baslat(app):
         await app.bot.set_my_commands(
             [
                 BotCommand("panel", "Grup ayar paneli"),
-                BotCommand("ayarlar", "Grup ayar paneli"),
                 BotCommand("ban", "Ban"),
                 BotCommand("unban", "Ban kaldır"),
                 BotCommand("kick", "Kick"),
