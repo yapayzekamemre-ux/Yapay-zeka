@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.0"
+BOT_SURUM = "v2.9.1"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -5488,9 +5488,10 @@ def duyuru_liste_metni(chat_id, bos_mesaj=False):
     posts = list(cget(chat_id, "duyuru_posts") or [])
     bugun = datetime.now(TR).strftime("%Y-%m-%d")
     bugunku = [p for p in posts if p.get("date") == bugun]
+    _HASHTAG_DIP = "#turkpronimchat #Airdrop #parakazan"
     if not bugunku:
         if bos_mesaj:
-            return "📣 <b>Bugünkü Duyurular</b>\n\nHenüz duyuru yok."
+            return f"📣 <b>Bugünkü Duyurular</b>\n\nHenüz duyuru yok.\n\n{_HASHTAG_DIP}"
         return None
     sec = bugunku[-15:]
     nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
@@ -5503,32 +5504,19 @@ def duyuru_liste_metni(chat_id, bos_mesaj=False):
             title = html.escape(str(ham)[:48])
         link = (p.get("link") or "").strip()
         no = nums[i - 1] if i <= 10 else f"<b>{i}.</b>"
+        # baslik tiklanabilir kalsin (buton yok)
         if link:
             lines.append(f'{no} <a href="{html.escape(link)}">{title}</a>')
         else:
             lines.append(f"{no} {title}")
     lines.append("")
-    lines.append("<i>Başlığa tıkla → kanal duyurusuna git</i>")
-    lines.append("#turkpronimchat")
+    lines.append(_HASHTAG_DIP)
     return "\n".join(lines)
 
 
 def duyuru_liste_butonlar(chat_id):
-    """URL buton satirlari (max 12)."""
-    posts = list(cget(chat_id, "duyuru_posts") or [])
-    bugun = datetime.now(TR).strftime("%Y-%m-%d")
-    bugunku = [p for p in posts if p.get("date") == bugun][-12:]
-    rows = []
-    for i, p in enumerate(bugunku, 1):
-        link = (p.get("link") or "").strip()
-        if not link:
-            continue
-        try:
-            ad = _duyuru_temiz_baslik(p.get("title") or f"Duyuru {i}")[:32]
-        except Exception:
-            ad = f"Duyuru {i}"
-        rows.append([InlineKeyboardButton(f"{i}. {ad}", url=link)])
-    return InlineKeyboardMarkup(rows) if rows else None
+    """Butonlar kaldirildi — her zaman None."""
+    return None
 
 
 
@@ -9583,17 +9571,15 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not any(x in low for x in ("hack", "binance", "haber", "gündem", "gundem", "araştır", "arastir")):
             try:
                 met = duyuru_liste_metni(cid, bos_mesaj=True)
-                kb = duyuru_liste_butonlar(cid)
                 await msg.reply_text(
-                    met or "📣 Bugün kanalda kayıtlı duyuru yok.\n#turkpronimchat",
+                    met or "📣 Bugün kanalda kayıtlı duyuru yok.\n\n#turkpronimchat #Airdrop #parakazan",
                     parse_mode="HTML",
-                    reply_markup=kb,
                     disable_web_page_preview=True,
                 )
             except Exception as e:
                 log.warning("gunluk duyuru: %s", e)
                 try:
-                    await msg.reply_text("📣 Duyuru listesi alınamadı.\n#turkpronimchat")
+                    await msg.reply_text("📣 Duyuru listesi alınamadı.\n\n#turkpronimchat #Airdrop #parakazan")
                 except Exception:
                     pass
             return
