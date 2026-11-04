@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.2"
+BOT_SURUM = "v2.9.3"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -8227,14 +8227,16 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     uid = user.id
     cid = chat.id
-    # sahip / admin
+    # sahip / admin / anonim yonetici — ASLA silme
     try:
         if sahip_mi(user):
             return
         if await admin_mi(cid, user, context.bot):
             return
-    except Exception:
-        pass
+    except Exception as e:
+        # yetki kontrolu basarisizsa silme (yanlis admin silmeyi onle)
+        log.warning("link admin kontrol: %s — link silinmedi", e)
+        return
     # BOOST — en onemli
     if boost_link_hakki_var(cid, uid):
         try:
@@ -8294,14 +8296,14 @@ async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
                 return
-    # link engel
+    # link engel (admin / sahip dokunulmaz)
     if cget(chat.id, "link_engel") and mesajda_link_var(msg, metin):
         is_adm = False
-        if user:
-            if sahip_mi(user):
+        try:
+            if user and (sahip_mi(user) or await admin_mi(chat.id, user, context.bot)):
                 is_adm = True
-            else:
-                is_adm = await admin_mi(chat.id, user, context.bot)
+        except Exception:
+            is_adm = True  # emin degilsek silme
         if not is_adm:
             izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
             ok = any(d and d in metin.lower() for d in izin)
