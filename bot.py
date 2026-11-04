@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.4"
+BOT_SURUM = "v2.9.5"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -980,18 +980,61 @@ def _status_admin_mi(status) -> bool:
     return st in ("administrator", "creator", "owner")
 
 
+# chat_id -> (set[admin_user_id], ts)
+_admin_ids_cache = {}
+
+
+async def admin_id_set(bot, chat_id) -> set:
+    """Grup yoneticilerinin user id listesi (2 dk cache)."""
+    cid = int(chat_id)
+    now = time.time()
+    hit = _admin_ids_cache.get(cid)
+    if hit and now - hit[1] < 120:
+        return set(hit[0])
+    try:
+        admins = await bot.get_chat_administrators(cid)
+        ids = set()
+        for a in admins:
+            u = getattr(a, "user", None)
+            if u and getattr(u, "id", None):
+                ids.add(int(u.id))
+        try:
+            me = await bot.get_me()
+            if me:
+                ids.add(int(me.id))
+        except Exception:
+            pass
+        ids.add(int(SAHIP_ID))
+        _admin_ids_cache[cid] = (ids, now)
+        log.info("admin_id_set chat=%s n=%s", cid, len(ids))
+        return ids
+    except Exception as e:
+        log.warning("admin_id_set chat=%s: %s", cid, e)
+        if hit:
+            return set(hit[0])
+        return {int(SAHIP_ID)}
+
+
 async def admin_mi(chat_id, user, bot) -> bool:
     if not user:
         return False
     if sahip_mi(user):
         return True
-    key = (int(chat_id), int(user.id))
+    uid = int(user.id)
+    try:
+        ids = await admin_id_set(bot, chat_id)
+        if uid in ids:
+            _admin_cache[(int(chat_id), uid)] = (True, time.time())
+            return True
+    except Exception:
+        pass
+    key = (int(chat_id), uid)
     now = time.time()
     hit = _admin_cache.get(key)
     if hit and now - hit[1] < 45:
         return hit[0]
     try:
-        m = await bot.get_chat_member(chat_id, user.id)
+        m = await bot.get_chat_member(chat_id, uid)
         ok = _status_admin_mi(getattr(m, "status", None))
         _admin_cache[key] = (ok, now)
         if len(_admin_cache) > 500:
@@ -999,22 +1042,26 @@ async def admin_mi(chat_id, user, bot) -> bool:
                 _admin_cache.pop(k, None)
         return ok
     except Exception as e:
-        log.warning("admin_mi hata chat=%s uid=%s: %s", chat_id, getattr(user, "id", None), e)
+        log.warning("admin_mi hata chat=%s uid=%s: %s", chat_id, uid, e)
         return False
 
 
 async def link_silinir_mi(bot, chat_id, user) -> bool:
-    """True = link silinebilir (normal uye). Admin/sahip/bilinmeyen = False (SILME)."""
+    """True = sadece net normal uye. Admin/sahip/suphe = False (SILME)."""
     if not user:
         return False
     if sahip_mi(user):
         return False
+    uid = int(user.id)
+    if uid == int(SAHIP_ID):
+        return False
     try:
-        m = await bot.get_chat_member(chat_id, user.id)
-        if _status_admin_mi(getattr(m, "status", None)):
-            _admin_cache[(int(chat_id), int(user.id))] = (True, time.time())
+        ids = await admin_id_set(bot, chat_id)
+        if uid in ids:
             return False
-        return True
+        if ids and len(ids) > 1:
+            return True
+        return False
     except Exception as e:
         log.warning("link_silinir_mi: %s — silinmeyecek", e)
         return False
@@ -2397,20 +2444,28 @@ async def fiyat_gonder(update, miktar, sembol, niyetli=False):
 
 
 async def guvenli_sil(msg, neden: str, user=None, chat_id=None, bot=None):
-    """Tek silme noktasi: boostlu + linkli mesaji ASLA silme; sahibe log."""
+    """Tek silme noktasi. Admin/sahip linki ASLA silinmez."""
     try:
         uid = getattr(user, "id", None) or getattr(getattr(msg, "from_user", None), "id", None)
         cid = chat_id or getattr(getattr(msg, "chat", None), "id", None)
-        metin = ""
-        if msg:
-            metin = (msg.text or msg.caption or "") or ""
+        if uid and int(uid) == int(SAHIP_ID):
+            log.info("SILME IPTAL (sahip) neden=%s", neden)
+            return False
+        if neden in ("link", "link_engel") and cid and uid and bot:
+            try:
+                ids = await admin_id_set(bot, cid)
+                if int(uid) in ids:
+                    log.info("SILME IPTAL (admin liste) neden=%s uid=%s", neden, uid)
+                    return False
+            except Exception:
+                log.info("SILME IPTAL (admin kontrol yok) neden=%s uid=%s", neden, uid)
+                return False
         boostlu = False
         if cid and uid:
             try:
                 boostlu = boost_link_hakki_var(cid, uid)
             except Exception:
                 pass
-        # Boost sadece link_engel'den muaf — sahte/zararli/medya herkese uygulanir
         if boostlu and neden in ("link", "link_engel"):
             log.info("SILME IPTAL (boostlu link) neden=%s uid=%s", neden, uid)
             return False
@@ -8270,7 +8325,7 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
     low = metin.lower()
     if any(d and d in low for d in izin):
         return
-    ok = await guvenli_sil(msg, "link_engel", user=user, chat_id=cid)
+    ok = await guvenli_sil(msg, "link_engel", user=user, chat_id=cid, bot=context.bot)
     if ok:
         raise ApplicationHandlerStop
     return
