@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.3"
+BOT_SURUM = "v2.9.4"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -974,6 +974,12 @@ async def sahip_grupta_mi(bot, chat_id) -> bool:
 _admin_cache = {}  # (chat_id, user_id) -> (bool, ts)
 
 
+def _status_admin_mi(status) -> bool:
+    st = getattr(status, "value", status)
+    st = str(st or "").lower().replace("chatmemberstatus.", "")
+    return st in ("administrator", "creator", "owner")
+
+
 async def admin_mi(chat_id, user, bot) -> bool:
     if not user:
         return False
@@ -982,22 +988,35 @@ async def admin_mi(chat_id, user, bot) -> bool:
     key = (int(chat_id), int(user.id))
     now = time.time()
     hit = _admin_cache.get(key)
-    if hit and now - hit[1] < 60:
+    if hit and now - hit[1] < 45:
         return hit[0]
     try:
         m = await bot.get_chat_member(chat_id, user.id)
-        ok = m.status in (
-            ChatMemberStatus.ADMINISTRATOR,
-            ChatMemberStatus.OWNER,
-            "administrator",
-            "creator",
-        )
+        ok = _status_admin_mi(getattr(m, "status", None))
         _admin_cache[key] = (ok, now)
         if len(_admin_cache) > 500:
             for k in list(_admin_cache.keys())[:100]:
                 _admin_cache.pop(k, None)
         return ok
-    except Exception:
+    except Exception as e:
+        log.warning("admin_mi hata chat=%s uid=%s: %s", chat_id, getattr(user, "id", None), e)
+        return False
+
+
+async def link_silinir_mi(bot, chat_id, user) -> bool:
+    """True = link silinebilir (normal uye). Admin/sahip/bilinmeyen = False (SILME)."""
+    if not user:
+        return False
+    if sahip_mi(user):
+        return False
+    try:
+        m = await bot.get_chat_member(chat_id, user.id)
+        if _status_admin_mi(getattr(m, "status", None)):
+            _admin_cache[(int(chat_id), int(user.id))] = (True, time.time())
+            return False
+        return True
+    except Exception as e:
+        log.warning("link_silinir_mi: %s — silinmeyecek", e)
         return False
 
 
@@ -8227,15 +8246,9 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     uid = user.id
     cid = chat.id
-    # sahip / admin / anonim yonetici — ASLA silme
-    try:
-        if sahip_mi(user):
-            return
-        if await admin_mi(cid, user, context.bot):
-            return
-    except Exception as e:
-        # yetki kontrolu basarisizsa silme (yanlis admin silmeyi onle)
-        log.warning("link admin kontrol: %s — link silinmedi", e)
+    # sadece normal uye linki silinir; admin/sahip/hata = dokunma
+    if not await link_silinir_mi(context.bot, cid, user):
+        log.info("LINK SERBEST (admin/sahip) uid=%s chat=%s", uid, cid)
         return
     # BOOST — en onemli
     if boost_link_hakki_var(cid, uid):
@@ -8257,7 +8270,6 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
     low = metin.lower()
     if any(d and d in low for d in izin):
         return
-    # SIL (boost zaten ustte return etti)
     ok = await guvenli_sil(msg, "link_engel", user=user, chat_id=cid)
     if ok:
         raise ApplicationHandlerStop
@@ -9113,8 +9125,14 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not ozel:
         # admin degilse filtreler
-        is_adm = await admin_mi(cid, user, context.bot)
+        is_adm = False
+        try:
+            is_adm = await admin_mi(cid, user, context.bot)
+        except Exception:
+            is_adm = True  # emin degilsek uye filtresi uygulama
         if getattr(msg, "sender_chat", None) is not None or getattr(msg, "is_automatic_forward", False):
+            is_adm = True
+        if sahip_mi(user):
             is_adm = True
         boostlu = False
         try:
