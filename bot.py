@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.10.0"
+BOT_SURUM = "v2.10.1"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -9203,6 +9203,38 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
             return
+
+
+    # --- GRUP: link engel ac/kapat (AI uydurmasin, gercekten cset) ---
+    if not ozel and metin:
+        lowg = kucult(metin)
+        # "yapay link engel kapat" / "link engel kapat"
+        if any(x in lowg for x in (
+            "link engel kapat", "link engeli kapat", "link kapat", "reklam aç", "reklam ac", "link serbest",
+        )) or (yapay_geciyor(metin) and "link" in lowg and "kapat" in lowg):
+            if await admin_mi(cid, user, context.bot) or sahip_mi(user):
+                cset(cid, "link_engel", False)
+                try:
+                    await msg.reply_text("🔗 Link engeli <b>KAPALI</b> — bu grupta link silinmez.", parse_mode="HTML")
+                except Exception:
+                    pass
+                return
+        if any(x in lowg for x in (
+            "link engel aç", "link engel ac", "link engeli aç", "link engeli ac",
+            "link aç", "link ac", "reklam kapat", "link yasak",
+        )) or (yapay_geciyor(metin) and "link" in lowg and ("aç" in lowg or "ac" in lowg) and "kapat" not in lowg):
+            if await admin_mi(cid, user, context.bot) or sahip_mi(user):
+                cset(cid, "link_engel", True)
+                try:
+                    await msg.reply_text(
+                        "🔗 Link engeli <b>AÇIK</b>\n"
+                        "Üye linki silinir · yönetici/admin linki silinmez.",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                return
+
 
     if not ozel:
         # admin degilse filtreler
