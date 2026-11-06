@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.6"
+BOT_SURUM = "v2.9.7"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -1047,7 +1047,9 @@ async def admin_mi(chat_id, user, bot) -> bool:
 
 
 async def link_silinir_mi(bot, chat_id, user) -> bool:
-    """True = sadece net normal uye. Admin/sahip/suphe = False (SILME)."""
+    """True = SADECE status member/restricted.
+    Admin/sahip/hata/bilinmeyen = False (ASILMAZ).
+    'Listede yok' ile silme YOK — yanlis admin silmenin kaynagi buydu."""
     if not user:
         return False
     if sahip_mi(user):
@@ -1059,11 +1061,19 @@ async def link_silinir_mi(bot, chat_id, user) -> bool:
         ids = await admin_id_set(bot, chat_id)
         if uid in ids:
             return False
-        if ids and len(ids) > 1:
+    except Exception:
+        pass
+    try:
+        m = await bot.get_chat_member(chat_id, uid)
+        st = getattr(m, "status", None)
+        st = str(getattr(st, "value", st) or "").lower().replace("chatmemberstatus.", "")
+        if st in ("administrator", "creator", "owner"):
+            return False
+        if st in ("member", "restricted"):
             return True
         return False
     except Exception as e:
-        log.warning("link_silinir_mi: %s — silinmeyecek", e)
+        log.warning("link_silinir_mi member hata uid=%s: %s — silinmeyecek", uid, e)
         return False
 
 
@@ -8301,36 +8311,12 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     uid = int(user.id)
     cid = int(chat.id)
-    # --- YONETICI KORUMASI (taze liste, cache yok) ---
     if sahip_mi(user) or uid == int(SAHIP_ID):
-        log.info("LINK SERBEST sahip uid=%s", uid)
         return
-    try:
-        _admin_ids_cache.pop(cid, None)
-    except Exception:
-        pass
-    try:
-        ids = await admin_id_set(context.bot, cid)
-        if uid in ids:
-            log.info("LINK SERBEST admin uid=%s chat=%s liste=%s", uid, cid, len(ids))
-            return
-        # liste cekilemediyse veya sadece sahip varsa silme
-        if not ids or len(ids) <= 1:
-            log.info("LINK SERBEST (liste guvensiz) uid=%s chat=%s", uid, cid)
-            return
-    except Exception as e:
-        log.warning("LINK SERBEST (admin hata) uid=%s %s", uid, e)
+    # Tek kural: sadece net "member/restricted" ise silinebilir
+    if not await link_silinir_mi(context.bot, cid, user):
+        log.info("LINK SERBEST (admin veya bilinmeyen) uid=%s chat=%s", uid, cid)
         return
-    # getChatMember ile son kontrol
-    try:
-        m = await context.bot.get_chat_member(cid, uid)
-        if _status_admin_mi(getattr(m, "status", None)):
-            log.info("LINK SERBEST admin(member) uid=%s", uid)
-            return
-    except Exception:
-        log.info("LINK SERBEST (member hata) uid=%s", uid)
-        return
-    # BOOST
     if boost_link_hakki_var(cid, uid):
         try:
             boost_link_kullan(cid, uid)
@@ -8340,7 +8326,6 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
             _LINK_GECTI.add((cid, msg.message_id))
         except Exception:
             pass
-        log.info("BOOST LINK SERBEST uid=%s chat=%s", uid, cid)
         return
     if not cget(cid, "link_engel"):
         return
