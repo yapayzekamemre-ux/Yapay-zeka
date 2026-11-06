@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.10.4"
+BOT_SURUM = "v2.10.5"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -8314,9 +8314,8 @@ def _spam_benzer(chat_id, metin: str) -> bool:
 
 
 async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """LINK SILME DEVRE DISI.
-    (Yonetici linkleri de siliniyordu; tamamen kapatildi.)
-    Ilet engeli ayri calisir."""
+    """Panel/link engel ACIK iken: sadece normal uye linki silinir.
+    Yonetici, sahip, bagli kanal admini, boost, izinli domain SILINMEZ."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
@@ -8332,25 +8331,68 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if getattr(msg, "forward_from_chat", None) is not None:
         return
-    # sadece baska gruptan ILET
+
+    # baska gruptan ilet
     if cget(chat.id, "forward_engel") and mesaj_iletildi_mi(msg):
         try:
-            if sahip_mi(user):
-                return
-            try:
-                if await admin_mi(chat.id, user, context.bot):
-                    return
-            except Exception:
+            if await link_yetkili_mi(context.bot, chat.id, user):
                 return
             if not ilet_izinli_mi(chat.id, msg):
                 await msg.delete()
+                log.info("ilet silindi uid=%s", user.id)
                 raise ApplicationHandlerStop
         except ApplicationHandlerStop:
             raise
         except Exception as e:
             log.warning("ilet: %s", e)
-    # LINK ASLA SILINMEZ
-    return
+
+    # panel kapaliysa link silme yok
+    if not cget(chat.id, "link_engel"):
+        return
+
+    metin = (msg.text or msg.caption or "") or ""
+    try:
+        var_link = mesajda_link_var(msg, metin)
+    except Exception:
+        var_link = bool(metin and LINK_RE.search(metin))
+    if not var_link:
+        return
+
+    # yonetici / sahip / kanal admin
+    try:
+        if await link_yetkili_mi(context.bot, chat.id, user):
+            log.info("link yetkili serbest uid=%s", user.id)
+            return
+    except Exception as e:
+        log.warning("link yetki hata (silinmedi): %s", e)
+        return
+
+    # boost
+    if boost_link_hakki_var(chat.id, user.id):
+        try:
+            boost_link_kullan(chat.id, user.id)
+            _LINK_GECTI.add((chat.id, msg.message_id))
+        except Exception:
+            pass
+        return
+
+    # izinli domain
+    izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
+    if any(d and d in metin.lower() for d in izin):
+        return
+
+    # sadece net uye
+    if not await link_silinir_mi(context.bot, chat.id, user):
+        return
+
+    log.info("link UYE silindi uid=%s chat=%s", user.id, chat.id)
+    try:
+        await msg.delete()
+        raise ApplicationHandlerStop
+    except ApplicationHandlerStop:
+        raise
+    except Exception as e:
+        log.warning("link sil: %s", e)
 
 
 async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -10968,15 +11010,13 @@ async def baslat(app):
         atexit.register(lambda: durum_kaydet(zorla=True))
     except Exception:
         pass
-        # link/sessizlik vb. silme filtrelerini guvenli moda al
+        # sessizlik varsayilan guvenli (link engel panelden kontrol)
     try:
         for _gid in list((durum.get("grup") or {}).keys()):
-            gid = int(_gid)
-            cset(gid, "link_engel", False)
-            cset(gid, "sessizlik", False)
-        log.info("link_engel+sessizlik ZORLA KAPALI tum gruplar")
+            cset(int(_gid), "sessizlik", False)
+        log.info("sessizlik ZORLA KAPALI (link engel panelden)")
     except Exception as e:
-        log.warning("filtre force off: %s", e)
+        log.warning("sessizlik force off: %s", e)
 
     log.info(
         "AI keys: groq=%s gemini=%s deepseek=%s mistral=%s openrouter=%s",
