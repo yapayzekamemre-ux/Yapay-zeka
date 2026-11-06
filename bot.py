@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.10.3"
+BOT_SURUM = "v2.10.4"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -7855,20 +7855,24 @@ async def sohbet_baslatici(context: ContextTypes.DEFAULT_TYPE):
 
 
 def _yabanci_spam_mi(metin: str) -> bool:
-    """Turkce grupta yabanci dil agirlikli kisa reklam."""
+    """Turkce grupta yabanci dil agirlikli reklam.
+    Sadece link / URL mesaji ASLA spam sayilmaz."""
     if not metin or len(metin) < 20:
         return False
-    # kiril / cin / arap agir
+    # saf link veya kisa url mesaji — spam degil
+    sade = re.sub(r"https?://\S+|t\.me/\S+|www\.\S+", " ", metin, flags=re.I).strip()
+    if len(sade) < 12:
+        return False
     if len(re.findall(r"[\u0400-\u04FF]", metin)) > 15:
         return True
     if len(re.findall(r"[\u4e00-\u9fff]", metin)) > 8:
         return True
     if len(re.findall(r"[\u0600-\u06FF]", metin)) > 15:
         return True
-    # latin ama turkce karakter yok + crypto spam kalibi
+    # latin + uzun reklam metni (link tek basina yetmez)
     if not re.search(r"[ğüşıöçĞÜŞİÖÇ]", metin):
         low = metin.lower()
-        if any(x in low for x in ("airdrop", "claim", "free token", "connect wallet", "http")) and len(metin) > 40:
+        if any(x in low for x in ("airdrop", "claim", "free token", "connect wallet")) and len(sade) > 40:
             tr_kelime = sum(1 for w in ("ve", "bir", "bu", "için", "icin", "var", "yok", "nedir") if w in low)
             if tr_kelime == 0:
                 return True
@@ -9361,21 +9365,34 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "ad": (user.first_name or "")[:20],
                 "text": metin[:300],
             })
-        # ogrenilen spam (boostlu degil)
-        if metin and _spam_benzer(cid, metin) and not boostlu:
+        # ogrenilen spam / yabanci spam — admin ve yetkili ASLA
+        _yetkili_spam = bool(is_adm) or sahip_mi(user)
+        try:
+            if not _yetkili_spam:
+                _yetkili_spam = await link_yetkili_mi(context.bot, cid, user)
+        except Exception:
+            _yetkili_spam = True  # emin degil = silme
+        if metin and not _yetkili_spam and not boostlu and _spam_benzer(cid, metin):
             try:
                 await msg.delete()
+                log.info("spam silindi uid=%s", user.id)
             except Exception:
                 pass
             st = dict(cget(cid, "istatistik") or {})
             st["spam"] = int(st.get("spam") or 0) + 1
             cset(cid, "istatistik", st)
             return
-        # yabanci dil spam
-        if (not boostlu) and cget(cid, "yabanci_spam") is not False and metin and _yabanci_spam_mi(metin):
+        if (
+            not _yetkili_spam
+            and not boostlu
+            and cget(cid, "yabanci_spam") is not False
+            and metin
+            and _yabanci_spam_mi(metin)
+        ):
             if guven_get(cid, user.id) < 70:
                 try:
                     await msg.delete()
+                    log.info("yabanci_spam silindi uid=%s metin=%s", user.id, (metin or "")[:80])
                 except Exception:
                     pass
                 st = dict(cget(cid, "istatistik") or {})
