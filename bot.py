@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.10.2"
+BOT_SURUM = "v2.10.3"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -9211,6 +9211,13 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_adm = True
         if sahip_mi(user):
             is_adm = True
+        # grup/kanal admini ise uye filtreleri ASLA
+        try:
+            if not is_adm and await link_yetkili_mi(context.bot, cid, user):
+                is_adm = True
+                log.info("yetkili is_adm uid=%s", user.id)
+        except Exception:
+            is_adm = True
         boostlu = False
         try:
             boostlu = (not is_adm) and boost_link_hakki_var(cid, user.id)
@@ -10944,13 +10951,15 @@ async def baslat(app):
         atexit.register(lambda: durum_kaydet(zorla=True))
     except Exception:
         pass
-        # link silme zorunlu kapali (kalici cozum)
+        # link/sessizlik vb. silme filtrelerini guvenli moda al
     try:
         for _gid in list((durum.get("grup") or {}).keys()):
-            cset(int(_gid), "link_engel", False)
-        log.info("link_engel ZORLA KAPALI tum gruplar")
+            gid = int(_gid)
+            cset(gid, "link_engel", False)
+            cset(gid, "sessizlik", False)
+        log.info("link_engel+sessizlik ZORLA KAPALI tum gruplar")
     except Exception as e:
-        log.warning("link_engel force off: %s", e)
+        log.warning("filtre force off: %s", e)
 
     log.info(
         "AI keys: groq=%s gemini=%s deepseek=%s mistral=%s openrouter=%s",
