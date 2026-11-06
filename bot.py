@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.5"
+BOT_SURUM = "v2.9.6"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -8263,7 +8263,7 @@ def _spam_benzer(chat_id, metin: str) -> bool:
 
 
 async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Boostlu = link silinmez. Digerleri link_engel aciksa silinir."""
+    """Link engel: SADECE net normal uye. Admin/sahip/kanal ASLA silinmez."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
@@ -8273,10 +8273,12 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if getattr(user, "is_bot", False):
         return
-    # kanal / otomatik iletim — bagli kanal serbest
+    # kanal / otomatik iletim / anonim yonetici
     if getattr(msg, "is_automatic_forward", False):
         return
     if getattr(msg, "sender_chat", None) is not None:
+        return
+    if getattr(msg, "forward_from_chat", None) is not None:
         return
     # baska gruptan ILET
     if cget(chat.id, "forward_engel") and mesaj_iletildi_mi(msg):
@@ -8290,8 +8292,6 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
             raise
         except Exception as e:
             log.warning("ilet filtre: %s", e)
-    if getattr(msg, "sender_boost_count", None):
-        pass
     metin = (msg.text or msg.caption or "") or ""
     try:
         var_link = mesajda_link_var(msg, metin)
@@ -8299,13 +8299,38 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         var_link = bool(metin and LINK_RE.search(metin))
     if not var_link:
         return
-    uid = user.id
-    cid = chat.id
-    # sadece normal uye linki silinir; admin/sahip/hata = dokunma
-    if not await link_silinir_mi(context.bot, cid, user):
-        log.info("LINK SERBEST (admin/sahip) uid=%s chat=%s", uid, cid)
+    uid = int(user.id)
+    cid = int(chat.id)
+    # --- YONETICI KORUMASI (taze liste, cache yok) ---
+    if sahip_mi(user) or uid == int(SAHIP_ID):
+        log.info("LINK SERBEST sahip uid=%s", uid)
         return
-    # BOOST — en onemli
+    try:
+        _admin_ids_cache.pop(cid, None)
+    except Exception:
+        pass
+    try:
+        ids = await admin_id_set(context.bot, cid)
+        if uid in ids:
+            log.info("LINK SERBEST admin uid=%s chat=%s liste=%s", uid, cid, len(ids))
+            return
+        # liste cekilemediyse veya sadece sahip varsa silme
+        if not ids or len(ids) <= 1:
+            log.info("LINK SERBEST (liste guvensiz) uid=%s chat=%s", uid, cid)
+            return
+    except Exception as e:
+        log.warning("LINK SERBEST (admin hata) uid=%s %s", uid, e)
+        return
+    # getChatMember ile son kontrol
+    try:
+        m = await context.bot.get_chat_member(cid, uid)
+        if _status_admin_mi(getattr(m, "status", None)):
+            log.info("LINK SERBEST admin(member) uid=%s", uid)
+            return
+    except Exception:
+        log.info("LINK SERBEST (member hata) uid=%s", uid)
+        return
+    # BOOST
     if boost_link_hakki_var(cid, uid):
         try:
             boost_link_kullan(cid, uid)
@@ -8317,14 +8342,13 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass
         log.info("BOOST LINK SERBEST uid=%s chat=%s", uid, cid)
         return
-    # engel kapaliysa birak
     if not cget(cid, "link_engel"):
         return
-    # domain izin
     izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
     low = metin.lower()
     if any(d and d in low for d in izin):
         return
+    log.info("LINK SILINECEK uye uid=%s chat=%s", uid, cid)
     ok = await guvenli_sil(msg, "link_engel", user=user, chat_id=cid, bot=context.bot)
     if ok:
         raise ApplicationHandlerStop
@@ -8352,6 +8376,9 @@ async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     metin = (msg.text or msg.caption or "").strip()
     if not metin:
         return
+    # admin / sahip duzenlemesinde link islem yok
+    if user and not await link_silinir_mi(context.bot, chat.id, user):
+        return
     # link tara
     if ozellik_acik(chat.id, "link_tara"):
         for url in linkleri_cikar(metin, msg):
@@ -8363,24 +8390,17 @@ async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
                 return
-    # link engel (admin / sahip dokunulmaz)
+    # link engel
     if cget(chat.id, "link_engel") and mesajda_link_var(msg, metin):
-        is_adm = False
-        try:
-            if user and (sahip_mi(user) or await admin_mi(chat.id, user, context.bot)):
-                is_adm = True
-        except Exception:
-            is_adm = True  # emin degilsek silme
-        if not is_adm:
-            izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
-            ok = any(d and d in metin.lower() for d in izin)
-            if not ok and user and boost_link_hakki_var(chat.id, user.id):
-                ok = True
-            if not ok:
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
+        izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
+        ok = any(d and d in metin.lower() for d in izin)
+        if not ok and user and boost_link_hakki_var(chat.id, user.id):
+            ok = True
+        if not ok:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
 
 
 # ---------- hosgeldin / ayrildi / servis ----------
@@ -9289,28 +9309,33 @@ async def mesaj(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
                     return
             # link engel erken filtrede islendi
-            # link guvenlik tarama
+            # link guvenlik tarama — admin asla
             if ozellik_acik(cid, "link_tara") and metin and not boostlu:
-                for url in linkleri_cikar(metin, msg):
-                    guven, neden = await asyncio.to_thread(link_guvenli_mi, url)
-                    if not guven:
-                        try:
-                            await msg.delete()
-                        except Exception:
-                            pass
-                        try:
-                            await kisa_cevap(
-                                context.bot, cid,
-                                f"🛡 Zararlı link silindi ({html.escape(neden)})",
-                                10,
-                            )
-                        except Exception:
-                            pass
-                        guven_ekle(cid, user.id, -15)
-                        return
-            # dusuk guven + link = ekstra sikı
+                if await link_silinir_mi(context.bot, cid, user):
+                    for url in linkleri_cikar(metin, msg):
+                        guven, neden = await asyncio.to_thread(link_guvenli_mi, url)
+                        if not guven:
+                            try:
+                                await msg.delete()
+                            except Exception:
+                                pass
+                            try:
+                                await kisa_cevap(
+                                    context.bot, cid,
+                                    f"🛡 Zararlı link silindi ({html.escape(neden)})",
+                                    10,
+                                )
+                            except Exception:
+                                pass
+                            guven_ekle(cid, user.id, -15)
+                            return
+            # dusuk guven + link = ekstra siki — admin asla
             if ozellik_acik(cid, "guven") and guven_get(cid, user.id) < 25:
-                if mesajda_link_var(msg, metin) and (cid, msg.message_id) not in _LINK_GECTI:
+                if (
+                    await link_silinir_mi(context.bot, cid, user)
+                    and mesajda_link_var(msg, metin)
+                    and (cid, msg.message_id) not in _LINK_GECTI
+                ):
                     if not boost_link_hakki_var(cid, user.id) and not link_uye_izinli(cid, user.id, metin, kullan_hak=False):
                         try:
                             await msg.delete()
