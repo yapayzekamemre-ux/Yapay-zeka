@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.10.1"
+BOT_SURUM = "v2.10.2"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -8310,7 +8310,9 @@ def _spam_benzer(chat_id, metin: str) -> bool:
 
 
 async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Uye linki sil, yonetici/kanal admin/sahip linkine dokunma."""
+    """LINK SILME DEVRE DISI.
+    (Yonetici linkleri de siliniyordu; tamamen kapatildi.)
+    Ilet engeli ayri calisir."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
@@ -8326,63 +8328,25 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if getattr(msg, "forward_from_chat", None) is not None:
         return
-
-    # iletim engeli
+    # sadece baska gruptan ILET
     if cget(chat.id, "forward_engel") and mesaj_iletildi_mi(msg):
         try:
-            if not await link_yetkili_mi(context.bot, chat.id, user):
-                if not ilet_izinli_mi(chat.id, msg):
-                    await msg.delete()
-                    raise ApplicationHandlerStop
+            if sahip_mi(user):
+                return
+            try:
+                if await admin_mi(chat.id, user, context.bot):
+                    return
+            except Exception:
+                return
+            if not ilet_izinli_mi(chat.id, msg):
+                await msg.delete()
+                raise ApplicationHandlerStop
         except ApplicationHandlerStop:
             raise
         except Exception as e:
             log.warning("ilet: %s", e)
-
-    if not cget(chat.id, "link_engel"):
-        return
-    metin = (msg.text or msg.caption or "") or ""
-    try:
-        var_link = mesajda_link_var(msg, metin)
-    except Exception:
-        var_link = bool(metin and LINK_RE.search(metin))
-    if not var_link:
-        return
-
-    # YETKILI = silme
-    try:
-        if await link_yetkili_mi(context.bot, chat.id, user):
-            log.info("link YETKILI serbest uid=%s", user.id)
-            return
-    except Exception as e:
-        log.warning("link yetki hata (silinmedi): %s", e)
-        return
-
-    if boost_link_hakki_var(chat.id, user.id):
-        try:
-            boost_link_kullan(chat.id, user.id)
-            _LINK_GECTI.add((chat.id, msg.message_id))
-        except Exception:
-            pass
-        return
-
-    izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
-    if any(d and d in metin.lower() for d in izin):
-        return
-
-    # son kontrol: sadece member/restricted
-    if not await link_silinir_mi(context.bot, chat.id, user):
-        log.info("link silinmez (uye degil/yetkili) uid=%s", user.id)
-        return
-
-    log.info("link UYE silindi uid=%s chat=%s", user.id, chat.id)
-    try:
-        await msg.delete()
-        raise ApplicationHandlerStop
-    except ApplicationHandlerStop:
-        raise
-    except Exception as e:
-        log.warning("link sil: %s", e)
+    # LINK ASLA SILINMEZ
+    return
 
 
 async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -10980,6 +10944,14 @@ async def baslat(app):
         atexit.register(lambda: durum_kaydet(zorla=True))
     except Exception:
         pass
+        # link silme zorunlu kapali (kalici cozum)
+    try:
+        for _gid in list((durum.get("grup") or {}).keys()):
+            cset(int(_gid), "link_engel", False)
+        log.info("link_engel ZORLA KAPALI tum gruplar")
+    except Exception as e:
+        log.warning("link_engel force off: %s", e)
+
     log.info(
         "AI keys: groq=%s gemini=%s deepseek=%s mistral=%s openrouter=%s",
         bool(GROQ_KEY), bool(GEMINI_KEY), bool(DEEPSEEK_KEY),
