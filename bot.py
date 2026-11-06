@@ -5,7 +5,7 @@ Bolumler: ayarlar | AI | fiyat | panel | moderasyon | duyuru | ipucu |
 oyunlar | guvenlik | joblar | mesaj | baslat
 Panel: /panel veya /ayarlar (sadece admin)
 """
-BOT_SURUM = "v2.9.9"
+BOT_SURUM = "v2.10.0"
 import pymongo.collection as _pmc
 _pmc.Collection.__bool__ = lambda self: True
 import asyncio
@@ -1046,35 +1046,72 @@ async def admin_mi(chat_id, user, bot) -> bool:
         return False
 
 
-async def link_silinir_mi(bot, chat_id, user) -> bool:
-    """True = SADECE status member/restricted.
-    Admin/sahip/hata/bilinmeyen = False (ASILMAZ).
-    'Listede yok' ile silme YOK — yanlis admin silmenin kaynagi buydu."""
+async def link_yetkili_mi(bot, chat_id, user) -> bool:
+    """True = link atabilir (silinmez): sahip, grup admin, bagli kanal admin, serbest liste."""
     if not user:
-        return False
+        return True  # bilinmeyen silme
     if sahip_mi(user):
-        return False
+        return True
     uid = int(user.id)
     if uid == int(SAHIP_ID):
-        return False
+        return True
+    # manuel serbest liste
     try:
-        ids = await admin_id_set(bot, chat_id)
-        if uid in ids:
-            return False
+        serbest = cget(chat_id, "link_serbest") or []
+        if uid in serbest or str(uid) in [str(x) for x in serbest]:
+            return True
     except Exception:
         pass
+    # grup yoneticileri
+    try:
+        if uid in await admin_id_set(bot, chat_id):
+            return True
+    except Exception:
+        pass
+    # getChatMember
     try:
         m = await bot.get_chat_member(chat_id, uid)
         st = getattr(m, "status", None)
         st = str(getattr(st, "value", st) or "").lower().replace("chatmemberstatus.", "")
         if st in ("administrator", "creator", "owner"):
-            return False
-        if st in ("member", "restricted"):
             return True
-        return False
+    except Exception:
+        return True  # emin degil = serbest
+    # bagli kanal yoneticileri (sohbet grubu)
+    try:
+        ch = await bot.get_chat(chat_id)
+        linked = getattr(ch, "linked_chat_id", None)
+        if linked:
+            key = f"_chadm_{linked}"
+            now = time.time()
+            hit = _admin_ids_cache.get(key)
+            if hit and now - hit[1] < 180:
+                ids = hit[0]
+            else:
+                ads = await bot.get_chat_administrators(int(linked))
+                ids = {int(a.user.id) for a in ads if getattr(a, "user", None)}
+                _admin_ids_cache[key] = (ids, now)
+            if uid in ids:
+                return True
     except Exception as e:
-        log.warning("link_silinir_mi member hata uid=%s: %s — silinmeyecek", uid, e)
+        log.warning("linked admin: %s", e)
+    return False
+
+
+async def link_silinir_mi(bot, chat_id, user) -> bool:
+    """True = uye linki silinebilir. Yetkili ise False."""
+    if not user:
         return False
+    if await link_yetkili_mi(bot, chat_id, user):
+        return False
+    try:
+        m = await bot.get_chat_member(chat_id, int(user.id))
+        st = getattr(m, "status", None)
+        st = str(getattr(st, "value", st) or "").lower().replace("chatmemberstatus.", "")
+        return st in ("member", "restricted")
+    except Exception:
+        return False
+
 
 
 def uye_kaydi(chat_id, user):
@@ -8273,7 +8310,7 @@ def _spam_benzer(chat_id, metin: str) -> bool:
 
 
 async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Uye linki silinir, yonetici/admin/sahip/kanal linki SILINMEZ."""
+    """Uye linki sil, yonetici/kanal admin/sahip linkine dokunma."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
@@ -8283,24 +8320,24 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if getattr(user, "is_bot", False):
         return
-    # kanal / anonim yonetici / otomatik iletim
     if getattr(msg, "is_automatic_forward", False):
         return
     if getattr(msg, "sender_chat", None) is not None:
         return
     if getattr(msg, "forward_from_chat", None) is not None:
         return
-    # baska gruptan ILET
+
+    # iletim engeli
     if cget(chat.id, "forward_engel") and mesaj_iletildi_mi(msg):
         try:
-            if not sahip_mi(user) and not await admin_mi(chat.id, user, context.bot):
+            if not await link_yetkili_mi(context.bot, chat.id, user):
                 if not ilet_izinli_mi(chat.id, msg):
                     await msg.delete()
                     raise ApplicationHandlerStop
         except ApplicationHandlerStop:
             raise
         except Exception as e:
-            log.warning("ilet filtre: %s", e)
+            log.warning("ilet: %s", e)
 
     if not cget(chat.id, "link_engel"):
         return
@@ -8312,59 +8349,40 @@ async def link_filtre_oncelik(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not var_link:
         return
 
-    uid = int(user.id)
-    cid = int(chat.id)
-
-    # 1) sahip
-    if sahip_mi(user) or uid == int(SAHIP_ID):
-        return
-
-    # 2) yonetici listesi
+    # YETKILI = silme
     try:
-        if uid in await admin_id_set(context.bot, cid):
-            log.info("link admin serbest uid=%s", uid)
+        if await link_yetkili_mi(context.bot, chat.id, user):
+            log.info("link YETKILI serbest uid=%s", user.id)
             return
-    except Exception:
-        pass
-
-    # 3) getChatMember — SADECE member/restricted silinir
-    try:
-        m = await context.bot.get_chat_member(cid, uid)
-        st = getattr(m, "status", None)
-        st = str(getattr(st, "value", st) or "").lower().replace("chatmemberstatus.", "")
     except Exception as e:
-        log.warning("link status hata uid=%s: %s — silinmedi", uid, e)
+        log.warning("link yetki hata (silinmedi): %s", e)
         return
 
-    if st in ("administrator", "creator", "owner"):
-        log.info("link admin(status) serbest uid=%s", uid)
-        return
-    if st not in ("member", "restricted"):
-        return
-
-    # boost hakki
-    if boost_link_hakki_var(cid, uid):
+    if boost_link_hakki_var(chat.id, user.id):
         try:
-            boost_link_kullan(cid, uid)
-            _LINK_GECTI.add((cid, msg.message_id))
+            boost_link_kullan(chat.id, user.id)
+            _LINK_GECTI.add((chat.id, msg.message_id))
         except Exception:
             pass
         return
 
-    # izinli domain
-    izin = [x.lower() for x in (cget(cid, "link_izin") or [])]
+    izin = [x.lower() for x in (cget(chat.id, "link_izin") or [])]
     if any(d and d in metin.lower() for d in izin):
         return
 
-    log.info("link uye silindi uid=%s chat=%s", uid, cid)
+    # son kontrol: sadece member/restricted
+    if not await link_silinir_mi(context.bot, chat.id, user):
+        log.info("link silinmez (uye degil/yetkili) uid=%s", user.id)
+        return
+
+    log.info("link UYE silindi uid=%s chat=%s", user.id, chat.id)
     try:
         await msg.delete()
         raise ApplicationHandlerStop
     except ApplicationHandlerStop:
         raise
     except Exception as e:
-        log.warning("link sil hata: %s", e)
-    return
+        log.warning("link sil: %s", e)
 
 
 async def mesaj_duzenlendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
