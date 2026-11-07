@@ -2462,4 +2462,193 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.answer("İşleniyor...")
         try:
-         
+            await q.edit_message_reply_markup(reply_markup=kb_without(q.message.reply_markup, data))
+        except Exception:
+            pass
+        try:
+            await handle_action(act)
+        except Exception as e:
+            print("[ACTION]", repr(e))
+            await send_admin(f"⚠️ İşlem hatası: {e}")
+
+    elif data.startswith("rd:"):
+        await q.answer()
+        ROUTINES.pop(data[3:], None)
+        await persist_routines()
+        text, kb = routines_text_and_kb()
+        try:
+            await q.edit_message_text(text, reply_markup=kb)
+        except Exception:
+            await q.message.reply_text(text, reply_markup=kb)
+    else:
+        await q.answer()
+
+
+@admin_only
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    n_bots = sum(1 for k in seen if k.startswith("bot:"))
+    await update.effective_message.reply_text(
+        f"Durum: aktif\n"
+        f"Dinlenen: {len(ACTIVE_SOURCES)}\n"
+        f"Gorulen/bilinen bot: {n_bots}\n"
+        f"Mod: {'sadece bot linkleri' if ONLY_BOTS else 'genis filtre'}\n"
+        f"Otomatik inceleme: {'acik' if INSPECT else 'kapali'}\n"
+        f"Kanal katilim limiti: {JOIN_DAILY_MAX if JOIN_DAILY_MAX > 0 else 'yok'}\n"
+        f"Otomatik gorev: {'calisiyor' if AUTO_RUNNING else 'bosta'}\n"
+        f"Otopilot: {autopilot_short()} | kayitli kanal: {len(JOINS)}\n"
+        f"Gunluk rutin: {len(ROUTINES)} ({'acik' if ROUTINES_ON else 'kapali'})\n"
+        f"Groq: {'acik' if GROQ_API_KEY else 'kapali'} ({GROQ_MODEL})\n"
+        f"Gemini (yedek): {'acik' if GEMINI_API_KEY else 'kapali'} ({GEMINI_MODEL})\n"
+        f"Upstash: {'acik' if UPSTASH_REDIS_REST_URL else 'kapali'}\n"
+        f"Keepalive: {'acik' if (KEEPALIVE and RENDER_URL) else 'kapali'}"
+    )
+
+
+# ===================== HTTP (Render port) =====================
+
+async def handle_health(request):
+    return web.Response(text=f"ok sources={len(ACTIVE_SOURCES)}", content_type="text/plain")
+
+
+async def start_http():
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/health", handle_health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"[HTTP] Port {PORT} acik (Render health)")
+
+
+async def keepalive_loop():
+    if not (KEEPALIVE and RENDER_URL):
+        print("[KEEPALIVE] kapali")
+        return
+    print("[KEEPALIVE] acik:", RENDER_URL)
+    while True:
+        await asyncio.sleep(600)
+        try:
+            assert http_session is not None
+            async with http_session.get(
+                RENDER_URL + "/health", timeout=aiohttp.ClientTimeout(total=20)
+            ) as r:
+                await r.read()
+        except Exception as e:
+            print("[KEEPALIVE HATA]", repr(e))
+
+
+# ===================== MAIN =====================
+
+async def main():
+    global tg_client, http_session, bot_app, TG_LOCK, INSPECT_LOCK
+
+    if not API_ID or not API_HASH or not STRING_SESSION:
+        raise SystemExit("API_ID / API_HASH / STRING_SESSION zorunlu")
+    if not BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN zorunlu (Airdrop radar bot)")
+    if not ADMIN_USER_ID:
+        raise SystemExit("ADMIN_USER_ID / ADMIN_CHAT_ID zorunlu")
+
+    TG_LOCK = asyncio.Lock()
+    INSPECT_LOCK = asyncio.Lock()
+
+    print("=" * 60)
+    print("AIRDROP RADARI v3 + GROQ")
+    print("=" * 60)
+    print("[KONFIG] ADMIN =", ADMIN_USER_ID)
+    print("[KONFIG] PORT =", PORT)
+    print("[KONFIG] GROQ =", GROQ_MODEL if GROQ_API_KEY else "yok")
+    print("[KONFIG] GEMINI =", GEMINI_MODEL if GEMINI_API_KEY else "yok")
+    print("[KONFIG] MOD =", "sadece bot linkleri" if ONLY_BOTS else "genis filtre")
+    print("[KONFIG] INSPECT =", INSPECT, "| RUTIN =", ROUTINES_ON)
+
+    http_session = aiohttp.ClientSession()
+    await start_http()
+
+    tg_client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
+    await tg_client.start()
+    me = await tg_client.get_me()
+    print("[TELETHON]", me.id, getattr(me, "username", None))
+    await tg_client.get_dialogs()
+
+    await load_seen()
+    await load_routines()
+    await load_joins()
+    await load_autopilot()
+    await load_admins()
+    await load_refs()
+
+    seed = []
+    seed.extend(parse_id_list(SOURCE_CHATS_EXTRA))
+    seed.extend(await load_persisted_sources())
+
+    for item in seed:
+        try:
+            entity = await resolve_entity(item)
+            cid = get_peer_id(entity)
+            ACTIVE_SOURCES.add(cid)
+            SOURCE_META[cid] = (
+                getattr(entity, "title", None) or getattr(entity, "username", None) or str(cid)
+            )
+            print("[KAYNAK OK]", item, "->", cid, SOURCE_META[cid])
+        except Exception as e:
+            try:
+                ACTIVE_SOURCES.add(int(item))
+                print("[KAYNAK ID]", item)
+            except Exception:
+                print("[KAYNAK HATA]", item, repr(e))
+
+    await persist_sources()
+    tg_client.add_event_handler(on_group_message, events.NewMessage(incoming=True))
+
+    bot_app = Application.builder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", cmd_start))
+    bot_app.add_handler(CommandHandler("help", cmd_help))
+    bot_app.add_handler(CommandHandler("yardim", cmd_help))
+    bot_app.add_handler(CommandHandler("add", cmd_add))
+    bot_app.add_handler(CommandHandler("del", cmd_del))
+    bot_app.add_handler(CommandHandler("remove", cmd_del))
+    bot_app.add_handler(CommandHandler("list", cmd_list))
+    bot_app.add_handler(CommandHandler("bil", cmd_bil))
+    bot_app.add_handler(CommandHandler("incele", cmd_incele))
+    bot_app.add_handler(CommandHandler("oyun", cmd_oyun))
+    bot_app.add_handler(CommandHandler("ref", cmd_ref))
+    bot_app.add_handler(CommandHandler("gorev", cmd_gorev))
+    bot_app.add_handler(CommandHandler("dur", cmd_dur))
+    bot_app.add_handler(CommandHandler("otopilot", cmd_otopilot))
+    bot_app.add_handler(CommandHandler("cik", cmd_cik))
+    bot_app.add_handler(CommandHandler("yetkiler", cmd_yetkiler))
+    bot_app.add_handler(CommandHandler("rutin", cmd_rutin))
+    bot_app.add_handler(CommandHandler("status", cmd_status))
+    bot_app.add_handler(CallbackQueryHandler(on_callback))
+
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling(drop_pending_updates=True)
+
+    spawn(keepalive_loop())
+    spawn(routine_loop())
+    spawn(autopilot_loop())
+
+    try:
+        await bot_app.bot.send_message(
+            ADMIN_CHAT_ID,
+            f"Radar aktif (v3 + Groq)\nDinlenen: {len(ACTIVE_SOURCES)}\n"
+            f"Groq: {'acik' if GROQ_API_KEY else 'kapali'}\n"
+            f"Otomatik inceleme: {'acik' if INSPECT else 'kapali'}\n"
+            f"Rutin: {len(ROUTINES)}\n\n"
+            f"/add -100... ile grup ekle, /incele botadi ile dene",
+        )
+    except Exception as e:
+        print("[ADMIN MSG HATA]", repr(e))
+
+    print("[HAZIR] Bot komutlari + Telethon + HTTP")
+    await tg_client.run_until_disconnected()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
